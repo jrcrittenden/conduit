@@ -2,20 +2,19 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Style},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 use std::path::PathBuf;
+
+use super::{DialogFrame, InstructionBar, StatusLine, TextInputState};
 
 /// State for the base directory dialog
 #[derive(Debug, Clone)]
 pub struct BaseDirDialogState {
-    /// Current input text (path)
-    pub input: String,
-    /// Cursor position in the input
-    pub cursor: usize,
+    /// Text input state
+    pub text: TextInputState,
     /// Whether the dialog is visible
     pub visible: bool,
     /// Validation error message
@@ -33,8 +32,7 @@ impl Default for BaseDirDialogState {
 impl BaseDirDialogState {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
-            cursor: 0,
+            text: TextInputState::new(),
             visible: false,
             error: None,
             is_valid: false,
@@ -45,9 +43,8 @@ impl BaseDirDialogState {
     pub fn show(&mut self) {
         self.visible = true;
         // Default to ~/code if empty
-        if self.input.is_empty() {
-            self.input = "~/code".to_string();
-            self.cursor = self.input.len();
+        if self.text.is_empty() {
+            self.text.set("~/code");
         }
         self.validate();
     }
@@ -55,8 +52,7 @@ impl BaseDirDialogState {
     /// Show with a specific initial path
     pub fn show_with_path(&mut self, path: &str) {
         self.visible = true;
-        self.input = path.to_string();
-        self.cursor = self.input.len();
+        self.text.set(path);
         self.validate();
     }
 
@@ -65,71 +61,59 @@ impl BaseDirDialogState {
         self.visible = false;
     }
 
-    /// Insert a character at cursor position
+    /// Get the current input value
+    pub fn input(&self) -> &str {
+        self.text.value()
+    }
+
+    // Delegate text input methods
     pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += 1;
+        self.text.insert_char(c);
         self.validate();
     }
 
-    /// Delete character before cursor
     pub fn delete_char(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.input.remove(self.cursor);
-            self.validate();
-        }
-    }
-
-    /// Delete character at cursor
-    pub fn delete_forward(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
-            self.validate();
-        }
-    }
-
-    /// Move cursor left
-    pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
-    }
-
-    /// Move cursor right
-    pub fn move_right(&mut self) {
-        if self.cursor < self.input.len() {
-            self.cursor += 1;
-        }
-    }
-
-    /// Move cursor to start
-    pub fn move_start(&mut self) {
-        self.cursor = 0;
-    }
-
-    /// Move cursor to end
-    pub fn move_end(&mut self) {
-        self.cursor = self.input.len();
-    }
-
-    /// Delete from cursor to start of line
-    pub fn delete_to_start(&mut self) {
-        self.input = self.input[self.cursor..].to_string();
-        self.cursor = 0;
+        self.text.delete_char();
         self.validate();
     }
 
-    /// Delete from cursor to end of line
+    pub fn delete_forward(&mut self) {
+        self.text.delete_forward();
+        self.validate();
+    }
+
+    pub fn move_left(&mut self) {
+        self.text.move_left();
+    }
+
+    pub fn move_right(&mut self) {
+        self.text.move_right();
+    }
+
+    pub fn move_start(&mut self) {
+        self.text.move_start();
+    }
+
+    pub fn move_end(&mut self) {
+        self.text.move_end();
+    }
+
+    pub fn delete_to_start(&mut self) {
+        self.text.delete_to_start();
+        self.validate();
+    }
+
     pub fn delete_to_end(&mut self) {
-        self.input.truncate(self.cursor);
+        self.text.delete_to_end();
         self.validate();
     }
 
     /// Validate the current input path
     pub fn validate(&mut self) {
+        let input = self.text.value();
+
         // Check if path is empty
-        if self.input.is_empty() {
+        if input.is_empty() {
             self.error = Some("Path cannot be empty".to_string());
             self.is_valid = false;
             return;
@@ -157,12 +141,13 @@ impl BaseDirDialogState {
 
     /// Get the expanded path
     pub fn expanded_path(&self) -> PathBuf {
-        if self.input.starts_with('~') {
+        let input = self.text.value();
+        if input.starts_with('~') {
             if let Some(home) = dirs::home_dir() {
-                return home.join(self.input[1..].trim_start_matches('/'));
+                return home.join(input[1..].trim_start_matches('/'));
             }
         }
-        PathBuf::from(&self.input)
+        PathBuf::from(input)
     }
 
     /// Check if dialog is visible
@@ -185,31 +170,9 @@ impl BaseDirDialog {
             return;
         }
 
-        // Calculate dialog size and position (centered)
-        let dialog_width = 56.min(area.width.saturating_sub(4));
-        let dialog_height = 11;
-
-        let x = (area.width.saturating_sub(dialog_width)) / 2;
-        let y = (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width,
-            height: dialog_height,
-        };
-
-        // Clear the dialog area
-        Clear.render(dialog_area, buf);
-
-        // Render dialog border
-        let block = Block::default()
-            .title(" Set Projects Directory ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(dialog_area);
-        block.render(dialog_area, buf);
+        // Render dialog frame
+        let frame = DialogFrame::new("Set Projects Directory", 56, 11);
+        let inner = frame.render(area, buf);
 
         // Layout inside dialog
         let chunks = Layout::vertical([
@@ -228,7 +191,7 @@ impl BaseDirDialog {
             .style(Style::default().fg(Color::White));
         label.render(chunks[0], buf);
 
-        // Render input field
+        // Render input field with border
         let input_style = if state.is_valid {
             Style::default().fg(Color::Green)
         } else if state.error.is_some() {
@@ -244,36 +207,17 @@ impl BaseDirDialog {
         let input_inner = input_block.inner(chunks[2]);
         input_block.render(chunks[2], buf);
 
-        // Render input text
-        let input_paragraph = Paragraph::new(state.input.as_str())
-            .style(Style::default().fg(Color::White));
-        input_paragraph.render(input_inner, buf);
-
-        // Render cursor
-        if input_inner.width > 0 {
-            let cursor_x = input_inner.x + (state.cursor as u16).min(input_inner.width - 1);
-            if cursor_x < input_inner.x + input_inner.width {
-                buf[(cursor_x, input_inner.y)]
-                    .set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
-        }
+        // Render text input with cursor
+        state
+            .text
+            .render(input_inner, buf, Style::default().fg(Color::White));
 
         // Render status/error
-        let status_text = if let Some(ref error) = state.error {
-            Line::from(Span::styled(
-                format!("  {}", error),
-                Style::default().fg(Color::Red),
-            ))
-        } else if state.is_valid {
-            Line::from(Span::styled(
-                "  Directory found",
-                Style::default().fg(Color::Green),
-            ))
-        } else {
-            Line::default()
-        };
-
-        let status = Paragraph::new(status_text);
+        let status = StatusLine::from_result(
+            state.error.as_deref(),
+            state.is_valid,
+            "Directory found",
+        );
         status.render(chunks[3], buf);
 
         // Help text
@@ -282,13 +226,7 @@ impl BaseDirDialog {
         help.render(chunks[4], buf);
 
         // Render instructions
-        let instructions = Paragraph::new(Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" to confirm    "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" to cancel"),
-        ]))
-        .alignment(Alignment::Center);
+        let instructions = InstructionBar::new(vec![("Enter", "confirm"), ("Esc", "cancel")]);
         instructions.render(chunks[6], buf);
     }
 }

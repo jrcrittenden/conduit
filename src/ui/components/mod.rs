@@ -1,6 +1,8 @@
 mod add_repo_dialog;
+mod agent_selector;
 mod base_dir_dialog;
 mod chat_view;
+mod dialog;
 mod global_footer;
 mod input_box;
 mod markdown;
@@ -12,13 +14,17 @@ mod spinner;
 mod splash_screen;
 mod status_bar;
 mod tab_bar;
+mod text_input;
 mod thinking_indicator;
 mod tree_view;
 mod turn_summary;
 
 pub use add_repo_dialog::{AddRepoDialog, AddRepoDialogState};
+pub use agent_selector::{AgentSelector, AgentSelectorState};
 pub use base_dir_dialog::{BaseDirDialog, BaseDirDialogState};
+pub use dialog::{DialogFrame, InstructionBar, StatusLine};
 pub use project_picker::{ProjectEntry, ProjectPicker, ProjectPickerState};
+pub use text_input::TextInputState;
 pub use chat_view::{ChatMessage, ChatView, MessageRole};
 pub use global_footer::GlobalFooter;
 pub use input_box::InputBox;

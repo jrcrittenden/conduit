@@ -2,13 +2,15 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::agent::{AgentType, ModelInfo, ModelRegistry};
+
+use super::{DialogFrame, InstructionBar};
 
 /// State for the model selector dialog
 #[derive(Debug, Clone)]
@@ -95,31 +97,12 @@ impl ModelSelector {
         }
 
         // Calculate dialog size
-        let dialog_width = 50.min(area.width.saturating_sub(4));
-        let dialog_height = (state.models.len() as u16 + 6).min(area.height.saturating_sub(2));
+        let dialog_height = (state.models.len() as u16 * 2 + 5).min(area.height.saturating_sub(2));
 
-        let x = (area.width.saturating_sub(dialog_width)) / 2;
-        let y = (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width,
-            height: dialog_height,
-        };
-
-        // Clear the dialog area
-        Clear.render(dialog_area, buf);
-
-        // Render dialog border
-        let title = format!(" Select {} Model ", state.agent_type);
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(dialog_area);
-        block.render(dialog_area, buf);
+        // Render dialog frame
+        let title = format!("Select {} Model", state.agent_type);
+        let frame = DialogFrame::new(&title, 50, dialog_height);
+        let inner = frame.render(area, buf);
 
         // Layout inside dialog
         let mut constraints = vec![Constraint::Length(1)]; // Header
@@ -196,15 +179,11 @@ impl ModelSelector {
 
         // Render instructions
         let instructions_idx = chunks.len() - 1;
-        let instructions = Paragraph::new(Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" select  "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" cancel"),
-        ]))
-        .alignment(Alignment::Center);
+        let instructions = InstructionBar::new(vec![
+            ("↑↓", "select"),
+            ("Enter", "confirm"),
+            ("Esc", "cancel"),
+        ]);
         instructions.render(chunks[instructions_idx], buf);
     }
 }

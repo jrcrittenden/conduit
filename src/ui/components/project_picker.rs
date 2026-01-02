@@ -3,11 +3,12 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    style::{Color, Style},
+    widgets::{Paragraph, Widget},
 };
 use std::path::PathBuf;
+
+use super::{DialogFrame, InstructionBar, TextInputState};
 
 /// A project entry (directory with .git)
 #[derive(Debug, Clone)]
@@ -23,10 +24,8 @@ pub struct ProjectEntry {
 pub struct ProjectPickerState {
     /// Whether the dialog is visible
     pub visible: bool,
-    /// Search/filter string
-    pub search: String,
-    /// Cursor position in search input
-    pub cursor: usize,
+    /// Search/filter input
+    pub search: TextInputState,
     /// All projects found in base directory
     pub projects: Vec<ProjectEntry>,
     /// Indices of projects matching the search filter
@@ -51,8 +50,7 @@ impl ProjectPickerState {
     pub fn new() -> Self {
         Self {
             visible: false,
-            search: String::new(),
-            cursor: 0,
+            search: TextInputState::new(),
             projects: Vec::new(),
             filtered: Vec::new(),
             selected: 0,
@@ -65,9 +63,8 @@ impl ProjectPickerState {
     /// Show the picker with projects from the given base directory
     pub fn show(&mut self, base_dir: PathBuf) {
         self.visible = true;
-        self.base_dir = base_dir.clone();
+        self.base_dir = base_dir;
         self.search.clear();
-        self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
         self.scan_directory();
@@ -105,7 +102,7 @@ impl ProjectPickerState {
 
     /// Filter projects based on search string
     pub fn filter(&mut self) {
-        let query = self.search.to_lowercase();
+        let query = self.search.value().to_lowercase();
         self.filtered = self
             .projects
             .iter()
@@ -127,58 +124,40 @@ impl ProjectPickerState {
         self.scroll_offset = 0;
     }
 
-    /// Insert a character into search
+    // Delegate search input methods
     pub fn insert_char(&mut self, c: char) {
-        self.search.insert(self.cursor, c);
-        self.cursor += 1;
+        self.search.insert_char(c);
         self.filter();
     }
 
-    /// Delete character before cursor
     pub fn delete_char(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.search.remove(self.cursor);
-            self.filter();
-        }
+        self.search.delete_char();
+        self.filter();
     }
 
-    /// Delete character at cursor
     pub fn delete_forward(&mut self) {
-        if self.cursor < self.search.len() {
-            self.search.remove(self.cursor);
-            self.filter();
-        }
+        self.search.delete_forward();
+        self.filter();
     }
 
-    /// Move cursor left
     pub fn move_cursor_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.search.move_left();
     }
 
-    /// Move cursor right
     pub fn move_cursor_right(&mut self) {
-        if self.cursor < self.search.len() {
-            self.cursor += 1;
-        }
+        self.search.move_right();
     }
 
-    /// Move cursor to start
     pub fn move_cursor_start(&mut self) {
-        self.cursor = 0;
+        self.search.move_start();
     }
 
-    /// Move cursor to end
     pub fn move_cursor_end(&mut self) {
-        self.cursor = self.search.len();
+        self.search.move_end();
     }
 
-    /// Clear search
     pub fn clear_search(&mut self) {
         self.search.clear();
-        self.cursor = 0;
         self.filter();
     }
 
@@ -236,32 +215,13 @@ impl ProjectPicker {
             return;
         }
 
-        // Calculate dialog size and position (centered)
-        let dialog_width = 60.min(area.width.saturating_sub(4));
+        // Calculate dialog size
         let list_height = state.max_visible.min(state.filtered.len().max(1)) as u16;
         let dialog_height = 7 + list_height; // header + search + separator + list + footer
 
-        let x = (area.width.saturating_sub(dialog_width)) / 2;
-        let y = (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width,
-            height: dialog_height,
-        };
-
-        // Clear the dialog area
-        Clear.render(dialog_area, buf);
-
-        // Render dialog border
-        let block = Block::default()
-            .title(" Select Project ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(dialog_area);
-        block.render(dialog_area, buf);
+        // Render dialog frame
+        let frame = DialogFrame::new("Select Project", 60, dialog_height);
+        let inner = frame.render(area, buf);
 
         // Layout inside dialog
         let chunks = Layout::vertical([
@@ -274,11 +234,11 @@ impl ProjectPicker {
         ])
         .split(inner);
 
-        // Render search label with input inline
+        // Render search with placeholder
         let search_display = if state.search.is_empty() {
             "Search: (type to filter)".to_string()
         } else {
-            format!("Search: {}", state.search)
+            format!("Search: {}", state.search.value())
         };
         let search_style = if state.search.is_empty() {
             Style::default().fg(Color::DarkGray)
@@ -289,9 +249,10 @@ impl ProjectPicker {
         search_label.render(chunks[0], buf);
 
         // Render cursor in search field
-        if !state.search.is_empty() || state.cursor > 0 {
-            let cursor_x = chunks[0].x + 8 + state.cursor as u16; // "Search: " is 8 chars
+        if !state.search.is_empty() || state.search.cursor > 0 {
+            let cursor_x = chunks[0].x + 8 + state.search.cursor as u16; // "Search: " is 8 chars
             if cursor_x < chunks[0].x + chunks[0].width {
+                use ratatui::style::Modifier;
                 buf[(cursor_x, chunks[0].y)]
                     .set_style(Style::default().add_modifier(Modifier::REVERSED));
             }
@@ -385,17 +346,12 @@ impl ProjectPicker {
         }
 
         // Render instructions
-        let instructions = Paragraph::new(Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw(" Navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" Select  "),
-            Span::styled("a", Style::default().fg(Color::Cyan)),
-            Span::raw(" Custom path  "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" Cancel"),
-        ]))
-        .alignment(Alignment::Center);
+        let instructions = InstructionBar::new(vec![
+            ("↑↓", "Navigate"),
+            ("Enter", "Select"),
+            ("a", "Custom path"),
+            ("Esc", "Cancel"),
+        ]);
         instructions.render(chunks[5], buf);
     }
 }

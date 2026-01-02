@@ -15,8 +15,6 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use tokio::sync::mpsc;
@@ -32,9 +30,10 @@ use crate::data::{
 };
 use crate::git::WorktreeManager;
 use crate::ui::components::{
-    AddRepoDialog, AddRepoDialogState, BaseDirDialog, BaseDirDialogState, ChatMessage,
-    EventDirection, GlobalFooter, ModelSelector, ModelSelectorState, ProcessingState,
-    ProjectPicker, ProjectPickerState, Sidebar, SidebarData, SidebarState, SplashScreen, TabBar,
+    AddRepoDialog, AddRepoDialogState, AgentSelector, AgentSelectorState, BaseDirDialog,
+    BaseDirDialogState, ChatMessage, EventDirection, GlobalFooter, ModelSelector,
+    ModelSelectorState, ProcessingState, ProjectPicker, ProjectPickerState, Sidebar, SidebarData,
+    SidebarState, SplashScreen, TabBar,
 };
 use crate::ui::events::{AppEvent, InputMode, ViewMode};
 use crate::ui::session::AgentSession;
@@ -83,6 +82,8 @@ pub struct App {
     add_repo_dialog_state: AddRepoDialogState,
     /// Model selector dialog state
     model_selector_state: ModelSelectorState,
+    /// Agent selector dialog state
+    agent_selector_state: AgentSelectorState,
     /// Whether to show the first-time splash screen (repo count < 1)
     show_first_time_splash: bool,
     /// Base directory dialog state
@@ -149,6 +150,7 @@ impl App {
             sidebar_data: SidebarData::new(),
             add_repo_dialog_state: AddRepoDialogState::new(),
             model_selector_state: ModelSelectorState::default(),
+            agent_selector_state: AgentSelectorState::new(),
             show_first_time_splash: true, // Will be set properly in restore_session_state
             base_dir_dialog_state: BaseDirDialogState::new(),
             project_picker_state: ProjectPickerState::new(),
@@ -418,6 +420,7 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('n') => {
+                    self.agent_selector_state.show();
                     self.input_mode = InputMode::SelectingAgent;
                     return Ok(());
                 }
@@ -620,13 +623,19 @@ impl App {
         match self.input_mode {
             InputMode::SelectingAgent => {
                 match key.code {
-                    KeyCode::Char('1') | KeyCode::Char('c') => {
-                        self.create_tab_with_agent(AgentType::Claude);
+                    KeyCode::Enter => {
+                        let agent_type = self.agent_selector_state.selected_agent();
+                        self.agent_selector_state.hide();
+                        self.create_tab_with_agent(agent_type);
                     }
-                    KeyCode::Char('2') | KeyCode::Char('x') => {
-                        self.create_tab_with_agent(AgentType::Codex);
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.agent_selector_state.select_previous();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.agent_selector_state.select_next();
                     }
                     KeyCode::Esc => {
+                        self.agent_selector_state.hide();
                         self.pending_project_path = None;
                         self.input_mode = InputMode::Normal;
                     }
@@ -889,7 +898,7 @@ impl App {
                         if self.base_dir_dialog_state.is_valid {
                             // Save base directory to app_state
                             if let Some(dao) = &self.app_state_dao {
-                                let _ = dao.set("projects_base_dir", &self.base_dir_dialog_state.input);
+                                let _ = dao.set("projects_base_dir", self.base_dir_dialog_state.input());
                             }
                             // Show project picker
                             let base_path = self.base_dir_dialog_state.expanded_path();
@@ -934,6 +943,7 @@ impl App {
                             self.pending_project_path = Some(project.path.clone());
                             self.project_picker_state.hide();
                             // Show agent selector
+                            self.agent_selector_state.show();
                             self.input_mode = InputMode::SelectingAgent;
                         }
                     }
@@ -1322,8 +1332,9 @@ impl App {
             }
 
             // Draw agent selector dialog if needed
-            if self.input_mode == InputMode::SelectingAgent {
-                self.draw_agent_selector(f, size);
+            if self.agent_selector_state.is_visible() {
+                let selector = AgentSelector::new();
+                selector.render(size, f.buffer_mut(), &self.agent_selector_state);
             }
             return;
         }
@@ -1445,8 +1456,9 @@ impl App {
         }
 
         // Draw agent selector dialog if needed
-        if self.input_mode == InputMode::SelectingAgent {
-            self.draw_agent_selector(f, size);
+        if self.agent_selector_state.is_visible() {
+            let selector = AgentSelector::new();
+            selector.render(size, f.buffer_mut(), &self.agent_selector_state);
         }
 
         // Draw add repository dialog if open
@@ -1472,39 +1484,6 @@ impl App {
             let picker = ProjectPicker::new();
             picker.render(size, f.buffer_mut(), &self.project_picker_state);
         }
-    }
-
-    fn draw_agent_selector(&self, f: &mut Frame, area: Rect) {
-        let width = 40;
-        let height = 8;
-        let x = (area.width.saturating_sub(width)) / 2;
-        let y = (area.height.saturating_sub(height)) / 2;
-
-        let dialog_area = Rect::new(x, y, width, height);
-
-        // Clear background
-        f.render_widget(Clear, dialog_area);
-
-        let block = Block::default()
-            .title(" Select Agent ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(dialog_area);
-        f.render_widget(block, dialog_area);
-
-        let text = vec![
-            "",
-            "  [1] Claude Code",
-            "  [2] Codex CLI",
-            "",
-            "  [Esc] Cancel",
-        ];
-
-        let paragraph = Paragraph::new(text.join("\n"))
-            .style(Style::default().fg(Color::White));
-
-        f.render_widget(paragraph, inner);
     }
 
     /// Extract a filename from tool result text

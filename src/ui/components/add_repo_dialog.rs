@@ -2,20 +2,20 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 use std::path::PathBuf;
+
+use super::{DialogFrame, InstructionBar, TextInputState};
 
 /// State for the add repository dialog
 #[derive(Debug, Clone)]
 pub struct AddRepoDialogState {
-    /// Current input text (path)
-    pub input: String,
-    /// Cursor position in the input
-    pub cursor: usize,
+    /// Text input state
+    pub text: TextInputState,
     /// Whether the dialog is visible
     pub visible: bool,
     /// Validation error message
@@ -35,8 +35,7 @@ impl Default for AddRepoDialogState {
 impl AddRepoDialogState {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
-            cursor: 0,
+            text: TextInputState::new(),
             visible: false,
             error: None,
             is_valid: false,
@@ -47,8 +46,7 @@ impl AddRepoDialogState {
     /// Show the dialog
     pub fn show(&mut self) {
         self.visible = true;
-        self.input.clear();
-        self.cursor = 0;
+        self.text.clear();
         self.error = None;
         self.is_valid = false;
         self.repo_name = None;
@@ -59,60 +57,49 @@ impl AddRepoDialogState {
         self.visible = false;
     }
 
-    /// Insert a character at cursor position
+    /// Get the current input value
+    pub fn input(&self) -> &str {
+        self.text.value()
+    }
+
+    // Delegate text input methods with validation
     pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += 1;
+        self.text.insert_char(c);
         self.validate();
     }
 
-    /// Delete character before cursor
     pub fn delete_char(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.input.remove(self.cursor);
-            self.validate();
-        }
+        self.text.delete_char();
+        self.validate();
     }
 
-    /// Delete character at cursor
     pub fn delete_forward(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
-            self.validate();
-        }
+        self.text.delete_forward();
+        self.validate();
     }
 
-    /// Move cursor left
     pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.text.move_left();
     }
 
-    /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.input.len() {
-            self.cursor += 1;
-        }
+        self.text.move_right();
     }
 
-    /// Move cursor to start
     pub fn move_start(&mut self) {
-        self.cursor = 0;
+        self.text.move_start();
     }
 
-    /// Move cursor to end
     pub fn move_end(&mut self) {
-        self.cursor = self.input.len();
+        self.text.move_end();
     }
 
     /// Validate the current input path
     pub fn validate(&mut self) {
-        let path = PathBuf::from(&self.input);
+        let input = self.text.value();
 
         // Check if path is empty
-        if self.input.is_empty() {
+        if input.is_empty() {
             self.error = None;
             self.is_valid = false;
             self.repo_name = None;
@@ -120,15 +107,7 @@ impl AddRepoDialogState {
         }
 
         // Expand ~ to home directory
-        let expanded_path = if self.input.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
-                home.join(&self.input[1..].trim_start_matches('/'))
-            } else {
-                path.clone()
-            }
-        } else {
-            path.clone()
-        };
+        let expanded_path = self.expanded_path();
 
         // Check if path exists
         if !expanded_path.exists() {
@@ -167,12 +146,13 @@ impl AddRepoDialogState {
 
     /// Get the expanded path
     pub fn expanded_path(&self) -> PathBuf {
-        if self.input.starts_with('~') {
+        let input = self.text.value();
+        if input.starts_with('~') {
             if let Some(home) = dirs::home_dir() {
-                return home.join(&self.input[1..].trim_start_matches('/'));
+                return home.join(input[1..].trim_start_matches('/'));
             }
         }
-        PathBuf::from(&self.input)
+        PathBuf::from(input)
     }
 
     /// Check if dialog is visible
@@ -195,31 +175,9 @@ impl AddRepoDialog {
             return;
         }
 
-        // Calculate dialog size and position (centered)
-        let dialog_width = 60.min(area.width.saturating_sub(4));
-        let dialog_height = 11;
-
-        let x = (area.width.saturating_sub(dialog_width)) / 2;
-        let y = (area.height.saturating_sub(dialog_height)) / 2;
-
-        let dialog_area = Rect {
-            x,
-            y,
-            width: dialog_width,
-            height: dialog_height,
-        };
-
-        // Clear the dialog area
-        Clear.render(dialog_area, buf);
-
-        // Render dialog border
-        let block = Block::default()
-            .title(" Add Custom Project ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        let inner = block.inner(dialog_area);
-        block.render(dialog_area, buf);
+        // Render dialog frame
+        let frame = DialogFrame::new("Add Custom Project", 60, 11);
+        let inner = frame.render(area, buf);
 
         // Layout inside dialog
         let chunks = Layout::vertical([
@@ -253,30 +211,14 @@ impl AddRepoDialog {
         let input_inner = input_block.inner(chunks[2]);
         input_block.render(chunks[2], buf);
 
-        // Render input text with cursor
-        let display_text = if state.input.is_empty() {
-            "~/path/to/repo".to_string()
-        } else {
-            state.input.clone()
-        };
-
-        let text_style = if state.input.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
-        let input_paragraph = Paragraph::new(display_text).style(text_style);
-        input_paragraph.render(input_inner, buf);
-
-        // Render cursor
-        if input_inner.width > 0 && state.cursor <= input_inner.width as usize {
-            let cursor_x = input_inner.x + state.cursor as u16;
-            if cursor_x < input_inner.x + input_inner.width {
-                buf[(cursor_x, input_inner.y)]
-                    .set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
-        }
+        // Render input text with cursor and placeholder
+        state.text.render_with_placeholder(
+            input_inner,
+            buf,
+            Style::default().fg(Color::White),
+            "~/path/to/repo",
+            Style::default().fg(Color::DarkGray),
+        );
 
         // Render status/error
         let status_text = if let Some(ref error) = state.error {
@@ -294,18 +236,11 @@ impl AddRepoDialog {
             Line::default()
         };
 
-        let status = Paragraph::new(status_text);
-        status.render(chunks[4], buf);
+        Paragraph::new(status_text).render(chunks[3], buf);
 
         // Render instructions
-        let instructions = Paragraph::new(Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(" to add  "),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::raw(" to cancel"),
-        ]))
-        .alignment(Alignment::Center);
-        instructions.render(chunks[6], buf);
+        let instructions = InstructionBar::new(vec![("Enter", "add"), ("Esc", "cancel")]);
+        instructions.render(chunks[5], buf);
     }
 }
 
