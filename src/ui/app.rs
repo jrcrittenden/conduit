@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -106,10 +109,16 @@ impl App {
             tokio::select! {
                 // Terminal input events + tick
                 _ = tokio::time::sleep(Duration::from_millis(16)) => {
-                    // Handle keyboard input
+                    // Handle keyboard and mouse input
                     if event::poll(Duration::from_millis(0))? {
-                        if let Event::Key(key) = event::read()? {
-                            self.handle_key_event(key).await?;
+                        match event::read()? {
+                            Event::Key(key) => {
+                                self.handle_key_event(key).await?;
+                            }
+                            Event::Mouse(mouse) => {
+                                self.handle_mouse_event(mouse);
+                            }
+                            _ => {}
                         }
                     }
 
@@ -149,6 +158,13 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('w') => {
+                    // Ctrl+W: delete word if input has text, else close tab
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        if !session.input_box.is_empty() {
+                            session.input_box.delete_word_back();
+                            return Ok(());
+                        }
+                    }
                     let active = self.tab_manager.active_index();
                     self.tab_manager.close_tab(active);
                     if self.tab_manager.is_empty() {
@@ -171,6 +187,102 @@ impl App {
                     let tab_num = c.to_digit(10).unwrap_or(0) as usize;
                     if tab_num > 0 {
                         self.tab_manager.switch_to(tab_num - 1);
+                    }
+                    return Ok(());
+                }
+                // Readline shortcuts
+                KeyCode::Char('a') => {
+                    // Ctrl+A: Move to start of line
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_start();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('e') => {
+                    // Ctrl+E: Move to end of line
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_end();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('u') => {
+                    // Ctrl+U: Delete to start of line
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.delete_to_start();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('k') => {
+                    // Ctrl+K: Delete to end of line
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.delete_to_end();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('j') => {
+                    // Ctrl+J: Insert newline
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.insert_newline();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('b') => {
+                    // Ctrl+B: Move cursor back (same as Left)
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_left();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    // Ctrl+F: Move cursor forward (same as Right)
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_right();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('d') => {
+                    // Ctrl+D: Delete character at cursor (same as Delete)
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.delete();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('h') => {
+                    // Ctrl+H: Backspace
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.backspace();
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // Alt key shortcuts
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Char('b') => {
+                    // Alt+B: Move cursor back one word
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_word_left();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    // Alt+F: Move cursor forward one word
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.move_word_right();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('d') => {
+                    // Alt+D: Delete word forward (TODO: implement delete_word_forward)
+                    return Ok(());
+                }
+                KeyCode::Backspace => {
+                    // Alt+Backspace: Delete word back (same as Ctrl+W)
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.delete_word_back();
                     }
                     return Ok(());
                 }
@@ -199,7 +311,11 @@ impl App {
                 if let Some(session) = self.tab_manager.active_session_mut() {
                     match key.code {
                         KeyCode::Enter => {
-                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            if key.modifiers.contains(KeyModifiers::SHIFT)
+                                || key.modifiers.contains(KeyModifiers::SUPER)
+                                || key.modifiers.contains(KeyModifiers::META)
+                            {
+                                // Shift+Enter, Cmd+Enter, or Meta+Enter: insert newline
                                 session.input_box.insert_newline();
                             } else if !session.input_box.is_empty() {
                                 let prompt = session.input_box.submit();
@@ -225,17 +341,21 @@ impl App {
                             session.input_box.move_end();
                         }
                         KeyCode::Up => {
-                            if session.input_box.is_empty() {
-                                session.input_box.history_prev();
-                            } else {
-                                session.chat_view.scroll_up(1);
+                            // Try to move up in multi-line input
+                            // If can't move (single line or at top), try history
+                            if !session.input_box.move_up() {
+                                if session.input_box.is_cursor_on_first_line() {
+                                    session.input_box.history_prev();
+                                }
                             }
                         }
                         KeyCode::Down => {
-                            if session.input_box.is_empty() {
-                                session.input_box.history_next();
-                            } else {
-                                session.chat_view.scroll_down(1);
+                            // Try to move down in multi-line input
+                            // If can't move (single line or at bottom), try history
+                            if !session.input_box.move_down() {
+                                if session.input_box.is_cursor_on_last_line() {
+                                    session.input_box.history_next();
+                                }
                             }
                         }
                         KeyCode::PageUp => {
@@ -295,6 +415,22 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn handle_mouse_event(&mut self, mouse: event::MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(session) = self.tab_manager.active_session_mut() {
+                    session.chat_view.scroll_up(3);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(session) = self.tab_manager.active_session_mut() {
+                    session.chat_view.scroll_down(3);
+                }
+            }
+            _ => {}
+        }
     }
 
     async fn handle_app_event(&mut self, event: AppEvent) -> anyhow::Result<()> {
@@ -448,15 +584,23 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         let size = f.area();
 
+        // Calculate dynamic input height (max 30% of screen)
+        let max_input_height = (size.height as f32 * 0.30).ceil() as u16;
+        let input_height = if let Some(session) = self.tab_manager.active_session() {
+            session.input_box.desired_height(max_input_height)
+        } else {
+            3 // Minimum height
+        };
+
         // Main layout
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),  // Tab bar
-                Constraint::Min(5),     // Chat view
-                Constraint::Length(5),  // Input box
-                Constraint::Length(1),  // Status bar
-                Constraint::Length(1),  // Footer
+                Constraint::Length(1),            // Tab bar
+                Constraint::Min(5),               // Chat view
+                Constraint::Length(input_height), // Input box (dynamic)
+                Constraint::Length(1),            // Status bar
+                Constraint::Length(1),            // Footer
             ])
             .split(size);
 
@@ -474,9 +618,10 @@ impl App {
             session.input_box.render(chunks[2], f.buffer_mut());
             session.status_bar.render(chunks[3], f.buffer_mut());
 
-            // Set cursor position
+            // Set cursor position (accounting for scroll)
             if self.input_mode == InputMode::Normal {
-                let (cx, cy) = session.input_box.cursor_position(chunks[2]);
+                let scroll_offset = session.input_box.scroll_offset();
+                let (cx, cy) = session.input_box.cursor_position(chunks[2], scroll_offset);
                 f.set_cursor_position((cx, cy));
             }
         }
