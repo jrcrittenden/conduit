@@ -266,6 +266,16 @@ impl ChatView {
 
     /// Render the chat view
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        self.render_with_indicator(area, buf, None);
+    }
+
+    /// Render the chat view with an optional thinking indicator
+    pub fn render_with_indicator(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        thinking_line: Option<Line<'static>>,
+    ) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
@@ -278,7 +288,13 @@ impl ChatView {
             return;
         }
 
-        let lines = self.build_lines(inner.width as usize);
+        let mut lines = self.build_lines(inner.width as usize);
+
+        // Append thinking indicator if provided
+        if let Some(indicator) = thinking_line {
+            lines.push(Line::from("")); // Empty line before indicator
+            lines.push(indicator);
+        }
         let total_lines = lines.len();
         let visible_height = inner.height as usize;
 

@@ -23,7 +23,7 @@ use crate::agent::{
     AgentEvent, AgentRunner, AgentStartConfig, AgentType, ClaudeCodeRunner, CodexCliRunner,
 };
 use crate::config::Config;
-use crate::ui::components::{ChatMessage, GlobalFooter, TabBar};
+use crate::ui::components::{ChatMessage, GlobalFooter, ProcessingState, TabBar};
 use crate::ui::events::{AppEvent, InputMode};
 use crate::ui::tab_manager::TabManager;
 
@@ -471,16 +471,19 @@ impl App {
                 session.update_status();
             }
             AgentEvent::TurnCompleted(completed) => {
-                session.is_processing = false;
+                session.stop_processing();
                 session.add_usage(completed.usage);
                 session.chat_view.finalize_streaming();
             }
             AgentEvent::TurnFailed(failed) => {
-                session.is_processing = false;
-                session.update_status();
+                session.stop_processing();
                 session.chat_view.push(ChatMessage::error(failed.error));
             }
             AgentEvent::AssistantMessage(msg) => {
+                // Track streaming tokens (rough estimate: ~4 chars per token)
+                let token_estimate = (msg.text.len() / 4).max(1);
+                session.add_streaming_tokens(token_estimate);
+
                 if msg.is_final {
                     session.chat_view.push(ChatMessage::assistant(msg.text));
                 } else {
@@ -488,6 +491,9 @@ impl App {
                 }
             }
             AgentEvent::ToolStarted(tool) => {
+                // Update processing state to show tool name
+                session.set_processing_state(ProcessingState::ToolUse(tool.tool_name.clone()));
+
                 let args_str = if tool.arguments.is_null() {
                     String::new()
                 } else {
@@ -499,6 +505,9 @@ impl App {
                 ));
             }
             AgentEvent::ToolCompleted(tool) => {
+                // Return to thinking state
+                session.set_processing_state(ProcessingState::Thinking);
+
                 let content = if tool.success {
                     tool.result.unwrap_or_else(|| "Completed".to_string())
                 } else {
@@ -524,8 +533,7 @@ impl App {
             AgentEvent::Error(err) => {
                 session.chat_view.push(ChatMessage::error(err.message));
                 if err.is_fatal {
-                    session.is_processing = false;
-                    session.update_status();
+                    session.stop_processing();
                 }
             }
             _ => {}
@@ -542,8 +550,7 @@ impl App {
 
         // Add user message to chat
         session.chat_view.push(ChatMessage::user(&prompt));
-        session.is_processing = true;
-        session.update_status();
+        session.start_processing();
 
         // Start agent
         let config = AgentStartConfig::new(prompt, self.config.working_dir.clone())
@@ -614,7 +621,15 @@ impl App {
 
         // Draw active session components
         if let Some(session) = self.tab_manager.active_session_mut() {
-            session.chat_view.render(chunks[1], f.buffer_mut());
+            // Render chat with thinking indicator if processing
+            let thinking_line = if session.is_processing {
+                Some(session.thinking_indicator.render())
+            } else {
+                None
+            };
+            session
+                .chat_view
+                .render_with_indicator(chunks[1], f.buffer_mut(), thinking_line);
             session.input_box.render(chunks[2], f.buffer_mut());
             session.status_bar.render(chunks[3], f.buffer_mut());
 
