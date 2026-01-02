@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
 use crate::agent::{AgentHandle, AgentType, SessionId, TokenUsage};
-use crate::ui::components::{ChatView, InputBox, StatusBar};
+use crate::ui::components::{ChatView, InputBox, ProcessingState, StatusBar, ThinkingIndicator};
 
 /// Represents a single agent session (one tab)
 pub struct AgentSession {
@@ -15,6 +15,8 @@ pub struct AgentSession {
     pub input_box: InputBox,
     /// Status bar component
     pub status_bar: StatusBar,
+    /// Thinking indicator (shown while processing)
+    pub thinking_indicator: ThinkingIndicator,
     /// Handle to the running agent process (if any)
     pub agent_handle: Option<AgentHandle>,
     /// Agent session ID (from the agent itself)
@@ -35,6 +37,7 @@ impl AgentSession {
             chat_view: ChatView::new(),
             input_box: InputBox::new(),
             status_bar: StatusBar::new(agent_type),
+            thinking_indicator: ThinkingIndicator::new(),
             agent_handle: None,
             agent_session_id: None,
             is_processing: false,
@@ -70,8 +73,34 @@ impl AgentSession {
         self.update_status();
     }
 
+    /// Start processing (resets thinking indicator)
+    pub fn start_processing(&mut self) {
+        self.is_processing = true;
+        self.thinking_indicator.reset();
+        self.update_status();
+    }
+
+    /// Stop processing
+    pub fn stop_processing(&mut self) {
+        self.is_processing = false;
+        self.update_status();
+    }
+
+    /// Add tokens to the thinking indicator
+    pub fn add_streaming_tokens(&mut self, count: usize) {
+        self.thinking_indicator.add_tokens(count);
+    }
+
+    /// Set the current processing state
+    pub fn set_processing_state(&mut self, state: ProcessingState) {
+        self.thinking_indicator.set_state(state);
+    }
+
     /// Advance spinner animation (called on tick)
     pub fn tick(&mut self) {
         self.status_bar.tick();
+        if self.is_processing {
+            self.thinking_indicator.tick();
+        }
     }
 }
