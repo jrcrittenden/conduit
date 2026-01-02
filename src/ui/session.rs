@@ -1,8 +1,10 @@
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agent::{AgentHandle, AgentType, SessionId, TokenUsage};
 use crate::ui::components::{
-    ChatView, InputBox, ProcessingState, StatusBar, ThinkingIndicator, TurnSummary,
+    ChatView, EventDirection, InputBox, ProcessingState, RawEventsView, StatusBar,
+    ThinkingIndicator, TurnSummary,
 };
 
 /// Represents a single agent session (one tab)
@@ -13,6 +15,8 @@ pub struct AgentSession {
     pub agent_type: AgentType,
     /// Chat view component
     pub chat_view: ChatView,
+    /// Raw events view (debug)
+    pub raw_events_view: RawEventsView,
     /// Input box component
     pub input_box: InputBox,
     /// Status bar component
@@ -39,6 +43,7 @@ impl AgentSession {
             id: Uuid::new_v4(),
             agent_type,
             chat_view: ChatView::new(),
+            raw_events_view: RawEventsView::new(),
             input_box: InputBox::new(),
             status_bar: StatusBar::new(agent_type),
             thinking_indicator: ThinkingIndicator::new(),
@@ -121,5 +126,16 @@ impl AgentSession {
         if self.is_processing {
             self.thinking_indicator.tick();
         }
+    }
+
+    /// Record a raw event for the debug view
+    pub fn record_raw_event(
+        &mut self,
+        direction: EventDirection,
+        event_type: impl Into<String>,
+        raw_json: Value,
+    ) {
+        self.raw_events_view
+            .push_event(direction, event_type, raw_json);
     }
 }

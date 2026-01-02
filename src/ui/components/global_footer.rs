@@ -6,9 +6,12 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+use crate::ui::events::ViewMode;
+
 /// Global footer showing keyboard shortcuts
 pub struct GlobalFooter {
     hints: Vec<(&'static str, &'static str)>,
+    view_mode: ViewMode,
 }
 
 impl GlobalFooter {
@@ -19,14 +22,41 @@ impl GlobalFooter {
                 ("Ctrl+N", "New"),
                 ("Ctrl+W", "Close"),
                 ("Ctrl+C", "Interrupt"),
+                ("^G", "Debug"),
                 ("Ctrl+Q", "Quit"),
-                ("?", "Help"),
             ],
+            view_mode: ViewMode::Chat,
         }
     }
 
+    pub fn with_view_mode(mut self, view_mode: ViewMode) -> Self {
+        self.view_mode = view_mode;
+        // Update hints based on view mode
+        self.hints = match view_mode {
+            ViewMode::Chat => vec![
+                ("Tab", "Switch"),
+                ("Ctrl+N", "New"),
+                ("Ctrl+W", "Close"),
+                ("Ctrl+C", "Interrupt"),
+                ("^G", "Debug"),
+                ("Ctrl+Q", "Quit"),
+            ],
+            ViewMode::RawEvents => vec![
+                ("↑/↓", "Navigate"),
+                ("Enter", "Expand"),
+                ("Esc", "Collapse"),
+                ("^G", "Chat"),
+                ("Ctrl+Q", "Quit"),
+            ],
+        };
+        self
+    }
+
     pub fn with_hints(hints: Vec<(&'static str, &'static str)>) -> Self {
-        Self { hints }
+        Self {
+            hints,
+            view_mode: ViewMode::Chat,
+        }
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {

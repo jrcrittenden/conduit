@@ -116,23 +116,16 @@ impl ClaudeCodeRunner {
                 }))
             }
             ClaudeRawEvent::Result(res) => {
+                // Result event always signals turn completion
+                // Use default values if usage is not provided
                 let usage = res.usage.map(|u| TokenUsage {
                     input_tokens: u.input_tokens.unwrap_or(0),
                     output_tokens: u.output_tokens.unwrap_or(0),
                     cached_tokens: 0,
                     total_tokens: u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0),
-                });
+                }).unwrap_or_default();
 
-                if let Some(usage) = usage {
-                    Some(AgentEvent::TurnCompleted(TurnCompletedEvent { usage }))
-                } else {
-                    res.result.or(res.output).map(|text| {
-                        AgentEvent::AssistantMessage(AssistantMessageEvent {
-                            text,
-                            is_final: true,
-                        })
-                    })
-                }
+                Some(AgentEvent::TurnCompleted(TurnCompletedEvent { usage }))
             }
             ClaudeRawEvent::Unknown => None,
         }

@@ -49,6 +49,28 @@ pub enum AgentEvent {
     Raw { data: serde_json::Value },
 }
 
+impl AgentEvent {
+    /// Get a human-readable event type name for display
+    pub fn event_type_name(&self) -> &'static str {
+        match self {
+            AgentEvent::SessionInit(_) => "SessionInit",
+            AgentEvent::TurnStarted => "TurnStarted",
+            AgentEvent::TurnCompleted(_) => "TurnCompleted",
+            AgentEvent::TurnFailed(_) => "TurnFailed",
+            AgentEvent::AssistantMessage(_) => "AssistantMessage",
+            AgentEvent::AssistantReasoning(_) => "AssistantReasoning",
+            AgentEvent::ToolStarted(_) => "ToolStarted",
+            AgentEvent::ToolCompleted(_) => "ToolCompleted",
+            AgentEvent::FileChanged(_) => "FileChanged",
+            AgentEvent::CommandOutput(_) => "CommandOutput",
+            AgentEvent::TokenUsage(_) => "TokenUsage",
+            AgentEvent::ContextCompaction(_) => "ContextCompaction",
+            AgentEvent::Error(_) => "Error",
+            AgentEvent::Raw { .. } => "Raw",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInitEvent {
     pub session_id: SessionId,

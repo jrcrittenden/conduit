@@ -201,6 +201,16 @@ impl ChatView {
         self.messages.is_empty() && self.streaming_buffer.is_none()
     }
 
+    /// Get all messages (for debug dump)
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+
+    /// Get streaming buffer (for debug dump)
+    pub fn streaming_buffer(&self) -> Option<&str> {
+        self.streaming_buffer.as_deref()
+    }
+
     /// Build lines for rendering
     fn build_lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();

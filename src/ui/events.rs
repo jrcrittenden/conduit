@@ -57,3 +57,13 @@ pub enum InputMode {
     /// Scrolling through chat history
     Scrolling,
 }
+
+/// View mode for the main content area
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// Standard chat view
+    #[default]
+    Chat,
+    /// Raw events debug view
+    RawEvents,
+}
