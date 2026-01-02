@@ -73,12 +73,12 @@ const PROCESSING_WORDS: &[&str] = &[
 /// Spinner animation frames (Claude Code style)
 const SPINNER_FRAMES: &[&str] = &["·", "✢", "✳", "∗", "✻", "✽"];
 
-/// Shimmer gradient colors (bright orange to darker orange)
-const SHIMMER_BRIGHT: (u8, u8, u8) = (255, 180, 100); // Bright orange
-const SHIMMER_DIM: (u8, u8, u8) = (180, 90, 40); // Darker/dimmer orange
+/// Shimmer gradient colors (bright orange to very dark)
+const SHIMMER_BRIGHT: (u8, u8, u8) = (255, 180, 80); // Bright orange
+const SHIMMER_DIM: (u8, u8, u8) = (100, 50, 20); // Very dark for maximum contrast
 
 /// Width of the shimmer "wave" in characters
-const SHIMMER_WIDTH: f32 = 8.0;
+const SHIMMER_WIDTH: f32 = 4.0;
 
 /// Current processing state
 #[derive(Debug, Clone, PartialEq)]
@@ -124,7 +124,7 @@ impl ThinkingIndicator {
         Self {
             word: Self::random_word(),
             spinner_frame: 0,
-            shimmer_offset: 0.0,
+            shimmer_offset: -SHIMMER_WIDTH, // Start from before the text
             start_time: Instant::now(),
             tokens: 0,
             state: ProcessingState::Thinking,
@@ -151,8 +151,14 @@ impl ThinkingIndicator {
     /// Advance the spinner and shimmer animations
     pub fn tick(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
-        // Move shimmer by ~0.5 characters per tick (at ~10 ticks/sec = 5 chars/sec)
-        self.shimmer_offset += 0.5;
+        // Move shimmer by ~1.5 characters per tick (at ~10 ticks/sec = 15 chars/sec)
+        self.shimmer_offset += 1.5;
+        // Wrap around when the wave has fully passed the text
+        // Text is roughly 20-25 chars, add padding for wave to exit before restart
+        let wrap_point = 30.0 + SHIMMER_WIDTH;
+        if self.shimmer_offset > wrap_point {
+            self.shimmer_offset = -SHIMMER_WIDTH; // Start from before the text
+        }
     }
 
     /// Add tokens to the count
@@ -174,14 +180,14 @@ impl ThinkingIndicator {
     pub fn reset(&mut self) {
         self.word = Self::random_word();
         self.spinner_frame = 0;
-        self.shimmer_offset = 0.0;
+        self.shimmer_offset = -SHIMMER_WIDTH; // Start from before the text
         self.start_time = Instant::now();
         self.tokens = 0;
         self.state = ProcessingState::Thinking;
     }
 
     /// Calculate shimmer color for a character at given position
-    fn shimmer_color(&self, char_index: usize, total_chars: usize) -> Color {
+    fn shimmer_color(&self, char_index: usize, _total_chars: usize) -> Color {
         // Calculate position in the shimmer wave
         // The wave moves from left to right as shimmer_offset increases
         let pos = char_index as f32 - self.shimmer_offset;
@@ -189,17 +195,13 @@ impl ThinkingIndicator {
         // Use a smooth wave function (gaussian-like bump)
         // This creates a bright "highlight" that moves across the text
         let wave_pos = pos / SHIMMER_WIDTH;
-        let brightness = (-wave_pos * wave_pos).exp(); // Gaussian curve
+        let highlight = (-wave_pos * wave_pos).exp(); // Gaussian curve, peaks at 1.0
 
-        // Also add a subtle base wave across the whole text for ambient shimmer
-        let ambient = ((char_index as f32 / total_chars as f32) * std::f32::consts::PI * 2.0
-            + self.shimmer_offset * 0.3)
-            .sin()
-            * 0.15
-            + 0.85;
+        // Very minimal ambient - text is mostly dim
+        let ambient = 0.15;
 
-        // Combine: base brightness from ambient, plus the moving highlight
-        let final_brightness = (ambient + brightness * 0.5).min(1.0);
+        // Highlight dominates - goes from ambient to full bright
+        let final_brightness = (ambient + highlight * 0.85).clamp(0.0, 1.0);
 
         // Interpolate between dim and bright colors
         let r = lerp(SHIMMER_DIM.0, SHIMMER_BRIGHT.0, final_brightness);
