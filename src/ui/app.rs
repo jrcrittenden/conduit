@@ -471,9 +471,12 @@ impl App {
                 session.update_status();
             }
             AgentEvent::TurnCompleted(completed) => {
-                session.stop_processing();
                 session.add_usage(completed.usage);
+                session.stop_processing();
                 session.chat_view.finalize_streaming();
+                // Add turn summary to chat
+                let summary = session.current_turn_summary.clone();
+                session.chat_view.push(ChatMessage::turn_summary(summary));
             }
             AgentEvent::TurnFailed(failed) => {
                 session.stop_processing();
@@ -509,6 +512,21 @@ impl App {
             AgentEvent::ToolCompleted(tool) => {
                 // Return to thinking state
                 session.set_processing_state(ProcessingState::Thinking);
+
+                // Track file changes for write/edit tools
+                if tool.success {
+                    let tool_name = tool.tool_id.to_lowercase();
+                    if tool_name.contains("edit") || tool_name.contains("write") || tool_name.contains("multiedit") {
+                        // Try to extract filename from result or use generic name
+                        if let Some(ref result) = tool.result {
+                            // Simple heuristic: look for file paths in result
+                            if let Some(filename) = Self::extract_filename(result) {
+                                // Rough estimate of changes (can be refined)
+                                session.record_file_change(filename, 5, 2);
+                            }
+                        }
+                    }
+                }
 
                 let content = if tool.success {
                     tool.result.unwrap_or_else(|| "Completed".to_string())
@@ -685,5 +703,25 @@ impl App {
             .style(Style::default().fg(Color::White));
 
         f.render_widget(paragraph, inner);
+    }
+
+    /// Extract a filename from tool result text
+    fn extract_filename(text: &str) -> Option<String> {
+        // Look for common file path patterns
+        for line in text.lines() {
+            let line = line.trim();
+            // Look for paths like /path/to/file.rs or file.rs
+            if line.contains('/') || line.contains('.') {
+                // Try to find a file path
+                for word in line.split_whitespace() {
+                    let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-');
+                    if word.contains('.') && !word.starts_with('.') {
+                        // Looks like a filename
+                        return Some(word.to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 }

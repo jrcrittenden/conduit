@@ -1,7 +1,9 @@
 use uuid::Uuid;
 
 use crate::agent::{AgentHandle, AgentType, SessionId, TokenUsage};
-use crate::ui::components::{ChatView, InputBox, ProcessingState, StatusBar, ThinkingIndicator};
+use crate::ui::components::{
+    ChatView, InputBox, ProcessingState, StatusBar, ThinkingIndicator, TurnSummary,
+};
 
 /// Represents a single agent session (one tab)
 pub struct AgentSession {
@@ -17,6 +19,8 @@ pub struct AgentSession {
     pub status_bar: StatusBar,
     /// Thinking indicator (shown while processing)
     pub thinking_indicator: ThinkingIndicator,
+    /// Current turn summary (built during processing)
+    pub current_turn_summary: TurnSummary,
     /// Handle to the running agent process (if any)
     pub agent_handle: Option<AgentHandle>,
     /// Agent session ID (from the agent itself)
@@ -38,6 +42,7 @@ impl AgentSession {
             input_box: InputBox::new(),
             status_bar: StatusBar::new(agent_type),
             thinking_indicator: ThinkingIndicator::new(),
+            current_turn_summary: TurnSummary::new(),
             agent_handle: None,
             agent_session_id: None,
             is_processing: false,
@@ -65,6 +70,11 @@ impl AgentSession {
 
     /// Add token usage from a turn
     pub fn add_usage(&mut self, usage: TokenUsage) {
+        // Update turn summary with this turn's tokens
+        self.current_turn_summary.input_tokens = usage.input_tokens.max(0) as u64;
+        self.current_turn_summary.output_tokens = usage.output_tokens.max(0) as u64;
+
+        // Accumulate total usage
         self.total_usage.input_tokens += usage.input_tokens;
         self.total_usage.output_tokens += usage.output_tokens;
         self.total_usage.cached_tokens += usage.cached_tokens;
@@ -73,17 +83,26 @@ impl AgentSession {
         self.update_status();
     }
 
-    /// Start processing (resets thinking indicator)
+    /// Start processing (resets thinking indicator and turn summary)
     pub fn start_processing(&mut self) {
         self.is_processing = true;
         self.thinking_indicator.reset();
+        self.current_turn_summary = TurnSummary::new();
         self.update_status();
     }
 
-    /// Stop processing
+    /// Stop processing and finalize turn summary
     pub fn stop_processing(&mut self) {
         self.is_processing = false;
+        // Finalize the turn summary with duration and tokens
+        let duration = self.thinking_indicator.elapsed();
+        self.current_turn_summary.duration_secs = duration.as_secs();
         self.update_status();
+    }
+
+    /// Record a file change for the current turn
+    pub fn record_file_change(&mut self, filename: impl Into<String>, additions: usize, deletions: usize) {
+        self.current_turn_summary.add_file(filename, additions, deletions);
     }
 
     /// Add tokens to the thinking indicator

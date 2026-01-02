@@ -234,8 +234,8 @@ impl ThinkingIndicator {
         let spinner = SPINNER_FRAMES[self.spinner_frame];
         let state = self.state.as_str();
 
-        // Build the shimmering part: "✳ Tinkering... "
-        let shimmer_text = format!("{} {}... ", spinner, self.word);
+        // Build the shimmering part: "✳ Tinkering… "
+        let shimmer_text = format!("{} {}… ", spinner, self.word);
         let mut spans = self.render_shimmer_text(&shimmer_text);
 
         // Add the non-shimmering metadata part

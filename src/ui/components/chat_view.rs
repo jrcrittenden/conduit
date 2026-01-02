@@ -9,7 +9,7 @@ use ratatui::{
     },
 };
 
-use super::MarkdownRenderer;
+use super::{MarkdownRenderer, TurnSummary};
 
 /// Role of a chat message
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,7 @@ pub enum MessageRole {
     Tool,
     System,
     Error,
+    Summary,
 }
 
 /// A single chat message
@@ -29,6 +30,8 @@ pub struct ChatMessage {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub is_streaming: bool,
+    /// Pre-rendered summary (for Summary role)
+    pub summary: Option<TurnSummary>,
 }
 
 impl ChatMessage {
@@ -39,6 +42,7 @@ impl ChatMessage {
             tool_name: None,
             tool_args: None,
             is_streaming: false,
+            summary: None,
         }
     }
 
@@ -49,6 +53,7 @@ impl ChatMessage {
             tool_name: None,
             tool_args: None,
             is_streaming: false,
+            summary: None,
         }
     }
 
@@ -59,6 +64,7 @@ impl ChatMessage {
             tool_name: Some(name.into()),
             tool_args: Some(args.into()),
             is_streaming: false,
+            summary: None,
         }
     }
 
@@ -69,6 +75,7 @@ impl ChatMessage {
             tool_name: None,
             tool_args: None,
             is_streaming: false,
+            summary: None,
         }
     }
 
@@ -79,6 +86,7 @@ impl ChatMessage {
             tool_name: None,
             tool_args: None,
             is_streaming: false,
+            summary: None,
         }
     }
 
@@ -89,6 +97,18 @@ impl ChatMessage {
             tool_name: None,
             tool_args: None,
             is_streaming: true,
+            summary: None,
+        }
+    }
+
+    pub fn turn_summary(summary: TurnSummary) -> Self {
+        Self {
+            role: MessageRole::Summary,
+            content: String::new(),
+            tool_name: None,
+            tool_args: None,
+            is_streaming: false,
+            summary: Some(summary),
         }
     }
 }
@@ -185,9 +205,19 @@ impl ChatView {
     fn build_lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
-        for msg in &self.messages {
+        for (i, msg) in self.messages.iter().enumerate() {
             self.format_message(msg, width, &mut lines);
-            lines.push(Line::from("")); // Spacing between messages
+
+            // Add spacing between messages, but not after Summary
+            // and not before the next Summary
+            let is_summary = msg.role == MessageRole::Summary;
+            let next_is_summary = self.messages.get(i + 1)
+                .map(|m| m.role == MessageRole::Summary)
+                .unwrap_or(false);
+
+            if !is_summary && !next_is_summary {
+                lines.push(Line::from("")); // Spacing between messages
+            }
         }
 
         // Add streaming buffer if present
@@ -199,13 +229,14 @@ impl ChatView {
         lines
     }
 
-    fn format_message(&self, msg: &ChatMessage, _width: usize, lines: &mut Vec<Line<'static>>) {
+    fn format_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         match msg.role {
             MessageRole::Tool => self.format_tool_message(msg, lines),
             MessageRole::User => self.format_user_message(msg, lines),
             MessageRole::Assistant => self.format_assistant_message(msg, lines),
             MessageRole::System => self.format_system_message(msg, lines),
             MessageRole::Error => self.format_error_message(msg, lines),
+            MessageRole::Summary => self.format_summary_message(msg, width, lines),
         }
     }
 
@@ -266,7 +297,7 @@ impl ChatView {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    "...",
+                    "…",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::SLOW_BLINK),
@@ -352,6 +383,13 @@ impl ChatView {
         }
     }
 
+    /// Format turn summary message
+    fn format_summary_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
+        if let Some(ref summary) = msg.summary {
+            lines.push(summary.render(width));
+        }
+    }
+
     /// Render the chat view
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
         self.render_with_indicator(area, buf, None);
@@ -380,7 +418,6 @@ impl ChatView {
 
         // Append thinking indicator if provided
         if let Some(indicator) = thinking_line {
-            lines.push(Line::from("")); // Empty line before indicator
             lines.push(indicator);
         }
         let total_lines = lines.len();
