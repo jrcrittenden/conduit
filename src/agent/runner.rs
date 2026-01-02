@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -7,7 +8,7 @@ use crate::agent::events::AgentEvent;
 use crate::agent::session::SessionId;
 
 /// Agent type identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentType {
     Claude,
     Codex,
@@ -18,6 +19,13 @@ impl AgentType {
         match self {
             AgentType::Claude => "claude",
             AgentType::Codex => "codex",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "codex" => AgentType::Codex,
+            _ => AgentType::Claude,
         }
     }
 
@@ -44,6 +52,8 @@ pub struct AgentStartConfig {
     pub resume_session: Option<SessionId>,
     pub timeout_ms: Option<u64>,
     pub additional_args: Vec<String>,
+    /// Model to use (e.g., "sonnet", "opus" for Claude; "o4-mini" for Codex)
+    pub model: Option<String>,
 }
 
 impl AgentStartConfig {
@@ -55,6 +65,7 @@ impl AgentStartConfig {
             resume_session: None,
             timeout_ms: None,
             additional_args: vec![],
+            model: None,
         }
     }
 
@@ -70,6 +81,11 @@ impl AgentStartConfig {
 
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
         self
     }
 }

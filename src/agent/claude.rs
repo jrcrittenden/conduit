@@ -47,6 +47,11 @@ impl ClaudeCodeRunner {
             cmd.arg("--resume").arg(session_id.as_str());
         }
 
+        // Model selection
+        if let Some(model) = &config.model {
+            cmd.arg("--model").arg(model);
+        }
+
         // Working directory
         cmd.current_dir(&config.working_dir);
 

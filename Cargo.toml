@@ -35,5 +35,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
 
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "5.0"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.14"

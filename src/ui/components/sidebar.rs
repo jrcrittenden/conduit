@@ -1,0 +1,180 @@
+//! Sidebar component for repository/workspace navigation
+
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+    widgets::{Block, Borders, StatefulWidget},
+};
+
+use super::tree_view::{SidebarData, TreeView, TreeViewState};
+
+/// Sidebar widget for workspace navigation
+pub struct Sidebar<'a> {
+    /// Tree data
+    data: &'a SidebarData,
+    /// Whether the sidebar is visible
+    visible: bool,
+    /// Width of the sidebar
+    width: u16,
+    /// Title
+    title: &'a str,
+}
+
+impl<'a> Sidebar<'a> {
+    pub fn new(data: &'a SidebarData) -> Self {
+        Self {
+            data,
+            visible: true,
+            width: 30,
+            title: " Workspaces ",
+        }
+    }
+
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    pub fn width(mut self, width: u16) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn title(mut self, title: &'a str) -> Self {
+        self.title = title;
+        self
+    }
+
+    /// Check if the sidebar is visible
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Get the width of the sidebar (0 if hidden)
+    pub fn effective_width(&self) -> u16 {
+        if self.visible {
+            self.width
+        } else {
+            0
+        }
+    }
+}
+
+/// State for the sidebar
+#[derive(Debug, Default)]
+pub struct SidebarState {
+    /// Tree view state
+    pub tree_state: TreeViewState,
+    /// Whether the sidebar is visible
+    pub visible: bool,
+    /// Whether the sidebar is focused
+    pub focused: bool,
+}
+
+impl SidebarState {
+    pub fn new() -> Self {
+        Self {
+            tree_state: TreeViewState::new(),
+            visible: false, // Hidden by default
+            focused: false,
+        }
+    }
+
+    /// Toggle sidebar visibility
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+
+    /// Show sidebar and focus it
+    pub fn show(&mut self) {
+        self.visible = true;
+        self.focused = true;
+    }
+
+    /// Hide sidebar
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.focused = false;
+    }
+
+    /// Set focus state
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+}
+
+impl StatefulWidget for Sidebar<'_> {
+    type State = SidebarState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        if !state.visible || area.width < 10 {
+            return;
+        }
+
+        // Determine border color based on focus
+        let border_style = if state.focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let block = Block::default()
+            .title(self.title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+
+        // Create and render tree view
+        let tree = TreeView::new(&self.data.nodes)
+            .block(block)
+            .selected_style(
+                Style::default()
+                    .bg(if state.focused {
+                        Color::Rgb(40, 60, 80)
+                    } else {
+                        Color::Rgb(30, 30, 30)
+                    })
+                    .fg(Color::White),
+            );
+
+        StatefulWidget::render(tree, area, buf, &mut state.tree_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_sidebar_data() {
+        let mut data = SidebarData::new();
+
+        data.add_repository(
+            Uuid::new_v4(),
+            "my-project",
+            vec![
+                (Uuid::new_v4(), "main".to_string(), "main".to_string()),
+                (
+                    Uuid::new_v4(),
+                    "feature-x".to_string(),
+                    "feature/x".to_string(),
+                ),
+            ],
+        );
+
+        assert_eq!(data.nodes.len(), 1);
+        assert_eq!(data.nodes[0].children.len(), 2);
+
+        // Initially only repository is visible
+        let visible = data.visible_nodes();
+        assert_eq!(visible.len(), 1);
+
+        // Toggle expand
+        data.toggle_at(0);
+
+        // Now all 3 nodes are visible
+        let visible = data.visible_nodes();
+        assert_eq!(visible.len(), 3);
+    }
+}

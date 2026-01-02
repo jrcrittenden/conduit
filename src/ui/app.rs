@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,11 +22,22 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::agent::{
-    AgentEvent, AgentRunner, AgentStartConfig, AgentType, ClaudeCodeRunner, CodexCliRunner,
+    load_claude_history, load_codex_history, AgentEvent, AgentRunner, AgentStartConfig, AgentType,
+    ClaudeCodeRunner, CodexCliRunner, SessionId,
 };
 use crate::config::Config;
-use crate::ui::components::{ChatMessage, EventDirection, GlobalFooter, ProcessingState, SplashScreen, TabBar};
+use crate::data::{
+    AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, Workspace,
+    WorkspaceDao,
+};
+use crate::git::WorktreeManager;
+use crate::ui::components::{
+    AddRepoDialog, AddRepoDialogState, BaseDirDialog, BaseDirDialogState, ChatMessage,
+    EventDirection, GlobalFooter, ModelSelector, ModelSelectorState, ProcessingState,
+    ProjectPicker, ProjectPickerState, Sidebar, SidebarData, SidebarState, SplashScreen, TabBar,
+};
 use crate::ui::events::{AppEvent, InputMode, ViewMode};
+use crate::ui::session::AgentSession;
 use crate::ui::tab_manager::TabManager;
 
 /// Main application state
@@ -51,13 +63,71 @@ pub struct App {
     tick_count: u32,
     /// Splash screen (shown when no tabs)
     splash_screen: SplashScreen,
+    /// Database connection
+    database: Option<Database>,
+    /// Repository DAO
+    repo_dao: Option<RepositoryDao>,
+    /// Workspace DAO
+    workspace_dao: Option<WorkspaceDao>,
+    /// App state DAO (for persisting app settings)
+    app_state_dao: Option<AppStateDao>,
+    /// Session tab DAO (for persisting open tabs)
+    session_tab_dao: Option<SessionTabDao>,
+    /// Worktree manager
+    worktree_manager: WorktreeManager,
+    /// Sidebar state
+    sidebar_state: SidebarState,
+    /// Sidebar data (repositories and workspaces)
+    sidebar_data: SidebarData,
+    /// Add repository dialog state (for custom paths)
+    add_repo_dialog_state: AddRepoDialogState,
+    /// Model selector dialog state
+    model_selector_state: ModelSelectorState,
+    /// Whether to show the first-time splash screen (repo count < 1)
+    show_first_time_splash: bool,
+    /// Base directory dialog state
+    base_dir_dialog_state: BaseDirDialogState,
+    /// Project picker state
+    project_picker_state: ProjectPickerState,
+    /// Pending project path (selected in picker, waiting for agent selection)
+    pending_project_path: Option<PathBuf>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        Self {
+        // Initialize database
+        let (database, repo_dao, workspace_dao, app_state_dao, session_tab_dao) =
+            match Database::open_default() {
+                Ok(db) => {
+                    let repo_dao = RepositoryDao::new(db.connection());
+                    let workspace_dao = WorkspaceDao::new(db.connection());
+                    let app_state_dao = AppStateDao::new(db.connection());
+                    let session_tab_dao = SessionTabDao::new(db.connection());
+                    (
+                        Some(db),
+                        Some(repo_dao),
+                        Some(workspace_dao),
+                        Some(app_state_dao),
+                        Some(session_tab_dao),
+                    )
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to open database: {}", e);
+                    (None, None, None, None, None)
+                }
+            };
+
+        // Initialize worktree manager with managed directory
+        let worktree_dir = dirs::data_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+            .map(|d| d.join("conduit").join("worktrees"))
+            .unwrap_or_else(|| PathBuf::from(".conduit/worktrees"));
+
+        let worktree_manager = WorktreeManager::with_managed_dir(worktree_dir);
+
+        let mut app = Self {
             config: config.clone(),
             should_quit: false,
             tab_manager: TabManager::new(config.max_tabs),
@@ -69,8 +139,183 @@ impl App {
             event_rx,
             tick_count: 0,
             splash_screen: SplashScreen::new(),
+            database,
+            repo_dao,
+            workspace_dao,
+            app_state_dao,
+            session_tab_dao,
+            worktree_manager,
+            sidebar_state: SidebarState::new(),
+            sidebar_data: SidebarData::new(),
+            add_repo_dialog_state: AddRepoDialogState::new(),
+            model_selector_state: ModelSelectorState::default(),
+            show_first_time_splash: true, // Will be set properly in restore_session_state
+            base_dir_dialog_state: BaseDirDialogState::new(),
+            project_picker_state: ProjectPickerState::new(),
+            pending_project_path: None,
+        };
+
+        // Load sidebar data
+        app.refresh_sidebar_data();
+
+        // Restore session state
+        app.restore_session_state();
+
+        app
+    }
+
+    /// Restore session state from database
+    fn restore_session_state(&mut self) {
+        // Check repository count first
+        let repo_count = self
+            .repo_dao
+            .as_ref()
+            .and_then(|dao| dao.get_all().ok())
+            .map(|repos| repos.len())
+            .unwrap_or(0);
+
+        // If no repos, show first-time splash
+        if repo_count == 0 {
+            self.show_first_time_splash = true;
+            return;
         }
-        // Don't create initial tab - show splash screen first
+
+        // Has repos, don't show first-time splash
+        self.show_first_time_splash = false;
+
+        // Try to restore saved tabs
+        let Some(session_tab_dao) = &self.session_tab_dao else {
+            return;
+        };
+        let Some(app_state_dao) = &self.app_state_dao else {
+            return;
+        };
+
+        let saved_tabs = match session_tab_dao.get_all() {
+            Ok(tabs) => tabs,
+            Err(_) => return,
+        };
+
+        if saved_tabs.is_empty() {
+            // Has repos but no saved tabs - show main UI without tabs
+            return;
+        }
+
+        // Restore each tab
+        for tab in saved_tabs {
+            let mut session = AgentSession::new(tab.agent_type);
+            session.workspace_id = tab.workspace_id;
+            session.model = tab.model;
+
+            // Set resume session ID if available
+            if let Some(ref session_id_str) = tab.agent_session_id {
+                let session_id = SessionId::from_string(session_id_str.clone());
+                session.resume_session_id = Some(session_id.clone());
+                session.agent_session_id = Some(session_id.clone());
+
+                // Load chat history from agent files
+                let messages = match tab.agent_type {
+                    AgentType::Claude => load_claude_history(session_id_str),
+                    AgentType::Codex => load_codex_history(session_id_str),
+                };
+
+                if let Ok(msgs) = messages {
+                    for msg in msgs {
+                        session.chat_view.push(msg);
+                    }
+                }
+            }
+
+            self.tab_manager.add_session(session);
+        }
+
+        // Restore active tab
+        if let Ok(Some(index_str)) = app_state_dao.get("active_tab_index") {
+            if let Ok(index) = index_str.parse::<usize>() {
+                self.tab_manager.switch_to(index);
+            }
+        }
+
+        // Restore sidebar visibility
+        if let Ok(Some(visible_str)) = app_state_dao.get("sidebar_visible") {
+            self.sidebar_state.visible = visible_str == "true";
+        }
+    }
+
+    /// Refresh sidebar data from database
+    fn refresh_sidebar_data(&mut self) {
+        self.sidebar_data = SidebarData::new();
+
+        let Some(repo_dao) = &self.repo_dao else {
+            return;
+        };
+        let Some(workspace_dao) = &self.workspace_dao else {
+            return;
+        };
+
+        // Load all repositories
+        if let Ok(repos) = repo_dao.get_all() {
+            for repo in repos {
+                // Load workspaces for this repository
+                if let Ok(workspaces) = workspace_dao.get_by_repository(repo.id) {
+                    let workspace_info: Vec<_> = workspaces
+                        .into_iter()
+                        .map(|ws| (ws.id, ws.name, ws.branch))
+                        .collect();
+                    self.sidebar_data
+                        .add_repository(repo.id, &repo.name, workspace_info);
+                }
+            }
+        }
+    }
+
+    /// Save session state to database for restoration on next startup
+    fn save_session_state(&self) {
+        let Some(session_tab_dao) = &self.session_tab_dao else {
+            return;
+        };
+        let Some(app_state_dao) = &self.app_state_dao else {
+            return;
+        };
+
+        // Clear existing session data
+        if let Err(e) = session_tab_dao.clear_all() {
+            eprintln!("Warning: Failed to clear session tabs: {}", e);
+            return;
+        }
+
+        // Save each tab
+        for (index, session) in self.tab_manager.sessions().iter().enumerate() {
+            let tab = SessionTab::new(
+                index as i32,
+                session.agent_type,
+                session.workspace_id,
+                session.agent_session_id.as_ref().map(|s| s.as_str().to_string()),
+                session.model.clone(),
+            );
+            if let Err(e) = session_tab_dao.create(&tab) {
+                eprintln!("Warning: Failed to save session tab: {}", e);
+            }
+        }
+
+        // Save app state
+        if let Err(e) = app_state_dao.set(
+            "active_tab_index",
+            &self.tab_manager.active_index().to_string(),
+        ) {
+            eprintln!("Warning: Failed to save active tab index: {}", e);
+        }
+
+        if let Err(e) = app_state_dao.set(
+            "sidebar_visible",
+            if self.sidebar_state.visible {
+                "true"
+            } else {
+                "false"
+            },
+        ) {
+            eprintln!("Warning: Failed to save sidebar visibility: {}", e);
+        }
     }
 
     /// Run the application main loop
@@ -128,7 +373,7 @@ impl App {
                     // Tick animations (every 6 frames = ~100ms)
                     self.tick_count += 1;
                     if self.tick_count % 6 == 0 {
-                        if self.tab_manager.is_empty() {
+                        if self.show_first_time_splash {
                             // Animate splash screen
                             self.splash_screen.tick();
                         } else if let Some(session) = self.tab_manager.active_session_mut() {
@@ -168,6 +413,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('q') => {
+                    self.save_session_state();
                     self.should_quit = true;
                     return Ok(());
                 }
@@ -243,9 +489,22 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('b') => {
-                    // Ctrl+B: Move cursor back (same as Left)
-                    if let Some(session) = self.tab_manager.active_session_mut() {
-                        session.input_box.move_left();
+                    // Ctrl+B: Toggle sidebar
+                    self.sidebar_state.toggle();
+                    if self.sidebar_state.visible {
+                        self.sidebar_state.set_focused(true);
+                        self.input_mode = InputMode::SidebarNavigation;
+                    } else {
+                        self.sidebar_state.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('m') => {
+                    // Ctrl+M: Show model selector for current session
+                    if let Some(session) = self.tab_manager.active_session() {
+                        self.model_selector_state.show(session.agent_type);
+                        self.input_mode = InputMode::SelectingModel;
                     }
                     return Ok(());
                 }
@@ -282,18 +541,43 @@ impl App {
             }
         }
 
-        // Splash screen key handling (when no tabs)
-        if self.tab_manager.is_empty() && key.modifiers.is_empty() {
+        // First-time splash screen key handling (only Enter and Esc)
+        // Skip if a dialog is visible - let the dialog handle keys
+        if self.show_first_time_splash
+            && key.modifiers.is_empty()
+            && !self.base_dir_dialog_state.is_visible()
+            && !self.project_picker_state.is_visible()
+            && !self.add_repo_dialog_state.is_visible()
+            && self.input_mode != InputMode::SelectingAgent
+        {
             match key.code {
-                KeyCode::Char('1') | KeyCode::Char('c') => {
-                    self.tab_manager.new_tab(AgentType::Claude);
+                KeyCode::Enter => {
+                    // Check if base projects directory is set
+                    let base_dir = self
+                        .app_state_dao
+                        .as_ref()
+                        .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
+
+                    if let Some(base_dir_str) = base_dir {
+                        // Base dir exists - show project picker
+                        let base_path = if base_dir_str.starts_with('~') {
+                            dirs::home_dir()
+                                .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
+                                .unwrap_or_else(|| PathBuf::from(&base_dir_str))
+                        } else {
+                            PathBuf::from(&base_dir_str)
+                        };
+                        self.project_picker_state.show(base_path);
+                        self.input_mode = InputMode::PickingProject;
+                    } else {
+                        // No base dir - show setup dialog
+                        self.base_dir_dialog_state.show();
+                        self.input_mode = InputMode::SettingBaseDir;
+                    }
                     return Ok(());
                 }
-                KeyCode::Char('2') | KeyCode::Char('x') => {
-                    self.tab_manager.new_tab(AgentType::Codex);
-                    return Ok(());
-                }
-                KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.save_session_state();
                     self.should_quit = true;
                     return Ok(());
                 }
@@ -337,14 +621,13 @@ impl App {
             InputMode::SelectingAgent => {
                 match key.code {
                     KeyCode::Char('1') | KeyCode::Char('c') => {
-                        self.tab_manager.new_tab(AgentType::Claude);
-                        self.input_mode = InputMode::Normal;
+                        self.create_tab_with_agent(AgentType::Claude);
                     }
                     KeyCode::Char('2') | KeyCode::Char('x') => {
-                        self.tab_manager.new_tab(AgentType::Codex);
-                        self.input_mode = InputMode::Normal;
+                        self.create_tab_with_agent(AgentType::Codex);
                     }
                     KeyCode::Esc => {
+                        self.pending_project_path = None;
                         self.input_mode = InputMode::Normal;
                     }
                     _ => {}
@@ -476,9 +759,325 @@ impl App {
                     }
                 }
             }
+            InputMode::SidebarNavigation => {
+                let visible_count = self.sidebar_data.visible_nodes().len();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.sidebar_state.tree_state.select_previous(visible_count);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.sidebar_state.tree_state.select_next(visible_count);
+                    }
+                    KeyCode::Enter | KeyCode::Right => {
+                        let selected = self.sidebar_state.tree_state.selected;
+                        if let Some(node) = self.sidebar_data.get_at(selected) {
+                            if node.is_leaf {
+                                // Open workspace
+                                self.open_workspace(node.id);
+                                self.input_mode = InputMode::Normal;
+                                self.sidebar_state.set_focused(false);
+                            } else {
+                                // Toggle expand
+                                self.sidebar_data.toggle_at(selected);
+                            }
+                        }
+                    }
+                    KeyCode::Left => {
+                        // Collapse current node
+                        let selected = self.sidebar_state.tree_state.selected;
+                        if let Some(node) = self.sidebar_data.get_at(selected) {
+                            if !node.is_leaf && node.expanded {
+                                self.sidebar_data.toggle_at(selected);
+                            }
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Tab => {
+                        self.input_mode = InputMode::Normal;
+                        self.sidebar_state.set_focused(false);
+                    }
+                    KeyCode::Char('r') => {
+                        // Add repository from sidebar
+                        self.add_repo_dialog_state.show();
+                        self.input_mode = InputMode::AddingRepository;
+                    }
+                    KeyCode::Char('s') => {
+                        // Open settings - change base projects directory
+                        if let Some(dao) = &self.app_state_dao {
+                            if let Ok(Some(current_dir)) = dao.get("projects_base_dir") {
+                                self.base_dir_dialog_state.show_with_path(&current_dir);
+                            } else {
+                                self.base_dir_dialog_state.show();
+                            }
+                        } else {
+                            self.base_dir_dialog_state.show();
+                        }
+                        self.input_mode = InputMode::SettingBaseDir;
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::AddingRepository => {
+                match key.code {
+                    KeyCode::Enter => {
+                        if self.add_repo_dialog_state.is_valid {
+                            self.add_repository();
+                            self.add_repo_dialog_state.hide();
+                            self.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.add_repo_dialog_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Backspace => {
+                        self.add_repo_dialog_state.delete_char();
+                    }
+                    KeyCode::Delete => {
+                        self.add_repo_dialog_state.delete_forward();
+                    }
+                    KeyCode::Left => {
+                        self.add_repo_dialog_state.move_left();
+                    }
+                    KeyCode::Right => {
+                        self.add_repo_dialog_state.move_right();
+                    }
+                    KeyCode::Home => {
+                        self.add_repo_dialog_state.move_start();
+                    }
+                    KeyCode::End => {
+                        self.add_repo_dialog_state.move_end();
+                    }
+                    KeyCode::Char(c) => {
+                        self.add_repo_dialog_state.insert_char(c);
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::SelectingModel => {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.model_selector_state.select_previous();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.model_selector_state.select_next();
+                    }
+                    KeyCode::Enter => {
+                        if let Some(model) = self.model_selector_state.selected_model() {
+                            let model_id = model.id.clone();
+                            // Update session's model
+                            if let Some(session) = self.tab_manager.active_session_mut() {
+                                session.model = Some(model_id.clone());
+                                session.chat_view.push(ChatMessage::system(format!(
+                                    "Model changed to: {}",
+                                    model_id
+                                )));
+                            }
+                        }
+                        self.model_selector_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Esc => {
+                        self.model_selector_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::SettingBaseDir => {
+                match key.code {
+                    KeyCode::Enter => {
+                        if self.base_dir_dialog_state.is_valid {
+                            // Save base directory to app_state
+                            if let Some(dao) = &self.app_state_dao {
+                                let _ = dao.set("projects_base_dir", &self.base_dir_dialog_state.input);
+                            }
+                            // Show project picker
+                            let base_path = self.base_dir_dialog_state.expanded_path();
+                            self.base_dir_dialog_state.hide();
+                            self.project_picker_state.show(base_path);
+                            self.input_mode = InputMode::PickingProject;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.base_dir_dialog_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Backspace => {
+                        self.base_dir_dialog_state.delete_char();
+                    }
+                    KeyCode::Delete => {
+                        self.base_dir_dialog_state.delete_forward();
+                    }
+                    KeyCode::Left => {
+                        self.base_dir_dialog_state.move_left();
+                    }
+                    KeyCode::Right => {
+                        self.base_dir_dialog_state.move_right();
+                    }
+                    KeyCode::Home => {
+                        self.base_dir_dialog_state.move_start();
+                    }
+                    KeyCode::End => {
+                        self.base_dir_dialog_state.move_end();
+                    }
+                    KeyCode::Char(c) => {
+                        self.base_dir_dialog_state.insert_char(c);
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::PickingProject => {
+                match key.code {
+                    KeyCode::Enter => {
+                        // Select the current project
+                        if let Some(project) = self.project_picker_state.selected_project() {
+                            self.pending_project_path = Some(project.path.clone());
+                            self.project_picker_state.hide();
+                            // Show agent selector
+                            self.input_mode = InputMode::SelectingAgent;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.project_picker_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Up => {
+                        self.project_picker_state.select_prev();
+                    }
+                    KeyCode::Down => {
+                        self.project_picker_state.select_next();
+                    }
+                    KeyCode::Backspace => {
+                        self.project_picker_state.delete_char();
+                    }
+                    KeyCode::Delete => {
+                        self.project_picker_state.delete_forward();
+                    }
+                    KeyCode::Left => {
+                        self.project_picker_state.move_cursor_left();
+                    }
+                    KeyCode::Right => {
+                        self.project_picker_state.move_cursor_right();
+                    }
+                    KeyCode::Home => {
+                        self.project_picker_state.move_cursor_start();
+                    }
+                    KeyCode::End => {
+                        self.project_picker_state.move_cursor_end();
+                    }
+                    KeyCode::Char('a') if key.modifiers.is_empty() => {
+                        // Open custom path dialog
+                        self.project_picker_state.hide();
+                        self.add_repo_dialog_state.show();
+                        self.input_mode = InputMode::AddingRepository;
+                    }
+                    KeyCode::Char(c) => {
+                        self.project_picker_state.insert_char(c);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Open a workspace (create or switch to tab)
+    fn open_workspace(&mut self, workspace_id: uuid::Uuid) {
+        // Find the workspace
+        let Some(workspace_dao) = &self.workspace_dao else {
+            return;
+        };
+
+        let Ok(Some(_workspace)) = workspace_dao.get_by_id(workspace_id) else {
+            return;
+        };
+
+        // Update last accessed
+        let _ = workspace_dao.update_last_accessed(workspace_id);
+
+        // Create a new tab with the workspace's working directory
+        // For now, default to Claude agent
+        self.tab_manager.new_tab(AgentType::Claude);
+        // TODO: Store workspace_id in session and use workspace.path as working_dir
+    }
+
+    /// Add a repository from the dialog
+    fn add_repository(&mut self) {
+        let path = self.add_repo_dialog_state.expanded_path();
+        let name = self
+            .add_repo_dialog_state
+            .repo_name
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let Some(repo_dao) = &self.repo_dao else {
+            return;
+        };
+        let Some(workspace_dao) = &self.workspace_dao else {
+            return;
+        };
+
+        // Create repository
+        let repo = Repository::from_local_path(&name, path.clone());
+        if repo_dao.create(&repo).is_err() {
+            return;
+        }
+
+        // Get current branch
+        let branch = self
+            .worktree_manager
+            .get_current_branch(&path)
+            .unwrap_or_else(|_| "main".to_string());
+
+        // Create default workspace
+        let workspace = Workspace::new_default(repo.id, &branch, &branch, path);
+        let _ = workspace_dao.create(&workspace);
+
+        // Refresh sidebar
+        self.refresh_sidebar_data();
+    }
+
+    /// Create a tab with the selected agent type, using pending_project_path if set
+    fn create_tab_with_agent(&mut self, agent_type: AgentType) {
+        // If we have a pending project path, add it as a repository first
+        if let Some(project_path) = self.pending_project_path.take() {
+            let name = project_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            if let (Some(repo_dao), Some(workspace_dao)) =
+                (&self.repo_dao, &self.workspace_dao)
+            {
+                // Create repository
+                let repo = Repository::from_local_path(&name, project_path.clone());
+                if repo_dao.create(&repo).is_ok() {
+                    // Get current branch
+                    let branch = self
+                        .worktree_manager
+                        .get_current_branch(&project_path)
+                        .unwrap_or_else(|_| "main".to_string());
+
+                    // Create default workspace
+                    let workspace =
+                        Workspace::new_default(repo.id, &branch, &branch, project_path);
+                    let _ = workspace_dao.create(&workspace);
+
+                    // Refresh sidebar
+                    self.refresh_sidebar_data();
+                }
+            }
+        }
+
+        // Create the tab
+        self.tab_manager.new_tab(agent_type);
+
+        // Clear first-time splash since we now have a project
+        self.show_first_time_splash = false;
+
+        self.input_mode = InputMode::Normal;
     }
 
     fn handle_mouse_event(&mut self, mouse: event::MouseEvent) {
@@ -503,6 +1102,7 @@ impl App {
                 self.handle_agent_event(tab_index, event).await?;
             }
             AppEvent::Quit => {
+                self.save_session_state();
                 self.should_quit = true;
             }
             AppEvent::Error(msg) => {
@@ -649,11 +1249,27 @@ impl App {
         session.chat_view.push(ChatMessage::user(&prompt));
         session.start_processing();
 
+        // Capture session state before releasing borrow
+        let agent_type = session.agent_type;
+        let model = session.model.clone();
+        // Take resume_session_id (clears it after first use)
+        let resume_session_id = session.resume_session_id.take();
+
         // Start agent
-        let config = AgentStartConfig::new(prompt, self.config.working_dir.clone())
+        let mut config = AgentStartConfig::new(prompt, self.config.working_dir.clone())
             .with_tools(self.config.claude_allowed_tools.clone());
 
-        let runner: Arc<dyn AgentRunner> = match session.agent_type {
+        // Add model if specified
+        if let Some(model_id) = model {
+            config = config.with_model(model_id);
+        }
+
+        // Add resume session if restoring from saved state
+        if let Some(session_id) = resume_session_id {
+            config = config.with_resume(session_id);
+        }
+
+        let runner: Arc<dyn AgentRunner> = match agent_type {
             AgentType::Claude => self.claude_runner.clone(),
             AgentType::Codex => self.codex_runner.clone(),
         };
@@ -688,16 +1304,63 @@ impl App {
     fn draw(&mut self, f: &mut Frame) {
         let size = f.area();
 
-        // Show splash screen when no tabs exist
-        if self.tab_manager.is_empty() {
+        // Show splash screen only for first-time users (no repos)
+        if self.show_first_time_splash {
+            self.splash_screen.first_time_mode = true;
             self.splash_screen.render(size, f.buffer_mut());
+
+            // Draw dialogs over splash screen
+            if self.base_dir_dialog_state.is_visible() {
+                let dialog = BaseDirDialog::new();
+                dialog.render(size, f.buffer_mut(), &self.base_dir_dialog_state);
+            } else if self.project_picker_state.is_visible() {
+                let picker = ProjectPicker::new();
+                picker.render(size, f.buffer_mut(), &self.project_picker_state);
+            } else if self.add_repo_dialog_state.is_visible() {
+                let dialog = AddRepoDialog::new();
+                dialog.render(size, f.buffer_mut(), &self.add_repo_dialog_state);
+            }
+
+            // Draw agent selector dialog if needed
+            if self.input_mode == InputMode::SelectingAgent {
+                self.draw_agent_selector(f, size);
+            }
             return;
+        }
+
+        // Calculate sidebar width
+        let sidebar_width = if self.sidebar_state.visible { 30u16 } else { 0 };
+
+        // Split horizontally for sidebar
+        let (sidebar_area, content_area) = if sidebar_width > 0 {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(sidebar_width),
+                    Constraint::Min(20),
+                ])
+                .split(size);
+            (chunks[0], chunks[1])
+        } else {
+            // No sidebar - use full width
+            (Rect::default(), size)
+        };
+
+        // Render sidebar if visible
+        if self.sidebar_state.visible {
+            let sidebar = Sidebar::new(&self.sidebar_data);
+            ratatui::widgets::StatefulWidget::render(
+                sidebar,
+                sidebar_area,
+                f.buffer_mut(),
+                &mut self.sidebar_state,
+            );
         }
 
         match self.view_mode {
             ViewMode::Chat => {
                 // Calculate dynamic input height (max 30% of screen)
-                let max_input_height = (size.height as f32 * 0.30).ceil() as u16;
+                let max_input_height = (content_area.height as f32 * 0.30).ceil() as u16;
                 let input_height = if let Some(session) = self.tab_manager.active_session() {
                     session.input_box.desired_height(max_input_height)
                 } else {
@@ -714,7 +1377,7 @@ impl App {
                         Constraint::Length(1),            // Status bar
                         Constraint::Length(1),            // Footer
                     ])
-                    .split(size);
+                    .split(content_area);
 
                 // Draw tab bar
                 let tab_bar = TabBar::new(
@@ -760,7 +1423,7 @@ impl App {
                         Constraint::Min(5),    // Raw events view (full height)
                         Constraint::Length(1), // Footer
                     ])
-                    .split(size);
+                    .split(content_area);
 
                 // Draw tab bar
                 let tab_bar = TabBar::new(
@@ -784,6 +1447,30 @@ impl App {
         // Draw agent selector dialog if needed
         if self.input_mode == InputMode::SelectingAgent {
             self.draw_agent_selector(f, size);
+        }
+
+        // Draw add repository dialog if open
+        if self.add_repo_dialog_state.is_visible() {
+            let dialog = AddRepoDialog::new();
+            dialog.render(size, f.buffer_mut(), &self.add_repo_dialog_state);
+        }
+
+        // Draw model selector dialog if open
+        if self.model_selector_state.is_visible() {
+            let model_selector = ModelSelector::new();
+            model_selector.render(size, f.buffer_mut(), &self.model_selector_state);
+        }
+
+        // Draw base directory dialog if open
+        if self.base_dir_dialog_state.is_visible() {
+            let dialog = BaseDirDialog::new();
+            dialog.render(size, f.buffer_mut(), &self.base_dir_dialog_state);
+        }
+
+        // Draw project picker if open
+        if self.project_picker_state.is_visible() {
+            let picker = ProjectPicker::new();
+            picker.render(size, f.buffer_mut(), &self.project_picker_state);
         }
     }
 
