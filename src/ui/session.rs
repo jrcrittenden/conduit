@@ -13,6 +13,12 @@ pub struct AgentSession {
     pub id: Uuid,
     /// Type of agent (Claude or Codex)
     pub agent_type: AgentType,
+    /// Selected model for this session
+    pub model: Option<String>,
+    /// Associated workspace ID (for project context)
+    pub workspace_id: Option<Uuid>,
+    /// Session ID to resume on next prompt (set when restoring from saved state)
+    pub resume_session_id: Option<SessionId>,
     /// Chat view component
     pub chat_view: ChatView,
     /// Raw events view (debug)
@@ -42,6 +48,9 @@ impl AgentSession {
         Self {
             id: Uuid::new_v4(),
             agent_type,
+            model: None,
+            workspace_id: None,
+            resume_session_id: None,
             chat_view: ChatView::new(),
             raw_events_view: RawEventsView::new(),
             input_box: InputBox::new(),

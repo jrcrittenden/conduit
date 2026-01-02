@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
 };
 
 /// Width of the shimmer wave (smaller = more granular/tighter)
@@ -20,12 +20,15 @@ pub struct SplashScreen {
     /// 0.25 → 0.50: Split around title box (top/bottom meet on right)
     /// 0.50 → 1.00: Pause before repeating
     animation_position: f32,
+    /// Whether to show first-time user mode (Add Project button only)
+    pub first_time_mode: bool,
 }
 
 impl SplashScreen {
     pub fn new() -> Self {
         Self {
             animation_position: 0.0,
+            first_time_mode: false,
         }
     }
 
@@ -260,26 +263,58 @@ impl SplashScreen {
         // Junction ╠ is at same x as the pipe corners, connects to title box
         self.draw_junction(buf, junction_x, start_y + 5, title_x, junction_color);
 
-        // Draw the agent selection boxes
-        let agents_y = start_y + 12;
+        // Draw different content based on mode
+        if self.first_time_mode {
+            // First-time mode: Show Add Project button only
+            self.render_add_project_button(buf, start_x, start_y, content_width, content_height);
+        } else {
+            // Normal mode: Show agent selection boxes
+            let agents_y = start_y + 12;
 
-        // Claude box
-        self.draw_agent_box(buf, start_x + 4, agents_y, "1", "Claude Code", "Anthropic", claude_color, text_color);
+            // Claude box
+            self.draw_agent_box(buf, start_x + 4, agents_y, "1", "Claude Code", "Anthropic", claude_color, text_color);
 
-        // Codex box
-        self.draw_agent_box(buf, start_x + 32, agents_y, "2", "Codex CLI", "OpenAI", codex_color, text_color);
+            // Codex box
+            self.draw_agent_box(buf, start_x + 32, agents_y, "2", "Codex CLI", "OpenAI", codex_color, text_color);
 
-        // Draw hint text
-        let hint = "Press [1] or [2] to start · [q] to quit";
-        let hint_x = start_x + (content_width - hint.len() as u16) / 2;
-        let hint_y = start_y + content_height - 3;
-        self.draw_text(buf, hint_x, hint_y, hint, hint_color);
+            // Draw hint text
+            let hint = "[1] Claude · [2] Codex · [r] Add Repository · [q] Quit";
+            let hint_x = start_x + (content_width.saturating_sub(hint.len() as u16)) / 2;
+            let hint_y = start_y + content_height - 3;
+            self.draw_text(buf, hint_x, hint_y, hint, hint_color);
+        }
 
         // Version
         let version = "v0.1.0";
         let version_x = start_x + content_width - version.len() as u16 - 2;
         let version_y = start_y + content_height - 2;
         self.draw_text(buf, version_x, version_y, version, hint_color);
+    }
+
+    /// Render the Add Project button for first-time users
+    fn render_add_project_button(&self, buf: &mut Buffer, start_x: u16, start_y: u16, content_width: u16, content_height: u16) {
+        let button_text = "  + Add Project  ";
+        let button_width = button_text.len() as u16;
+
+        // Center the button
+        let button_x = start_x + (content_width.saturating_sub(button_width)) / 2;
+        let button_y = start_y + 13;
+
+        // Draw highlighted button (cyan background, black text)
+        let button_style = Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(100, 180, 220))
+            .add_modifier(Modifier::BOLD);
+
+        for (i, c) in button_text.chars().enumerate() {
+            buf[(button_x + i as u16, button_y)].set_char(c).set_style(button_style);
+        }
+
+        // Draw quit hint below
+        let quit_hint = "<Esc> Quit";
+        let quit_x = start_x + (content_width.saturating_sub(quit_hint.len() as u16)) / 2;
+        let quit_y = start_y + content_height - 3;
+        self.draw_text(buf, quit_x, quit_y, quit_hint, Color::Rgb(100, 100, 100));
     }
 
     fn draw_frame(&self, buf: &mut Buffer, x: u16, y: u16, width: u16, height: u16, color: Color) {

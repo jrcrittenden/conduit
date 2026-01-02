@@ -51,6 +51,11 @@ impl CodexCliRunner {
         // Full auto mode (no approval prompts)
         cmd.arg("--full-auto");
 
+        // Model selection
+        if let Some(model) = &config.model {
+            cmd.arg("-m").arg(model);
+        }
+
         // Working directory
         cmd.current_dir(&config.working_dir);
 

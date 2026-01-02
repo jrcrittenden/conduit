@@ -1,4 +1,5 @@
 use crate::agent::{AgentEvent, AgentType};
+use uuid::Uuid;
 
 /// Application-level events
 #[derive(Debug, Clone)]
@@ -36,6 +37,15 @@ pub enum AppEvent {
     /// Request to interrupt current agent
     InterruptAgent(usize),
 
+    /// Toggle sidebar visibility
+    ToggleSidebar,
+
+    /// Open a workspace (creates/switches to tab)
+    OpenWorkspace(Uuid),
+
+    /// Refresh sidebar data from database
+    RefreshSidebar,
+
     /// Tick event for animations/updates
     Tick,
 
@@ -56,6 +66,16 @@ pub enum InputMode {
     SelectingAgent,
     /// Scrolling through chat history
     Scrolling,
+    /// Navigating sidebar
+    SidebarNavigation,
+    /// Adding a repository (custom path)
+    AddingRepository,
+    /// Selecting model for current session
+    SelectingModel,
+    /// Setting base projects directory
+    SettingBaseDir,
+    /// Picking a project from the list
+    PickingProject,
 }
 
 /// View mode for the main content area
