@@ -63,7 +63,13 @@ impl<'a> DialogFrame<'a> {
         let inner = block.inner(dialog_area);
         block.render(dialog_area, buf);
 
-        inner
+        // Add horizontal padding (1 char on each side)
+        Rect {
+            x: inner.x.saturating_add(1),
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: inner.height,
+        }
     }
 }
 
@@ -81,10 +87,13 @@ impl<'a> InstructionBar<'a> {
         let mut spans = Vec::new();
         for (i, (key, desc)) in self.instructions.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::raw("  "));
+                spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
             }
             spans.push(Span::styled(*key, Style::default().fg(Color::Cyan)));
-            spans.push(Span::raw(format!(" {}", desc)));
+            spans.push(Span::styled(
+                format!(" {}", desc),
+                Style::default().fg(Color::Gray),
+            ));
         }
 
         let paragraph = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
@@ -139,15 +148,15 @@ impl<'a> StatusLine<'a> {
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         let line = if let Some(error) = self.error {
-            Line::from(Span::styled(
-                format!("  {}", error),
-                Style::default().fg(Color::Red),
-            ))
+            Line::from(vec![
+                Span::styled("✗ ", Style::default().fg(Color::Red)),
+                Span::styled(error, Style::default().fg(Color::Red)),
+            ])
         } else if let Some(success) = self.success {
-            Line::from(Span::styled(
-                format!("  {}", success),
-                Style::default().fg(Color::Green),
-            ))
+            Line::from(vec![
+                Span::styled("✓ ", Style::default().fg(Color::Green)),
+                Span::styled(success, Style::default().fg(Color::Green)),
+            ])
         } else {
             Line::default()
         };

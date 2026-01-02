@@ -4,12 +4,11 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
 use std::path::PathBuf;
 
-use super::{DialogFrame, InstructionBar, TextInputState};
+use super::{DialogFrame, InstructionBar, StatusLine, TextInputState};
 
 /// State for the add repository dialog
 #[derive(Debug, Clone)]
@@ -220,23 +219,13 @@ impl AddRepoDialog {
             Style::default().fg(Color::DarkGray),
         );
 
-        // Render status/error
-        let status_text = if let Some(ref error) = state.error {
-            Line::from(Span::styled(
-                format!("✗ {}", error),
-                Style::default().fg(Color::Red),
-            ))
-        } else if state.is_valid {
-            let name = state.repo_name.as_deref().unwrap_or("repository");
-            Line::from(Span::styled(
-                format!("✓ Valid repository: {}", name),
-                Style::default().fg(Color::Green),
-            ))
-        } else {
-            Line::default()
-        };
-
-        Paragraph::new(status_text).render(chunks[3], buf);
+        // Render status/error using StatusLine component
+        let success_msg = format!(
+            "Valid repository: {}",
+            state.repo_name.as_deref().unwrap_or("repository")
+        );
+        let status = StatusLine::from_result(state.error.as_deref(), state.is_valid, &success_msg);
+        status.render(chunks[3], buf);
 
         // Render instructions
         let instructions = InstructionBar::new(vec![("Enter", "add"), ("Esc", "cancel")]);
