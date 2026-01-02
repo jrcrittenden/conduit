@@ -497,11 +497,13 @@ impl App {
                 let args_str = if tool.arguments.is_null() {
                     String::new()
                 } else {
-                    serde_json::to_string_pretty(&tool.arguments).unwrap_or_default()
+                    // Compact single-line for display
+                    serde_json::to_string(&tool.arguments).unwrap_or_default()
                 };
                 session.chat_view.push(ChatMessage::tool(
                     &tool.tool_name,
-                    format!("Started: {}", args_str),
+                    args_str,
+                    "Running...",
                 ));
             }
             AgentEvent::ToolCompleted(tool) => {
@@ -515,19 +517,20 @@ impl App {
                 };
                 session
                     .chat_view
-                    .push(ChatMessage::tool(&tool.tool_id, content));
+                    .push(ChatMessage::tool(&tool.tool_id, "", content));
             }
             AgentEvent::CommandOutput(cmd) => {
+                let output = format!(
+                    "{}{}",
+                    cmd.output,
+                    cmd.exit_code
+                        .map(|c| format!("\n[exit: {}]", c))
+                        .unwrap_or_default()
+                );
                 session.chat_view.push(ChatMessage::tool(
                     "Bash",
-                    format!(
-                        "$ {}\n{}{}",
-                        cmd.command,
-                        cmd.output,
-                        cmd.exit_code
-                            .map(|c| format!("\n[exit: {}]", c))
-                            .unwrap_or_default()
-                    ),
+                    &cmd.command,
+                    output,
                 ));
             }
             AgentEvent::Error(err) => {

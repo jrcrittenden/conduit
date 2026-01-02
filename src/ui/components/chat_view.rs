@@ -21,34 +21,13 @@ pub enum MessageRole {
     Error,
 }
 
-impl MessageRole {
-    fn color(&self) -> Color {
-        match self {
-            MessageRole::User => Color::Green,
-            MessageRole::Assistant => Color::Cyan,
-            MessageRole::Tool => Color::Yellow,
-            MessageRole::System => Color::Blue,
-            MessageRole::Error => Color::Red,
-        }
-    }
-
-    fn prefix(&self) -> &'static str {
-        match self {
-            MessageRole::User => "You",
-            MessageRole::Assistant => "Agent",
-            MessageRole::Tool => "Tool",
-            MessageRole::System => "System",
-            MessageRole::Error => "Error",
-        }
-    }
-}
-
 /// A single chat message
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: MessageRole,
     pub content: String,
     pub tool_name: Option<String>,
+    pub tool_args: Option<String>,
     pub is_streaming: bool,
 }
 
@@ -58,6 +37,7 @@ impl ChatMessage {
             role: MessageRole::User,
             content: content.into(),
             tool_name: None,
+            tool_args: None,
             is_streaming: false,
         }
     }
@@ -67,15 +47,17 @@ impl ChatMessage {
             role: MessageRole::Assistant,
             content: content.into(),
             tool_name: None,
+            tool_args: None,
             is_streaming: false,
         }
     }
 
-    pub fn tool(name: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn tool(name: impl Into<String>, args: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Tool,
             content: content.into(),
             tool_name: Some(name.into()),
+            tool_args: Some(args.into()),
             is_streaming: false,
         }
     }
@@ -85,6 +67,7 @@ impl ChatMessage {
             role: MessageRole::System,
             content: content.into(),
             tool_name: None,
+            tool_args: None,
             is_streaming: false,
         }
     }
@@ -94,6 +77,7 @@ impl ChatMessage {
             role: MessageRole::Error,
             content: content.into(),
             tool_name: None,
+            tool_args: None,
             is_streaming: false,
         }
     }
@@ -103,6 +87,7 @@ impl ChatMessage {
             role: MessageRole::Assistant,
             content: content.into(),
             tool_name: None,
+            tool_args: None,
             is_streaming: true,
         }
     }
@@ -215,52 +200,155 @@ impl ChatView {
     }
 
     fn format_message(&self, msg: &ChatMessage, _width: usize, lines: &mut Vec<Line<'static>>) {
-        let color = msg.role.color();
-
-        // Header line
-        let header = if let Some(ref tool_name) = msg.tool_name {
-            format!("[{}] {}", msg.role.prefix(), tool_name)
-        } else {
-            format!("[{}]", msg.role.prefix())
-        };
-
-        let mut header_spans = vec![Span::styled(
-            header,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )];
-
-        if msg.is_streaming {
-            header_spans.push(Span::styled(
-                " ...",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ));
+        match msg.role {
+            MessageRole::Tool => self.format_tool_message(msg, lines),
+            MessageRole::User => self.format_user_message(msg, lines),
+            MessageRole::Assistant => self.format_assistant_message(msg, lines),
+            MessageRole::System => self.format_system_message(msg, lines),
+            MessageRole::Error => self.format_error_message(msg, lines),
         }
+    }
 
-        lines.push(Line::from(header_spans));
+    /// Format user messages with chevron prefix
+    fn format_user_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+        let content_lines: Vec<&str> = msg.content.lines().collect();
 
-        // Content lines - use markdown for assistant messages
-        if msg.role == MessageRole::Assistant && !msg.content.is_empty() {
-            // Parse markdown with custom renderer (supports tables)
-            let renderer = MarkdownRenderer::new();
-            let md_text = renderer.render(&msg.content);
-            for line in md_text.lines {
-                // Indent markdown content
-                let mut indented_spans = vec![Span::raw("  ")];
-                indented_spans.extend(line.spans.into_iter().map(|s| {
-                    Span::styled(s.content.into_owned(), s.style)
-                }));
-                lines.push(Line::from(indented_spans));
-            }
-        } else {
-            // Plain text for other message types
-            for line in msg.content.lines() {
+        for (i, line) in content_lines.iter().enumerate() {
+            if i == 0 {
+                // First line with chevron
+                lines.push(Line::from(vec![
+                    Span::styled("❯ ", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        line.to_string(),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else {
+                // Continuation lines indented
                 lines.push(Line::from(Span::styled(
                     format!("  {}", line),
-                    Style::default().fg(Color::White),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 )));
             }
+        }
+    }
+
+    /// Format assistant messages - flowing text with markdown
+    fn format_assistant_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+        if msg.content.is_empty() {
+            return;
+        }
+
+        // Parse markdown with custom renderer
+        let renderer = MarkdownRenderer::new();
+        let md_text = renderer.render(&msg.content);
+
+        for line in md_text.lines {
+            // Indent content slightly
+            let mut indented_spans = vec![Span::raw("  ")];
+            indented_spans.extend(line.spans.into_iter().map(|s| {
+                // Apply a slightly dimmer style for assistant text
+                let mut style = s.style;
+                if style.fg.is_none() {
+                    style = style.fg(Color::Rgb(220, 220, 220)); // Slightly dimmer white
+                }
+                Span::styled(s.content.into_owned(), style)
+            }));
+            lines.push(Line::from(indented_spans));
+        }
+
+        // Add streaming indicator if still streaming
+        if msg.is_streaming {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ]));
+        }
+    }
+
+    /// Format system messages with info symbol
+    fn format_system_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+        let content_lines: Vec<&str> = msg.content.lines().collect();
+
+        for (i, line) in content_lines.iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("ℹ ", Style::default().fg(Color::Blue)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::Blue)),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    Style::default().fg(Color::Blue),
+                )));
+            }
+        }
+    }
+
+    /// Format error messages with X symbol
+    fn format_error_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+        let content_lines: Vec<&str> = msg.content.lines().collect();
+
+        for (i, line) in content_lines.iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("✗ ", Style::default().fg(Color::Red)),
+                    Span::styled(
+                        line.to_string(),
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", line),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+        }
+    }
+
+    /// Format tool messages in Claude Code style
+    fn format_tool_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+        let tool_name = msg.tool_name.as_deref().unwrap_or("Tool");
+        let tool_args = msg.tool_args.as_deref().unwrap_or("");
+
+        // Header: ● ToolName(args)
+        let header_spans = vec![
+            Span::styled("● ", Style::default().fg(Color::Green)),
+            Span::styled(
+                tool_name.to_string(),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({})", tool_args),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        lines.push(Line::from(header_spans));
+
+        // Output lines with tree connector
+        let content_lines: Vec<&str> = msg.content.lines().collect();
+        let last_idx = content_lines.len().saturating_sub(1);
+
+        for (i, line) in content_lines.iter().enumerate() {
+            let connector = if i == last_idx { "└ " } else { "│ " };
+            lines.push(Line::from(vec![
+                Span::styled(connector, Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("   {}", line), Style::default().fg(Color::White)),
+            ]));
         }
     }
 
