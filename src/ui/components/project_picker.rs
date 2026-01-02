@@ -324,8 +324,8 @@ impl ProjectPicker {
 
                 let style = if is_selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Rgb(100, 180, 220))
+                        .fg(Color::White)
+                        .bg(Color::Rgb(40, 60, 80))
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -342,6 +342,25 @@ impl ProjectPicker {
                         buf[(list_area.x + j as u16, y)].set_style(style);
                     }
                 }
+            }
+
+            // Show scroll indicators if there are more items
+            let total_filtered = state.filtered.len();
+            let can_scroll_up = state.scroll_offset > 0;
+            let can_scroll_down = state.scroll_offset + visible_count < total_filtered;
+
+            if can_scroll_up {
+                let indicator_x = list_area.x + list_area.width - 2;
+                buf[(indicator_x, list_area.y)]
+                    .set_char('▲')
+                    .set_style(Style::default().fg(Color::DarkGray));
+            }
+            if can_scroll_down && list_area.height > 0 {
+                let indicator_x = list_area.x + list_area.width - 2;
+                let indicator_y = list_area.y + list_area.height - 1;
+                buf[(indicator_x, indicator_y)]
+                    .set_char('▼')
+                    .set_style(Style::default().fg(Color::DarkGray));
             }
         }
 
