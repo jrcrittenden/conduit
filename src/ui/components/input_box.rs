@@ -7,7 +7,7 @@ use ratatui::{
         StatefulWidget, Widget, Wrap,
     },
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Text input component with cursor and history
 pub struct InputBox {
@@ -420,6 +420,73 @@ impl InputBox {
     /// Get current scroll offset
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
+    }
+
+    /// Set cursor position from a mouse click
+    pub fn set_cursor_from_click(&mut self, click_x: u16, click_y: u16, area: Rect) {
+        // Calculate position relative to inner area (accounting for border)
+        let inner_x = area.x + 1;
+        let inner_y = area.y + 1;
+
+        // Check if click is within the inner area
+        if click_x < inner_x || click_y < inner_y {
+            return;
+        }
+
+        let relative_x = (click_x - inner_x) as usize;
+        let relative_y = (click_y - inner_y) as usize;
+
+        // Calculate which line was clicked (accounting for scroll)
+        let target_line = relative_y + self.scroll_offset;
+
+        let lines: Vec<&str> = self.input.split('\n').collect();
+        let total_lines = lines.len();
+
+        // Clamp to valid line range
+        let target_line = target_line.min(total_lines.saturating_sub(1));
+
+        // Account for prompt "> " on the first visible line when not scrolled
+        let effective_x = if target_line == 0 {
+            // First line has "> " prefix (2 chars)
+            relative_x.saturating_sub(2)
+        } else {
+            relative_x
+        };
+
+        // Find byte offset for the target position
+        let line = lines.get(target_line).unwrap_or(&"");
+
+        // Convert visual x position to byte offset within the line
+        // We need to account for Unicode character widths
+        let mut byte_offset_in_line = 0;
+        let mut visual_x = 0;
+
+        for (idx, ch) in line.char_indices() {
+            if visual_x >= effective_x {
+                byte_offset_in_line = idx;
+                break;
+            }
+            visual_x += ch.width().unwrap_or(1);
+            byte_offset_in_line = idx + ch.len_utf8();
+        }
+
+        // If we went past all characters, set to end of line
+        if visual_x < effective_x {
+            byte_offset_in_line = line.len();
+        }
+
+        // Calculate absolute byte offset
+        let mut cursor_pos = 0;
+        for (i, line) in lines.iter().enumerate() {
+            if i == target_line {
+                cursor_pos += byte_offset_in_line;
+                break;
+            }
+            cursor_pos += line.len() + 1; // +1 for newline
+        }
+
+        // Clamp to valid range
+        self.cursor_pos = cursor_pos.min(self.input.len());
     }
 
     /// Render the input box

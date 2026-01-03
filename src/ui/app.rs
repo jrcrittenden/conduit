@@ -7,7 +7,7 @@ use std::time::Duration;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-        MouseEventKind,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -90,6 +90,19 @@ pub struct App {
     project_picker_state: ProjectPickerState,
     /// Confirmation dialog state (for archive, delete, etc.)
     confirmation_dialog_state: ConfirmationDialogState,
+    // Layout areas for mouse hit-testing
+    /// Sidebar area (if visible)
+    sidebar_area: Option<Rect>,
+    /// Tab bar area
+    tab_bar_area: Option<Rect>,
+    /// Chat/content area
+    chat_area: Option<Rect>,
+    /// Input box area
+    input_area: Option<Rect>,
+    /// Status bar area
+    status_bar_area: Option<Rect>,
+    /// Footer area
+    footer_area: Option<Rect>,
 }
 
 impl App {
@@ -146,6 +159,13 @@ impl App {
             base_dir_dialog_state: BaseDirDialogState::new(),
             project_picker_state: ProjectPickerState::new(),
             confirmation_dialog_state: ConfirmationDialogState::new(),
+            // Layout areas initialized to None, will be set during draw()
+            sidebar_area: None,
+            tab_bar_area: None,
+            chat_area: None,
+            input_area: None,
+            status_bar_area: None,
+            footer_area: None,
         };
 
         // Load sidebar data
@@ -437,6 +457,39 @@ impl App {
     }
 
     async fn handle_key_event(&mut self, key: event::KeyEvent) -> anyhow::Result<()> {
+        // Handle dialog-specific keys FIRST before global shortcuts
+        // This prevents global shortcuts from interfering with dialog navigation
+        if self.input_mode == InputMode::PickingProject
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            match key.code {
+                KeyCode::Char('j') => {
+                    self.project_picker_state.select_next();
+                    return Ok(());
+                }
+                KeyCode::Char('k') => {
+                    self.project_picker_state.select_prev();
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    self.project_picker_state.page_down();
+                    return Ok(());
+                }
+                KeyCode::Char('b') => {
+                    self.project_picker_state.page_up();
+                    return Ok(());
+                }
+                KeyCode::Char('a') => {
+                    // Open custom path dialog
+                    self.project_picker_state.hide();
+                    self.add_repo_dialog_state.show();
+                    self.input_mode = InputMode::AddingRepository;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         // Ctrl+Shift shortcuts (check first, before plain Ctrl)
         if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
             match key.code {
@@ -449,7 +502,7 @@ impl App {
             }
         }
 
-        // Global shortcuts (work in any mode)
+        // Global shortcuts (work in any mode, but skip if already handled by dialog)
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('q') => {
@@ -458,33 +511,25 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('n') => {
-                    // Show sidebar so user can create a new workspace
-                    // If no projects, show project picker instead
-                    if self.sidebar_data.nodes.is_empty() {
-                        // No projects - trigger project picker flow
-                        let base_dir = self
-                            .app_state_dao
-                            .as_ref()
-                            .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
+                    // Always trigger new project workflow
+                    let base_dir = self
+                        .app_state_dao
+                        .as_ref()
+                        .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
 
-                        if let Some(base_dir_str) = base_dir {
-                            let base_path = if base_dir_str.starts_with('~') {
-                                dirs::home_dir()
-                                    .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
-                                    .unwrap_or_else(|| PathBuf::from(&base_dir_str))
-                            } else {
-                                PathBuf::from(&base_dir_str)
-                            };
-                            self.project_picker_state.show(base_path);
-                            self.input_mode = InputMode::PickingProject;
+                    if let Some(base_dir_str) = base_dir {
+                        let base_path = if base_dir_str.starts_with('~') {
+                            dirs::home_dir()
+                                .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
+                                .unwrap_or_else(|| PathBuf::from(&base_dir_str))
                         } else {
-                            self.base_dir_dialog_state.show();
-                            self.input_mode = InputMode::SettingBaseDir;
-                        }
+                            PathBuf::from(&base_dir_str)
+                        };
+                        self.project_picker_state.show(base_path);
+                        self.input_mode = InputMode::PickingProject;
                     } else {
-                        // Has projects - show sidebar focused
-                        self.sidebar_state.show();
-                        self.input_mode = InputMode::SidebarNavigation;
+                        self.base_dir_dialog_state.show();
+                        self.input_mode = InputMode::SettingBaseDir;
                     }
                     return Ok(());
                 }
@@ -1129,15 +1174,9 @@ impl App {
                     KeyCode::End => {
                         self.project_picker_state.move_cursor_end();
                     }
-                    KeyCode::Char('a')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        // Open custom path dialog
-                        self.project_picker_state.hide();
-                        self.add_repo_dialog_state.show();
-                        self.input_mode = InputMode::AddingRepository;
-                    }
                     KeyCode::Char(c) => {
+                        // Note: Ctrl+A/J/K/F/B are handled at the top of handle_key_event
+                        // before global shortcuts to prevent bubbling
                         self.project_picker_state.insert_char(c);
                     }
                     _ => {}
@@ -1531,6 +1570,9 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, mouse: event::MouseEvent) {
+        let x = mouse.column;
+        let y = mouse.row;
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if let Some(session) = self.tab_manager.active_session_mut() {
@@ -1541,6 +1583,335 @@ impl App {
                 if let Some(session) = self.tab_manager.active_session_mut() {
                     session.chat_view.scroll_down(3);
                 }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Handle left clicks based on position
+                self.handle_mouse_click(x, y);
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a mouse click at the given position
+    fn handle_mouse_click(&mut self, x: u16, y: u16) {
+        // Handle project picker clicks first (it's a modal dialog)
+        if self.input_mode == InputMode::PickingProject
+            && self.project_picker_state.is_visible()
+        {
+            self.handle_project_picker_click(x, y);
+            return;
+        }
+
+        // Check sidebar first (if visible)
+        if let Some(sidebar_area) = self.sidebar_area {
+            if Self::point_in_rect(x, y, sidebar_area) {
+                self.handle_sidebar_click(x, y, sidebar_area);
+                return;
+            }
+        }
+
+        // Check tab bar
+        if let Some(tab_bar_area) = self.tab_bar_area {
+            if Self::point_in_rect(x, y, tab_bar_area) {
+                self.handle_tab_bar_click(x, y, tab_bar_area);
+                return;
+            }
+        }
+
+        // Check input area
+        if let Some(input_area) = self.input_area {
+            if Self::point_in_rect(x, y, input_area) {
+                self.handle_input_click(x, y, input_area);
+                return;
+            }
+        }
+
+        // Check status bar
+        if let Some(status_bar_area) = self.status_bar_area {
+            if Self::point_in_rect(x, y, status_bar_area) {
+                self.handle_status_bar_click(x, y, status_bar_area);
+                return;
+            }
+        }
+
+        // Check footer
+        if let Some(footer_area) = self.footer_area {
+            if Self::point_in_rect(x, y, footer_area) {
+                self.handle_footer_click(x, y, footer_area);
+                return;
+            }
+        }
+
+        // Click in chat area - could be used for text selection in future
+        // For now, clicking in chat area while in sidebar mode returns to normal
+        if self.input_mode == InputMode::SidebarNavigation {
+            self.input_mode = InputMode::Normal;
+            self.sidebar_state.set_focused(false);
+        }
+    }
+
+    /// Check if a point is within a rectangle
+    fn point_in_rect(x: u16, y: u16, rect: Rect) -> bool {
+        x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+    }
+
+    /// Handle click in sidebar area
+    fn handle_sidebar_click(&mut self, _x: u16, y: u16, sidebar_area: Rect) {
+        // Account for border (1 row at top for title)
+        let inner_y = sidebar_area.y + 1;
+        if y < inner_y {
+            return; // Clicked on title bar
+        }
+
+        let clicked_row = (y - inner_y) as usize;
+        let clicked_index = clicked_row + self.sidebar_state.tree_state.offset;
+
+        // Get the node at this index
+        if let Some(node) = self.sidebar_data.get_at(clicked_index) {
+            use crate::ui::components::{ActionType, NodeType};
+
+            // Update selection
+            self.sidebar_state.tree_state.selected = clicked_index;
+
+            // Focus sidebar
+            self.sidebar_state.set_focused(true);
+            self.input_mode = InputMode::SidebarNavigation;
+
+            // Handle based on node type
+            match node.node_type {
+                NodeType::Repository => {
+                    // Toggle expand/collapse
+                    self.sidebar_data.toggle_at(clicked_index);
+                }
+                NodeType::Workspace => {
+                    // Open workspace
+                    self.open_workspace(node.id);
+                    self.input_mode = InputMode::Normal;
+                    self.sidebar_state.set_focused(false);
+                }
+                NodeType::Action(ActionType::NewWorkspace) => {
+                    // Create new workspace
+                    if let Some(parent_id) = node.parent_id {
+                        self.start_workspace_creation(parent_id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle click in tab bar area
+    fn handle_tab_bar_click(&mut self, x: u16, _y: u16, tab_bar_area: Rect) {
+        let relative_x = x.saturating_sub(tab_bar_area.x) as usize;
+
+        // Calculate tab positions
+        let mut current_x: usize = 0;
+        let tab_names = self.tab_manager.tab_names();
+        let active_index = self.tab_manager.active_index();
+
+        for (i, name) in tab_names.iter().enumerate() {
+            // Format: " ▶ [N] Name " for active, "  [N] Name " for inactive
+            let tab_width = if i == active_index {
+                4 + 3 + name.len() + 1 // " ▶ " + "[N]" + " Name" + " "
+            } else {
+                2 + 3 + name.len() + 1 // "  " + "[N]" + " Name" + " "
+            };
+
+            if relative_x < current_x + tab_width {
+                // Clicked on this tab
+                self.tab_manager.switch_to(i);
+                return;
+            }
+            current_x += tab_width;
+        }
+
+        // Check for "+ New" button
+        if self.tab_manager.can_add_tab() {
+            // "+ New" button width is about 7 characters: "  [+]  "
+            let new_button_width = 7;
+            if relative_x >= current_x && relative_x < current_x + new_button_width {
+                // Show agent selector for new tab
+                self.agent_selector_state.show();
+                self.input_mode = InputMode::SelectingAgent;
+            }
+        }
+    }
+
+    /// Handle click in input area
+    fn handle_input_click(&mut self, x: u16, y: u16, input_area: Rect) {
+        // Switch to normal mode if we were in sidebar navigation
+        if self.input_mode == InputMode::SidebarNavigation {
+            self.input_mode = InputMode::Normal;
+            self.sidebar_state.set_focused(false);
+        }
+
+        // Position cursor based on click
+        if let Some(session) = self.tab_manager.active_session_mut() {
+            session.input_box.set_cursor_from_click(x, y, input_area);
+        }
+    }
+
+    /// Handle click in status bar area
+    fn handle_status_bar_click(&mut self, x: u16, _y: u16, status_bar_area: Rect) {
+        // Status bar format: "agent │ model │ status"
+        // Click on model portion to open model selector
+        let relative_x = x.saturating_sub(status_bar_area.x) as usize;
+
+        // Approximate positions - agent type is ~6 chars, separator is 3, model starts around 9
+        // This is a rough estimate; could be made more precise by tracking actual positions
+        if relative_x >= 9 && relative_x < 25 {
+            // Likely clicked on model area
+            if let Some(session) = self.tab_manager.active_session() {
+                let agent_type = session.agent_type;
+                self.model_selector_state.show(agent_type);
+                self.input_mode = InputMode::SelectingModel;
+            }
+        }
+    }
+
+    /// Handle click in project picker dialog
+    fn handle_project_picker_click(&mut self, x: u16, y: u16) {
+        // Calculate dialog position based on terminal size
+        // The dialog is 60 wide and centered, height is 7 + list_height
+        let terminal_size = crossterm::terminal::size().unwrap_or((80, 24));
+        let screen_width = terminal_size.0;
+        let screen_height = terminal_size.1;
+
+        let dialog_width: u16 = 60;
+        let list_height = self
+            .project_picker_state
+            .max_visible
+            .min(self.project_picker_state.filtered.len().max(1)) as u16;
+        let dialog_height = 7 + list_height;
+
+        // Calculate dialog position (centered)
+        let dialog_x = screen_width.saturating_sub(dialog_width) / 2;
+        let dialog_y = screen_height.saturating_sub(dialog_height) / 2;
+
+        // Inner area is dialog minus border (1 on each side)
+        let inner_x = dialog_x + 1;
+        let inner_y = dialog_y + 1;
+        let inner_width = dialog_width.saturating_sub(2);
+
+        // List area starts at row 3 within inner area (after search, search input, separator)
+        // Layout: [0] search label, [1] search input, [2] separator, [3..] list
+        let list_y = inner_y + 3;
+        let list_height_actual = dialog_height.saturating_sub(7); // Same as list_height
+
+        // Check if click is in the list area
+        if x >= inner_x
+            && x < inner_x + inner_width
+            && y >= list_y
+            && y < list_y + list_height_actual
+        {
+            // Calculate which row was clicked
+            let clicked_row = (y - list_y) as usize;
+
+            // Select the item and trigger double-click detection
+            if self.project_picker_state.select_at_row(clicked_row) {
+                // Check for double-click (would need timing - for now just select)
+                // Could add double-click to open in future
+            }
+        }
+    }
+
+    /// Handle click in footer area
+    fn handle_footer_click(&mut self, x: u16, _y: u16, footer_area: Rect) {
+        // Footer format: "[Key] Action │ [Key] Action │ ..."
+        // Map click position to hint and trigger corresponding action
+        let relative_x = x.saturating_sub(footer_area.x) as usize;
+
+        // Calculate hint positions based on current view mode
+        let hints: Vec<(&str, &str)> = match self.view_mode {
+            ViewMode::Chat => vec![
+                ("Tab", "Switch"),
+                ("^N", "+ Project"),
+                ("^W", "Close"),
+                ("^C", "Interrupt"),
+                ("^G", "Debug"),
+                ("^Q", "Quit"),
+            ],
+            ViewMode::RawEvents => vec![
+                ("j/k", "Navigate"),
+                ("l/Enter", "Expand"),
+                ("h/Esc", "Collapse"),
+                ("^G", "Chat"),
+                ("^Q", "Quit"),
+            ],
+        };
+
+        let mut current_x: usize = 0;
+        for (key, action) in hints {
+            // Format: "[Key] Action │ " - approximately key.len() + 2 + action.len() + 3
+            let hint_width = key.len() + 2 + 1 + action.len() + 3;
+
+            if relative_x >= current_x && relative_x < current_x + hint_width {
+                // Clicked on this hint - trigger the action
+                self.trigger_footer_action(key);
+                return;
+            }
+            current_x += hint_width;
+        }
+    }
+
+    /// Trigger an action from footer hint click
+    fn trigger_footer_action(&mut self, key: &str) {
+        match key {
+            "Tab" => {
+                // Toggle sidebar
+                self.sidebar_state.toggle();
+                if self.sidebar_state.visible {
+                    self.input_mode = InputMode::SidebarNavigation;
+                } else {
+                    self.input_mode = InputMode::Normal;
+                }
+            }
+            "^N" => {
+                // New project - trigger same as Ctrl+N
+                let base_dir = self
+                    .app_state_dao
+                    .as_ref()
+                    .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
+
+                if let Some(base_dir_str) = base_dir {
+                    let base_path = if base_dir_str.starts_with('~') {
+                        dirs::home_dir()
+                            .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
+                            .unwrap_or_else(|| PathBuf::from(&base_dir_str))
+                    } else {
+                        PathBuf::from(&base_dir_str)
+                    };
+                    self.project_picker_state.show(base_path);
+                    self.input_mode = InputMode::PickingProject;
+                } else {
+                    self.base_dir_dialog_state.show();
+                    self.input_mode = InputMode::SettingBaseDir;
+                }
+            }
+            "^W" => {
+                // Close tab
+                let active = self.tab_manager.active_index();
+                self.tab_manager.close_tab(active);
+            }
+            "^C" => {
+                // Interrupt
+                if let Some(session) = self.tab_manager.active_session_mut() {
+                    if session.is_processing {
+                        session.chat_view.push(ChatMessage::system("Interrupted"));
+                        session.stop_processing();
+                    }
+                }
+            }
+            "^G" => {
+                // Toggle debug view
+                self.view_mode = match self.view_mode {
+                    ViewMode::Chat => ViewMode::RawEvents,
+                    ViewMode::RawEvents => ViewMode::Chat,
+                };
+            }
+            "^Q" => {
+                // Quit
+                self.save_session_state();
+                self.should_quit = true;
             }
             _ => {}
         }
@@ -1815,6 +2186,13 @@ impl App {
             (Rect::default(), size)
         };
 
+        // Store sidebar area for mouse hit-testing
+        self.sidebar_area = if self.sidebar_state.visible {
+            Some(sidebar_area)
+        } else {
+            None
+        };
+
         // Render sidebar if visible
         if self.sidebar_state.visible {
             let sidebar = Sidebar::new(&self.sidebar_data);
@@ -1847,6 +2225,13 @@ impl App {
                         Constraint::Length(1),            // Footer
                     ])
                     .split(content_area);
+
+                // Store layout areas for mouse hit-testing
+                self.tab_bar_area = Some(chunks[0]);
+                self.chat_area = Some(chunks[1]);
+                self.input_area = Some(chunks[2]);
+                self.status_bar_area = Some(chunks[3]);
+                self.footer_area = Some(chunks[4]);
 
                 // Draw tab bar
                 let tab_bar = TabBar::new(
@@ -1893,6 +2278,13 @@ impl App {
                         Constraint::Length(1), // Footer
                     ])
                     .split(content_area);
+
+                // Store layout areas for mouse hit-testing (no input/status in this mode)
+                self.tab_bar_area = Some(chunks[0]);
+                self.chat_area = Some(chunks[1]); // Raw events view uses chat area slot
+                self.input_area = None;
+                self.status_bar_area = None;
+                self.footer_area = Some(chunks[2]);
 
                 // Draw tab bar
                 let tab_bar = TabBar::new(

@@ -4,7 +4,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
-    widgets::{Paragraph, Widget},
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget},
 };
 use std::path::PathBuf;
 
@@ -95,8 +95,16 @@ impl ProjectPickerState {
             })
             .collect();
 
-        // Sort alphabetically by name
-        projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Sort by last modified time (most recent first)
+        projects.sort_by(|a, b| {
+            let time_a = std::fs::metadata(&a.path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let time_b = std::fs::metadata(&b.path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            time_b.cmp(&time_a) // Descending order (most recent first)
+        });
         self.projects = projects;
     }
 
@@ -180,6 +188,51 @@ impl ProjectPickerState {
             if self.selected >= self.scroll_offset + self.max_visible {
                 self.scroll_offset = self.selected - self.max_visible + 1;
             }
+        }
+    }
+
+    /// Page up (move up by visible count)
+    pub fn page_up(&mut self) {
+        if !self.filtered.is_empty() {
+            let page_size = self.max_visible;
+            if self.selected >= page_size {
+                self.selected -= page_size;
+            } else {
+                self.selected = 0;
+            }
+            // Adjust scroll to keep selected visible
+            if self.selected < self.scroll_offset {
+                self.scroll_offset = self.selected;
+            }
+        }
+    }
+
+    /// Page down (move down by visible count)
+    pub fn page_down(&mut self) {
+        if !self.filtered.is_empty() {
+            let page_size = self.max_visible;
+            let max_idx = self.filtered.len().saturating_sub(1);
+            if self.selected + page_size <= max_idx {
+                self.selected += page_size;
+            } else {
+                self.selected = max_idx;
+            }
+            // Adjust scroll to keep selected visible
+            if self.selected >= self.scroll_offset + self.max_visible {
+                self.scroll_offset = self.selected.saturating_sub(self.max_visible - 1);
+            }
+        }
+    }
+
+    /// Select item at a given visual row (for mouse clicks)
+    /// Returns true if an item was selected
+    pub fn select_at_row(&mut self, row: usize) -> bool {
+        let target_idx = self.scroll_offset + row;
+        if target_idx < self.filtered.len() {
+            self.selected = target_idx;
+            true
+        } else {
+            false
         }
     }
 
@@ -344,31 +397,37 @@ impl ProjectPicker {
                 }
             }
 
-            // Show scroll indicators if there are more items
+            // Render scrollbar if there are more items than visible
             let total_filtered = state.filtered.len();
-            let can_scroll_up = state.scroll_offset > 0;
-            let can_scroll_down = state.scroll_offset + visible_count < total_filtered;
+            if total_filtered > visible_count {
+                let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"))
+                    .track_symbol(Some("│"))
+                    .thumb_symbol("█");
 
-            if can_scroll_up {
-                let indicator_x = list_area.x + list_area.width - 2;
-                buf[(indicator_x, list_area.y)]
-                    .set_char('▲')
-                    .set_style(Style::default().fg(Color::DarkGray));
-            }
-            if can_scroll_down && list_area.height > 0 {
-                let indicator_x = list_area.x + list_area.width - 2;
-                let indicator_y = list_area.y + list_area.height - 1;
-                buf[(indicator_x, indicator_y)]
-                    .set_char('▼')
-                    .set_style(Style::default().fg(Color::DarkGray));
+                let max_scroll = total_filtered.saturating_sub(visible_count);
+                let mut scrollbar_state = ScrollbarState::new(max_scroll)
+                    .position(state.scroll_offset);
+
+                scrollbar.render(
+                    Rect {
+                        x: list_area.x + list_area.width - 1,
+                        y: list_area.y,
+                        width: 1,
+                        height: list_area.height,
+                    },
+                    buf,
+                    &mut scrollbar_state,
+                );
             }
         }
 
         // Render instructions
         let instructions = InstructionBar::new(vec![
-            ("↑↓", "Navigate"),
+            ("↑↓/^J^K", "Navigate"),
+            ("^F/^B", "Page"),
             ("Enter", "Select"),
-            ("^A", "Custom path"),
             ("Esc", "Cancel"),
         ]);
         instructions.render(chunks[5], buf);
