@@ -21,6 +21,10 @@ pub struct AgentSession {
     pub workspace_id: Option<Uuid>,
     /// Working directory for the agent (workspace path)
     pub working_dir: Option<PathBuf>,
+    /// Project/repository name (for display in tab)
+    pub project_name: Option<String>,
+    /// Workspace name (for display in tab)
+    pub workspace_name: Option<String>,
     /// Session ID to resume on next prompt (set when restoring from saved state)
     pub resume_session_id: Option<SessionId>,
     /// Chat view component
@@ -55,6 +59,8 @@ impl AgentSession {
             model: None,
             workspace_id: None,
             working_dir: None,
+            project_name: None,
+            workspace_name: None,
             resume_session_id: None,
             chat_view: ChatView::new(),
             raw_events_view: RawEventsView::new(),
@@ -79,24 +85,34 @@ impl AgentSession {
 
     /// Get display name for the tab
     pub fn tab_name(&self) -> String {
-        // Get workspace name from working_dir path
-        let name = self
-            .working_dir
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .map(String::from);
-
-        match name {
-            Some(workspace_name) => {
-                format!("{} ({})", workspace_name, self.agent_type.as_str())
+        // Use project_name and workspace_name if available
+        match (&self.project_name, &self.workspace_name) {
+            (Some(project), Some(workspace)) => {
+                format!("{} ({})", project, workspace)
             }
-            None => format!("{} (new)", self.agent_type.as_str()),
+            (Some(project), None) => project.clone(),
+            (None, Some(workspace)) => workspace.clone(),
+            (None, None) => {
+                // Fall back to deriving from working_dir
+                let name = self
+                    .working_dir
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(String::from);
+
+                match name {
+                    Some(dir_name) => dir_name,
+                    None => format!("{} (new)", self.agent_type.as_str()),
+                }
+            }
         }
     }
 
     /// Update status bar with current state
     pub fn update_status(&mut self) {
+        self.status_bar.set_agent_type(self.agent_type);
+        self.status_bar.set_model(self.model.clone());
         self.status_bar.set_session_id(self.agent_session_id.clone());
         self.status_bar.set_token_usage(self.total_usage.clone());
         self.status_bar.set_processing(self.is_processing);

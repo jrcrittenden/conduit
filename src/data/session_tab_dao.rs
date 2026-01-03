@@ -112,6 +112,22 @@ impl SessionTabDao {
         Ok(count as usize)
     }
 
+    /// Get a session tab by workspace_id
+    pub fn get_by_workspace_id(&self, workspace_id: Uuid) -> SqliteResult<Option<SessionTab>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, created_at
+             FROM session_tabs WHERE workspace_id = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![workspace_id.to_string()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::row_to_session_tab(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Convert a database row to a SessionTab
     fn row_to_session_tab(row: &rusqlite::Row) -> SqliteResult<SessionTab> {
         let id_str: String = row.get(0)?;

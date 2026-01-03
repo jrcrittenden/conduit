@@ -11,6 +11,7 @@ pub struct TabBar {
     tabs: Vec<String>,
     active: usize,
     can_add: bool,
+    focused: bool,
 }
 
 impl TabBar {
@@ -19,7 +20,14 @@ impl TabBar {
             tabs,
             active,
             can_add,
+            focused: true,
         }
+    }
+
+    /// Set whether the tab bar is focused
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -28,8 +36,8 @@ impl TabBar {
         for (i, tab) in self.tabs.iter().enumerate() {
             let is_active = i == self.active;
 
-            // Tab indicator
-            if is_active {
+            // Tab indicator - only show when focused
+            if is_active && self.focused {
                 spans.push(Span::styled(
                     " ▶ ",
                     Style::default().fg(Color::Cyan),
@@ -38,11 +46,16 @@ impl TabBar {
                 spans.push(Span::raw("   "));
             }
 
-            // Tab name
+            // Tab name - dim the active tab when not focused
             let tab_style = if is_active {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
+                if self.focused {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    // Active but unfocused - slightly brighter than inactive
+                    Style::default().fg(Color::Gray)
+                }
             } else {
                 Style::default().fg(Color::DarkGray)
             };

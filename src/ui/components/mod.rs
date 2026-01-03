@@ -4,6 +4,7 @@ mod base_dir_dialog;
 mod chat_view;
 mod confirmation_dialog;
 mod dialog;
+mod error_dialog;
 mod global_footer;
 mod input_box;
 mod markdown;
@@ -23,8 +24,11 @@ mod turn_summary;
 pub use add_repo_dialog::{AddRepoDialog, AddRepoDialogState};
 pub use agent_selector::{AgentSelector, AgentSelectorState};
 pub use base_dir_dialog::{BaseDirDialog, BaseDirDialogState};
-pub use confirmation_dialog::{ConfirmationDialog, ConfirmationDialogState, ConfirmationType};
+pub use confirmation_dialog::{
+    ConfirmationContext, ConfirmationDialog, ConfirmationDialogState, ConfirmationType,
+};
 pub use dialog::{DialogFrame, InstructionBar, StatusLine};
+pub use error_dialog::{ErrorDialog, ErrorDialogState};
 pub use project_picker::{ProjectEntry, ProjectPicker, ProjectPickerState};
 pub use text_input::TextInputState;
 pub use chat_view::{ChatMessage, ChatView, MessageRole};

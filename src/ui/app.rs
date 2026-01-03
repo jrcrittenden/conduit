@@ -20,8 +20,8 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::agent::{
-    load_claude_history, load_codex_history, AgentEvent, AgentRunner, AgentStartConfig, AgentType,
-    ClaudeCodeRunner, CodexCliRunner, SessionId,
+    load_claude_history, load_codex_history_with_debug, AgentEvent, AgentRunner, AgentStartConfig,
+    AgentType, ClaudeCodeRunner, CodexCliRunner, HistoryDebugEntry, SessionId,
 };
 use crate::config::Config;
 use crate::data::{
@@ -30,10 +30,10 @@ use crate::data::{
 use crate::git::WorktreeManager;
 use crate::ui::components::{
     AddRepoDialog, AddRepoDialogState, AgentSelector, AgentSelectorState, BaseDirDialog,
-    BaseDirDialogState, ChatMessage, ConfirmationDialog, ConfirmationDialogState,
-    ConfirmationType, EventDirection, GlobalFooter, ModelSelector, ModelSelectorState,
-    ProcessingState, ProjectPicker, ProjectPickerState, Sidebar, SidebarData, SidebarState,
-    SplashScreen, TabBar,
+    BaseDirDialogState, ChatMessage, ConfirmationContext, ConfirmationDialog,
+    ConfirmationDialogState, ConfirmationType, ErrorDialog, ErrorDialogState, EventDirection,
+    GlobalFooter, ModelSelector, ModelSelectorState, ProcessingState, ProjectPicker,
+    ProjectPickerState, Sidebar, SidebarData, SidebarState, SplashScreen, TabBar,
 };
 use crate::ui::events::{AppEvent, InputMode, ViewMode};
 use crate::ui::session::AgentSession;
@@ -90,6 +90,8 @@ pub struct App {
     project_picker_state: ProjectPickerState,
     /// Confirmation dialog state (for archive, delete, etc.)
     confirmation_dialog_state: ConfirmationDialogState,
+    /// Error dialog state
+    error_dialog_state: ErrorDialogState,
     // Layout areas for mouse hit-testing
     /// Sidebar area (if visible)
     sidebar_area: Option<Rect>,
@@ -159,6 +161,7 @@ impl App {
             base_dir_dialog_state: BaseDirDialogState::new(),
             project_picker_state: ProjectPickerState::new(),
             confirmation_dialog_state: ConfirmationDialogState::new(),
+            error_dialog_state: ErrorDialogState::new(),
             // Layout areas initialized to None, will be set during draw()
             sidebar_area: None,
             tab_bar_area: None,
@@ -220,11 +223,19 @@ impl App {
             session.workspace_id = tab.workspace_id;
             session.model = tab.model;
 
-            // Look up workspace to get working_dir
+            // Look up workspace to get working_dir, workspace_name, and project_name
             if let Some(workspace_id) = tab.workspace_id {
                 if let Some(workspace_dao) = &self.workspace_dao {
                     if let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) {
                         session.working_dir = Some(workspace.path);
+                        session.workspace_name = Some(workspace.name.clone());
+
+                        // Look up repository for project name
+                        if let Some(repo_dao) = &self.repo_dao {
+                            if let Ok(Some(repo)) = repo_dao.get_by_id(workspace.repository_id) {
+                                session.project_name = Some(repo.name);
+                            }
+                        }
                     }
                 }
             }
@@ -236,14 +247,28 @@ impl App {
                 session.agent_session_id = Some(session_id.clone());
 
                 // Load chat history from agent files
-                let messages = match tab.agent_type {
-                    AgentType::Claude => load_claude_history(session_id_str),
-                    AgentType::Codex => load_codex_history(session_id_str),
-                };
-
-                if let Ok(msgs) = messages {
-                    for msg in msgs {
-                        session.chat_view.push(msg);
+                match tab.agent_type {
+                    AgentType::Claude => {
+                        if let Ok(msgs) = load_claude_history(session_id_str) {
+                            for msg in msgs {
+                                session.chat_view.push(msg);
+                            }
+                        }
+                    }
+                    AgentType::Codex => {
+                        if let Ok((msgs, debug_entries, file_path)) =
+                            load_codex_history_with_debug(session_id_str)
+                        {
+                            // Populate debug pane with history load info
+                            Self::populate_debug_from_history(
+                                &mut session.raw_events_view,
+                                &debug_entries,
+                                &file_path,
+                            );
+                            for msg in msgs {
+                                session.chat_view.push(msg);
+                            }
+                        }
                     }
                 }
             }
@@ -543,7 +568,11 @@ impl App {
                     }
                     let active = self.tab_manager.active_index();
                     self.tab_manager.close_tab(active);
-                    // Don't quit when closing last tab - show splash screen instead
+                    // Switch to sidebar navigation if all tabs are closed
+                    if self.tab_manager.is_empty() {
+                        self.sidebar_state.visible = true;
+                        self.input_mode = InputMode::SidebarNavigation;
+                    }
                     return Ok(());
                 }
                 KeyCode::Char('c') => {
@@ -554,13 +583,6 @@ impl App {
                             session.stop_processing();
                             // TODO: Actually kill the agent process
                         }
-                    }
-                    return Ok(());
-                }
-                KeyCode::Char(c) if c.is_ascii_digit() => {
-                    let tab_num = c.to_digit(10).unwrap_or(0) as usize;
-                    if tab_num > 0 {
-                        self.tab_manager.switch_to(tab_num - 1);
                     }
                     return Ok(());
                 }
@@ -612,10 +634,10 @@ impl App {
                     }
                     return Ok(());
                 }
-                KeyCode::Char('m') => {
-                    // Ctrl+M: Show model selector for current session
+                KeyCode::Char('o') => {
+                    // Ctrl+O: Show model selector for current session
                     if let Some(session) = self.tab_manager.active_session() {
-                        self.model_selector_state.show(session.agent_type);
+                        self.model_selector_state.show(session.model.clone());
                         self.input_mode = InputMode::SelectingModel;
                     }
                     return Ok(());
@@ -661,6 +683,7 @@ impl App {
             && !self.project_picker_state.is_visible()
             && !self.add_repo_dialog_state.is_visible()
             && self.input_mode != InputMode::SelectingAgent
+            && self.input_mode != InputMode::ShowingError
         {
             match key.code {
                 KeyCode::Enter => {
@@ -722,6 +745,14 @@ impl App {
                     // Alt+Backspace: Delete word back (same as Ctrl+W)
                     if let Some(session) = self.tab_manager.active_session_mut() {
                         session.input_box.delete_word_back();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    // Alt+1-9: Switch to tab N
+                    let tab_num = c.to_digit(10).unwrap_or(0) as usize;
+                    if tab_num > 0 {
+                        self.tab_manager.switch_to(tab_num - 1);
                     }
                     return Ok(());
                 }
@@ -825,12 +856,29 @@ impl App {
                                 // Toggle expand in raw events view
                                 session.raw_events_view.toggle_expand();
                             } else if session.input_box.is_empty() {
-                                self.tab_manager.next_tab();
+                                // Cycle: tabs -> sidebar (if visible) -> tabs
+                                let is_last_tab = self.tab_manager.active_index()
+                                    == self.tab_manager.len().saturating_sub(1);
+                                if is_last_tab && self.sidebar_state.visible {
+                                    // Go to sidebar (only if it's visible)
+                                    self.sidebar_state.set_focused(true);
+                                    self.input_mode = InputMode::SidebarNavigation;
+                                } else {
+                                    self.tab_manager.next_tab();
+                                }
                             }
                         }
                         KeyCode::BackTab => {
                             if session.input_box.is_empty() {
-                                self.tab_manager.prev_tab();
+                                // Cycle backwards: sidebar (if visible) -> tabs
+                                let is_first_tab = self.tab_manager.active_index() == 0;
+                                if is_first_tab && self.sidebar_state.visible {
+                                    // Go to sidebar (only if it's visible)
+                                    self.sidebar_state.set_focused(true);
+                                    self.input_mode = InputMode::SidebarNavigation;
+                                } else {
+                                    self.tab_manager.prev_tab();
+                                }
                             }
                         }
                         KeyCode::Char(c) => {
@@ -929,7 +977,20 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Esc | KeyCode::Tab => {
+                    KeyCode::Esc => {
+                        self.input_mode = InputMode::Normal;
+                        self.sidebar_state.set_focused(false);
+                    }
+                    KeyCode::Tab => {
+                        // Cycle to first tab
+                        self.tab_manager.switch_to(0);
+                        self.input_mode = InputMode::Normal;
+                        self.sidebar_state.set_focused(false);
+                    }
+                    KeyCode::BackTab => {
+                        // Cycle backwards to last tab
+                        let last_tab = self.tab_manager.len().saturating_sub(1);
+                        self.tab_manager.switch_to(last_tab);
                         self.input_mode = InputMode::Normal;
                         self.sidebar_state.set_focused(false);
                     }
@@ -952,12 +1013,18 @@ impl App {
                         self.input_mode = InputMode::SettingBaseDir;
                     }
                     KeyCode::Char('x') => {
-                        // Archive workspace (if workspace is selected)
+                        // Archive workspace or remove project (based on selected node type)
                         let selected = self.sidebar_state.tree_state.selected;
                         if let Some(node) = self.sidebar_data.get_at(selected) {
                             use crate::ui::components::NodeType;
-                            if node.node_type == NodeType::Workspace {
-                                self.initiate_archive_workspace(node.id);
+                            match node.node_type {
+                                NodeType::Workspace => {
+                                    self.initiate_archive_workspace(node.id);
+                                }
+                                NodeType::Repository => {
+                                    self.initiate_remove_project(node.id);
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -971,9 +1038,16 @@ impl App {
                     }
                     KeyCode::Enter => {
                         if self.confirmation_dialog_state.is_confirm_selected() {
-                            // Execute the confirmed action
-                            if let Some(workspace_id) = self.confirmation_dialog_state.context {
-                                self.execute_archive_workspace(workspace_id);
+                            // Execute the confirmed action based on context type
+                            if let Some(ref context) = self.confirmation_dialog_state.context {
+                                match context {
+                                    ConfirmationContext::ArchiveWorkspace(id) => {
+                                        self.execute_archive_workspace(*id);
+                                    }
+                                    ConfirmationContext::RemoveProject(id) => {
+                                        self.execute_remove_project(*id);
+                                    }
+                                }
                             }
                         }
                         self.confirmation_dialog_state.hide();
@@ -985,11 +1059,30 @@ impl App {
                     }
                     KeyCode::Char('y') => {
                         // Quick confirm
-                        if let Some(workspace_id) = self.confirmation_dialog_state.context {
-                            self.execute_archive_workspace(workspace_id);
+                        if let Some(ref context) = self.confirmation_dialog_state.context {
+                            match context {
+                                ConfirmationContext::ArchiveWorkspace(id) => {
+                                    self.execute_archive_workspace(*id);
+                                }
+                                ConfirmationContext::RemoveProject(id) => {
+                                    self.execute_remove_project(*id);
+                                }
+                            }
                         }
                         self.confirmation_dialog_state.hide();
                         self.input_mode = InputMode::SidebarNavigation;
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::ShowingError => {
+                match key.code {
+                    KeyCode::Enter | KeyCode::Esc => {
+                        self.error_dialog_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('d') => {
+                        self.error_dialog_state.toggle_details();
                     }
                     _ => {}
                 }
@@ -1058,13 +1151,26 @@ impl App {
                     KeyCode::Enter => {
                         if let Some(model) = self.model_selector_state.selected_model() {
                             let model_id = model.id.clone();
-                            // Update session's model
+                            let agent_type = model.agent_type;
+                            let display_name = model.display_name.clone();
+                            // Update session's model and agent type
                             if let Some(session) = self.tab_manager.active_session_mut() {
+                                let agent_changed = session.agent_type != agent_type;
                                 session.model = Some(model_id.clone());
-                                session.chat_view.push(ChatMessage::system(format!(
-                                    "Model changed to: {}",
-                                    model_id
-                                )));
+                                session.agent_type = agent_type;
+                                // Update the status bar
+                                session.update_status();
+                                if agent_changed {
+                                    session.chat_view.push(ChatMessage::system(format!(
+                                        "Switched to {} with model: {}",
+                                        agent_type, display_name
+                                    )));
+                                } else {
+                                    session.chat_view.push(ChatMessage::system(format!(
+                                        "Model changed to: {}",
+                                        display_name
+                                    )));
+                                }
                             }
                         }
                         self.model_selector_state.hide();
@@ -1083,7 +1189,14 @@ impl App {
                         if self.base_dir_dialog_state.is_valid {
                             // Save base directory to app_state
                             if let Some(dao) = &self.app_state_dao {
-                                let _ = dao.set("projects_base_dir", self.base_dir_dialog_state.input());
+                                if let Err(e) = dao.set("projects_base_dir", self.base_dir_dialog_state.input()) {
+                                    self.base_dir_dialog_state.hide();
+                                    self.show_error(
+                                        "Failed to Save",
+                                        &format!("Could not save projects directory: {}", e),
+                                    );
+                                    return Ok(());
+                                }
                             }
                             // Show project picker
                             let base_path = self.base_dir_dialog_state.expanded_path();
@@ -1182,6 +1295,9 @@ impl App {
                     _ => {}
                 }
             }
+            InputMode::RemovingProject => {
+                // Ignore all input while removing project (spinner is shown)
+            }
         }
 
         Ok(())
@@ -1192,6 +1308,9 @@ impl App {
         // Check if there's already a tab with this workspace - switch to it
         if let Some(existing_index) = self.find_tab_for_workspace(workspace_id) {
             self.tab_manager.switch_to(existing_index);
+            // Close the sidebar and switch to normal mode
+            self.sidebar_state.hide();
+            self.input_mode = InputMode::Normal;
             return;
         }
 
@@ -1215,6 +1334,19 @@ impl App {
             return;
         }
 
+        // Get the repository name for the tab title
+        let project_name = self
+            .repo_dao
+            .as_ref()
+            .and_then(|dao| dao.get_by_id(workspace.repository_id).ok().flatten())
+            .map(|repo| repo.name);
+
+        // Check if there's a saved session for this workspace (to restore chat history)
+        let saved_tab = self
+            .session_tab_dao
+            .as_ref()
+            .and_then(|dao| dao.get_by_workspace_id(workspace_id).ok().flatten());
+
         // Update last accessed
         let _ = workspace_dao.update_last_accessed(workspace_id);
 
@@ -1222,10 +1354,54 @@ impl App {
         self.tab_manager
             .new_tab_with_working_dir(AgentType::Claude, workspace.path.clone());
 
-        // Store workspace_id in session
+        // Store workspace info in session and restore chat history if available
         if let Some(session) = self.tab_manager.active_session_mut() {
             session.workspace_id = Some(workspace_id);
+            session.project_name = project_name;
+            session.workspace_name = Some(workspace.name.clone());
+
+            // Restore saved session data if available
+            if let Some(saved) = saved_tab {
+                session.model = saved.model;
+
+                // Restore chat history from agent files
+                if let Some(ref session_id_str) = saved.agent_session_id {
+                    let session_id = SessionId::from_string(session_id_str.clone());
+                    session.resume_session_id = Some(session_id.clone());
+                    session.agent_session_id = Some(session_id);
+
+                    // Load chat history
+                    match saved.agent_type {
+                        AgentType::Claude => {
+                            if let Ok(msgs) = load_claude_history(session_id_str) {
+                                for msg in msgs {
+                                    session.chat_view.push(msg);
+                                }
+                            }
+                        }
+                        AgentType::Codex => {
+                            if let Ok((msgs, debug_entries, file_path)) =
+                                load_codex_history_with_debug(session_id_str)
+                            {
+                                // Populate debug pane with history load info
+                                Self::populate_debug_from_history(
+                                    &mut session.raw_events_view,
+                                    &debug_entries,
+                                    &file_path,
+                                );
+                                for msg in msgs {
+                                    session.chat_view.push(msg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+
+        // Close the sidebar and switch to normal mode
+        self.sidebar_state.hide();
+        self.input_mode = InputMode::Normal;
     }
 
     /// Find the tab index for a workspace if it's already open
@@ -1234,6 +1410,40 @@ impl App {
             .sessions()
             .iter()
             .position(|session| session.workspace_id == Some(workspace_id))
+    }
+
+    /// Populate the debug pane with history loading debug entries
+    fn populate_debug_from_history(
+        raw_events_view: &mut crate::ui::components::RawEventsView,
+        debug_entries: &[HistoryDebugEntry],
+        file_path: &std::path::Path,
+    ) {
+        use crate::ui::components::EventDirection;
+
+        // First, add a header entry showing the file being loaded
+        let header_json = serde_json::json!({
+            "action": "history_load",
+            "file": file_path.to_string_lossy(),
+            "total_entries": debug_entries.len(),
+            "included": debug_entries.iter().filter(|e| e.status == "INCLUDE").count(),
+            "skipped": debug_entries.iter().filter(|e| e.status == "SKIP").count(),
+        });
+        raw_events_view.push_event(EventDirection::Received, "history_load", header_json);
+
+        // Add each debug entry
+        for entry in debug_entries {
+            // Create a summary JSON that includes status info
+            let summary_json = serde_json::json!({
+                "line": entry.line_number,
+                "type": entry.entry_type,
+                "status": entry.status,
+                "reason": entry.reason,
+                "raw": entry.raw_json,
+            });
+
+            let event_type = format!("L{} {} {}", entry.line_number, entry.status, entry.entry_type);
+            raw_events_view.push_event(EventDirection::Received, event_type, summary_json);
+        }
     }
 
     /// Start the workspace creation process for a repository
@@ -1315,6 +1525,10 @@ impl App {
                 {
                     tracing::error!(error = %cleanup_err, "Failed to clean up worktree after DB error");
                 }
+                self.show_error(
+                    "Workspace Creation Failed",
+                    &format!("Failed to save workspace to database: {}", e),
+                );
                 return;
             }
         }
@@ -1420,9 +1634,21 @@ impl App {
             warnings,
             confirmation_type,
             "Archive",
-            Some(workspace_id),
+            Some(ConfirmationContext::ArchiveWorkspace(workspace_id)),
         );
         self.input_mode = InputMode::Confirming;
+    }
+
+    /// Show an error dialog with a simple message
+    fn show_error(&mut self, title: &str, message: &str) {
+        self.error_dialog_state.show(title, message);
+        self.input_mode = InputMode::ShowingError;
+    }
+
+    /// Show an error dialog with technical details
+    fn show_error_with_details(&mut self, title: &str, message: &str, details: &str) {
+        self.error_dialog_state.show_with_details(title, message, details);
+        self.input_mode = InputMode::ShowingError;
     }
 
     /// Execute the archive workspace action after confirmation
@@ -1448,9 +1674,11 @@ impl App {
         };
 
         // Remove the git worktree
+        let mut worktree_error: Option<String> = None;
         if let Some(base_path) = repo_base_path {
             if let Err(e) = self.worktree_manager.remove_worktree(&base_path, &workspace.path) {
                 tracing::error!(error = %e, "Failed to remove worktree");
+                worktree_error = Some(format!("Failed to remove worktree: {}", e));
                 // Continue anyway to mark as archived in DB
             }
         }
@@ -1458,7 +1686,21 @@ impl App {
         // Mark workspace as archived in database
         if let Err(e) = workspace_dao.archive(workspace_id) {
             tracing::error!(error = %e, "Failed to archive workspace in database");
+            self.show_error(
+                "Archive Failed",
+                &format!("Failed to archive workspace in database: {}", e),
+            );
             return;
+        }
+
+        // Show worktree error if one occurred (but archive succeeded)
+        if let Some(error_msg) = worktree_error {
+            self.show_error_with_details(
+                "Worktree Warning",
+                "Workspace archived but worktree removal failed",
+                &error_msg,
+            );
+            // Don't return - continue with cleanup since archive succeeded
         }
 
         tracing::info!(workspace_id = %workspace_id, "Workspace archived successfully");
@@ -1486,6 +1728,180 @@ impl App {
         }
     }
 
+    /// Initiate project removal - shows confirmation dialog
+    fn initiate_remove_project(&mut self, repo_id: uuid::Uuid) {
+        // Get repository info
+        let Some(repo_dao) = &self.repo_dao else {
+            return;
+        };
+
+        let Ok(Some(repo)) = repo_dao.get_by_id(repo_id) else {
+            tracing::error!(repo_id = %repo_id, "Repository not found");
+            return;
+        };
+
+        // Get all workspaces for this repository
+        let workspaces = if let Some(workspace_dao) = &self.workspace_dao {
+            workspace_dao.get_by_repository(repo_id).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Check git status for each workspace
+        let mut warnings = Vec::new();
+        let mut has_dirty = false;
+        let mut has_unmerged = false;
+
+        for ws in &workspaces {
+            if let Ok(status) = self.worktree_manager.get_branch_status(&ws.path) {
+                if status.is_dirty {
+                    has_dirty = true;
+                }
+                if !status.is_merged {
+                    has_unmerged = true;
+                }
+            }
+        }
+
+        // Build warning messages
+        let workspace_count = workspaces.len();
+        if workspace_count > 0 {
+            warnings.push(format!(
+                "{} workspace{} will be archived",
+                workspace_count,
+                if workspace_count == 1 { "" } else { "s" }
+            ));
+        }
+        if has_dirty {
+            warnings.push("Some workspaces have uncommitted changes".to_string());
+        }
+        if has_unmerged {
+            warnings.push("Some branches are not merged to main".to_string());
+        }
+
+        // Determine confirmation type based on risk
+        let confirmation_type = match (has_dirty, has_unmerged) {
+            (true, true) => ConfirmationType::Danger,
+            (true, false) | (false, true) => ConfirmationType::Warning,
+            (false, false) => {
+                if workspace_count > 0 {
+                    ConfirmationType::Warning
+                } else {
+                    ConfirmationType::Info
+                }
+            }
+        };
+
+        // Show confirmation dialog
+        self.confirmation_dialog_state.show(
+            format!("Remove \"{}\"?", repo.name),
+            "This will archive all workspaces and remove the project.",
+            warnings,
+            confirmation_type,
+            "Remove",
+            Some(ConfirmationContext::RemoveProject(repo_id)),
+        );
+        self.input_mode = InputMode::Confirming;
+    }
+
+    /// Execute project removal after confirmation
+    fn execute_remove_project(&mut self, repo_id: uuid::Uuid) {
+        // Set spinner mode
+        self.input_mode = InputMode::RemovingProject;
+
+        // Collect errors during removal
+        let mut errors: Vec<String> = Vec::new();
+
+        // Get repository info for base path and name
+        let (repo_base_path, repo_name) = if let Some(repo_dao) = &self.repo_dao {
+            match repo_dao.get_by_id(repo_id) {
+                Ok(Some(repo)) => (repo.base_path, repo.name.clone()),
+                _ => (None, String::from("Unknown")),
+            }
+        } else {
+            (None, String::from("Unknown"))
+        };
+
+        // Get all workspaces for this repository
+        let workspaces = if let Some(workspace_dao) = &self.workspace_dao {
+            workspace_dao.get_by_repository(repo_id).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Archive each workspace
+        for ws in workspaces {
+            // Remove git worktree
+            if let Some(ref base_path) = repo_base_path {
+                if let Err(e) = self.worktree_manager.remove_worktree(base_path, &ws.path) {
+                    errors.push(format!("Failed to remove worktree '{}': {}", ws.name, e));
+                }
+            }
+
+            // Archive in database
+            if let Some(workspace_dao) = &self.workspace_dao {
+                if let Err(e) = workspace_dao.archive(ws.id) {
+                    errors.push(format!("Failed to archive workspace '{}': {}", ws.name, e));
+                }
+            }
+
+            // Close any open tabs
+            self.close_tabs_for_workspace(ws.id);
+        }
+
+        // Also remove the project folder from worktrees directory
+        let worktrees_dir = crate::util::worktrees_dir();
+        let project_worktrees_path = worktrees_dir.join(&repo_name);
+        if project_worktrees_path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&project_worktrees_path) {
+                errors.push(format!("Failed to remove project folder: {}", e));
+            }
+        }
+
+        // Delete repository from database
+        if let Some(repo_dao) = &self.repo_dao {
+            if let Err(e) = repo_dao.delete(repo_id) {
+                tracing::error!(error = %e, "Failed to delete repository");
+                errors.push(format!("Failed to delete repository from database: {}", e));
+            }
+        }
+
+        // Show errors if any occurred
+        if !errors.is_empty() {
+            self.show_error_with_details(
+                "Project Removal Errors",
+                "Some operations failed during project removal",
+                &errors.join("\n"),
+            );
+        } else {
+            tracing::info!(repo_id = %repo_id, "Project removed successfully");
+        }
+
+        // Remember current selection
+        let current_selection = self.sidebar_state.tree_state.selected;
+
+        // Refresh sidebar
+        self.refresh_sidebar_data();
+
+        // Adjust selection (move up if needed)
+        let visible_count = self.sidebar_data.visible_nodes().len();
+        if visible_count > 0 {
+            let new_selection = if current_selection > 0 {
+                current_selection - 1
+            } else {
+                0
+            };
+            self.sidebar_state.tree_state.selected = new_selection.min(visible_count - 1);
+            // Still have projects, go to sidebar navigation
+            self.input_mode = InputMode::SidebarNavigation;
+        } else {
+            // No projects left, show splash screen
+            self.sidebar_state.tree_state.selected = 0;
+            self.show_first_time_splash = true;
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
     /// Close any tabs that are using the specified workspace
     fn close_tabs_for_workspace(&mut self, workspace_id: uuid::Uuid) {
         // Find tabs with this workspace and close them (in reverse order to maintain indices)
@@ -1506,20 +1922,33 @@ impl App {
         for idx in indices_to_close.into_iter().rev() {
             self.tab_manager.close_tab(idx);
         }
+
+        // Switch to sidebar navigation if all tabs are closed
+        // But don't override if we're showing an error dialog
+        if self.tab_manager.is_empty() && self.input_mode != InputMode::ShowingError {
+            self.sidebar_state.visible = true;
+            self.input_mode = InputMode::SidebarNavigation;
+        }
     }
 
     /// Add a project to the sidebar (repository only, no workspace)
-    /// Returns the repository ID if created successfully
+    /// Returns the repository ID - either existing or newly created
     fn add_project_to_sidebar(&mut self, path: std::path::PathBuf) -> Option<uuid::Uuid> {
+        let Some(repo_dao) = &self.repo_dao else {
+            return None;
+        };
+
+        // Check if project already exists
+        if let Ok(Some(existing_repo)) = repo_dao.get_by_path(&path) {
+            // Project already exists, just return its ID (caller will expand/select it)
+            return Some(existing_repo.id);
+        }
+
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown")
             .to_string();
-
-        let Some(repo_dao) = &self.repo_dao else {
-            return None;
-        };
 
         // Create repository (without default workspace)
         let repo = Repository::from_local_path(&name, path);
@@ -1536,18 +1965,25 @@ impl App {
     }
 
     /// Add a repository from the custom path dialog
-    /// Returns the repository ID if created successfully
+    /// Returns the repository ID - either existing or newly created
     fn add_repository(&mut self) -> Option<uuid::Uuid> {
         let path = self.add_repo_dialog_state.expanded_path();
+
+        let Some(repo_dao) = &self.repo_dao else {
+            return None;
+        };
+
+        // Check if project already exists
+        if let Ok(Some(existing_repo)) = repo_dao.get_by_path(&path) {
+            // Project already exists, just return its ID (caller will expand/select it)
+            return Some(existing_repo.id);
+        }
+
         let name = self
             .add_repo_dialog_state
             .repo_name
             .clone()
             .unwrap_or_else(|| "Unknown".to_string());
-
-        let Some(repo_dao) = &self.repo_dao else {
-            return None;
-        };
 
         // Create repository (without default workspace)
         let repo = Repository::from_local_path(&name, path);
@@ -1575,12 +2011,22 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if let Some(session) = self.tab_manager.active_session_mut() {
+                // Route scroll to project picker if it's visible
+                if self.input_mode == InputMode::PickingProject
+                    && self.project_picker_state.is_visible()
+                {
+                    self.project_picker_state.select_prev();
+                } else if let Some(session) = self.tab_manager.active_session_mut() {
                     session.chat_view.scroll_up(3);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(session) = self.tab_manager.active_session_mut() {
+                // Route scroll to project picker if it's visible
+                if self.input_mode == InputMode::PickingProject
+                    && self.project_picker_state.is_visible()
+                {
+                    self.project_picker_state.select_next();
+                } else if let Some(session) = self.tab_manager.active_session_mut() {
                     session.chat_view.scroll_down(3);
                 }
             }
@@ -1663,6 +2109,10 @@ impl App {
             return; // Clicked on title bar
         }
 
+        // Always focus sidebar when clicking on it
+        self.sidebar_state.set_focused(true);
+        self.input_mode = InputMode::SidebarNavigation;
+
         let clicked_row = (y - inner_y) as usize;
         let clicked_index = clicked_row + self.sidebar_state.tree_state.offset;
 
@@ -1672,10 +2122,6 @@ impl App {
 
             // Update selection
             self.sidebar_state.tree_state.selected = clicked_index;
-
-            // Focus sidebar
-            self.sidebar_state.set_focused(true);
-            self.input_mode = InputMode::SidebarNavigation;
 
             // Handle based on node type
             match node.node_type {
@@ -1753,16 +2199,14 @@ impl App {
     /// Handle click in status bar area
     fn handle_status_bar_click(&mut self, x: u16, _y: u16, status_bar_area: Rect) {
         // Status bar format: "agent │ model │ status"
-        // Click on model portion to open model selector
+        // Click on agent or model portion to open model selector
         let relative_x = x.saturating_sub(status_bar_area.x) as usize;
 
         // Approximate positions - agent type is ~6 chars, separator is 3, model starts around 9
-        // This is a rough estimate; could be made more precise by tracking actual positions
-        if relative_x >= 9 && relative_x < 25 {
-            // Likely clicked on model area
+        // Click on either agent tag (0-8) or model area (9-25) opens the model selector
+        if relative_x < 25 {
             if let Some(session) = self.tab_manager.active_session() {
-                let agent_type = session.agent_type;
-                self.model_selector_state.show(agent_type);
+                self.model_selector_state.show(session.model.clone());
                 self.input_mode = InputMode::SelectingModel;
             }
         }
@@ -2233,12 +2677,14 @@ impl App {
                 self.status_bar_area = Some(chunks[3]);
                 self.footer_area = Some(chunks[4]);
 
-                // Draw tab bar
+                // Draw tab bar (unfocused when sidebar is focused)
+                let tabs_focused = self.input_mode != InputMode::SidebarNavigation;
                 let tab_bar = TabBar::new(
                     self.tab_manager.tab_names(),
                     self.tab_manager.active_index(),
                     self.tab_manager.can_add_tab(),
-                );
+                )
+                .focused(tabs_focused);
                 tab_bar.render(chunks[0], f.buffer_mut());
 
                 // Draw active session components
@@ -2286,12 +2732,14 @@ impl App {
                 self.status_bar_area = None;
                 self.footer_area = Some(chunks[2]);
 
-                // Draw tab bar
+                // Draw tab bar (unfocused when sidebar is focused)
+                let tabs_focused = self.input_mode != InputMode::SidebarNavigation;
                 let tab_bar = TabBar::new(
                     self.tab_manager.tab_names(),
                     self.tab_manager.active_index(),
                     self.tab_manager.can_add_tab(),
-                );
+                )
+                .focused(tabs_focused);
                 tab_bar.render(chunks[0], f.buffer_mut());
 
                 // Draw raw events view
@@ -2340,6 +2788,52 @@ impl App {
             use ratatui::widgets::Widget;
             let dialog = ConfirmationDialog::new(&self.confirmation_dialog_state);
             dialog.render(size, f.buffer_mut());
+        }
+
+        // Draw error dialog (on top of everything except spinner)
+        if self.error_dialog_state.visible {
+            use ratatui::widgets::Widget;
+            let dialog = ErrorDialog::new(&self.error_dialog_state);
+            dialog.render(size, f.buffer_mut());
+        }
+
+        // Draw removing project spinner overlay
+        if self.input_mode == InputMode::RemovingProject {
+            use crate::ui::components::Spinner;
+            use ratatui::layout::Alignment;
+            use ratatui::style::{Color, Style};
+            use ratatui::text::Line;
+            use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+
+            let dialog_width: u16 = 30;
+            let dialog_height: u16 = 3;
+
+            // Center the dialog
+            let x = size.width.saturating_sub(dialog_width) / 2;
+            let y = size.height.saturating_sub(dialog_height) / 2;
+
+            let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+            // Clear the area first
+            Clear.render(dialog_area, f.buffer_mut());
+
+            // Render dialog box
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+
+            let inner = block.inner(dialog_area);
+            block.render(dialog_area, f.buffer_mut());
+
+            // Render spinner and message
+            let spinner = Spinner::dots();
+            let line = Line::from(vec![
+                spinner.span(Color::Cyan),
+                ratatui::text::Span::raw(" Removing project..."),
+            ]);
+
+            let para = Paragraph::new(line).alignment(Alignment::Center);
+            para.render(inner, f.buffer_mut());
         }
     }
 

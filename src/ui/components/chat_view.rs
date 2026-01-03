@@ -1,3 +1,4 @@
+use ansi_to_tui::IntoText;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -380,16 +381,37 @@ impl ChatView {
         ];
         lines.push(Line::from(header_spans));
 
-        // Output lines with tree connector
+        // Output lines with tree connector - parse ANSI codes
         let content_lines: Vec<&str> = msg.content.lines().collect();
         let last_idx = content_lines.len().saturating_sub(1);
 
         for (i, line) in content_lines.iter().enumerate() {
             let connector = if i == last_idx { "└ " } else { "│ " };
-            lines.push(Line::from(vec![
+
+            // Parse ANSI escape codes in the line
+            let parsed_text = line.as_bytes().into_text();
+            let content_spans: Vec<Span<'static>> = match parsed_text {
+                Ok(text) => {
+                    // Flatten all lines from the parsed text into spans
+                    text.lines
+                        .into_iter()
+                        .flat_map(|l| l.spans)
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect()
+                }
+                Err(_) => {
+                    // Fallback to plain text if parsing fails
+                    vec![Span::styled(line.to_string(), Style::default().fg(Color::White))]
+                }
+            };
+
+            // Build the line with connector prefix and parsed content
+            let mut line_spans = vec![
                 Span::styled(connector, Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("   {}", line), Style::default().fg(Color::White)),
-            ]));
+                Span::raw("   "),
+            ];
+            line_spans.extend(content_spans);
+            lines.push(Line::from(line_spans));
         }
     }
 

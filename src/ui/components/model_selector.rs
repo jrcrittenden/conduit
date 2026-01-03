@@ -2,7 +2,7 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
@@ -10,43 +10,91 @@ use ratatui::{
 
 use crate::agent::{AgentType, ModelInfo, ModelRegistry};
 
-use super::{DialogFrame, InstructionBar};
+use super::DialogFrame;
+
+/// Represents an item in the model selector (either a section header or a model)
+#[derive(Debug, Clone)]
+pub enum ModelSelectorItem {
+    SectionHeader(AgentType),
+    Model(ModelInfo),
+}
 
 /// State for the model selector dialog
 #[derive(Debug, Clone)]
 pub struct ModelSelectorState {
     /// Whether the dialog is visible
     pub visible: bool,
-    /// Currently selected index
+    /// Currently selected index (among selectable items only)
     pub selected: usize,
-    /// Current agent type (determines which models to show)
-    pub agent_type: AgentType,
-    /// Available models for the current agent
-    pub models: Vec<ModelInfo>,
+    /// All items (headers + models)
+    pub items: Vec<ModelSelectorItem>,
+    /// Indices of selectable items (models only)
+    pub selectable_indices: Vec<usize>,
+    /// Currently active model ID (shows checkmark)
+    pub current_model_id: Option<String>,
 }
 
 impl Default for ModelSelectorState {
     fn default() -> Self {
-        Self::new(AgentType::Claude)
+        Self::new()
     }
 }
 
 impl ModelSelectorState {
-    pub fn new(agent_type: AgentType) -> Self {
-        let models = ModelRegistry::models_for(agent_type);
+    pub fn new() -> Self {
+        let items = Self::build_items();
+        let selectable_indices: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| match item {
+                ModelSelectorItem::Model(_) => Some(i),
+                ModelSelectorItem::SectionHeader(_) => None,
+            })
+            .collect();
+
         Self {
             visible: false,
             selected: 0,
-            agent_type,
-            models,
+            items,
+            selectable_indices,
+            current_model_id: None,
         }
     }
 
-    /// Show the dialog for a specific agent type
-    pub fn show(&mut self, agent_type: AgentType) {
+    fn build_items() -> Vec<ModelSelectorItem> {
+        let mut items = Vec::new();
+
+        // Claude Code section
+        items.push(ModelSelectorItem::SectionHeader(AgentType::Claude));
+        for model in ModelRegistry::claude_models() {
+            items.push(ModelSelectorItem::Model(model));
+        }
+
+        // Codex section
+        items.push(ModelSelectorItem::SectionHeader(AgentType::Codex));
+        for model in ModelRegistry::codex_models() {
+            items.push(ModelSelectorItem::Model(model));
+        }
+
+        items
+    }
+
+    /// Show the dialog, optionally setting the current model
+    pub fn show(&mut self, current_model_id: Option<String>) {
         self.visible = true;
-        self.agent_type = agent_type;
-        self.models = ModelRegistry::models_for(agent_type);
+        self.current_model_id = current_model_id.clone();
+
+        // Try to select the current model if provided
+        if let Some(ref model_id) = current_model_id {
+            for (select_idx, &item_idx) in self.selectable_indices.iter().enumerate() {
+                if let ModelSelectorItem::Model(ref model) = self.items[item_idx] {
+                    if &model.id == model_id {
+                        self.selected = select_idx;
+                        return;
+                    }
+                }
+            }
+        }
         self.selected = 0;
     }
 
@@ -59,26 +107,35 @@ impl ModelSelectorState {
     pub fn select_previous(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
-        } else if !self.models.is_empty() {
-            self.selected = self.models.len() - 1;
+        } else if !self.selectable_indices.is_empty() {
+            self.selected = self.selectable_indices.len() - 1;
         }
     }
 
     /// Move selection down
     pub fn select_next(&mut self) {
-        if !self.models.is_empty() {
-            self.selected = (self.selected + 1) % self.models.len();
+        if !self.selectable_indices.is_empty() {
+            self.selected = (self.selected + 1) % self.selectable_indices.len();
         }
     }
 
     /// Get the currently selected model
     pub fn selected_model(&self) -> Option<&ModelInfo> {
-        self.models.get(self.selected)
+        let item_idx = self.selectable_indices.get(self.selected)?;
+        match &self.items[*item_idx] {
+            ModelSelectorItem::Model(model) => Some(model),
+            ModelSelectorItem::SectionHeader(_) => None,
+        }
     }
 
     /// Check if dialog is visible
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Get the item index for the currently selected item
+    fn selected_item_index(&self) -> Option<usize> {
+        self.selectable_indices.get(self.selected).copied()
     }
 }
 
@@ -97,94 +154,129 @@ impl ModelSelector {
         }
 
         // Calculate dialog size
-        let dialog_height = (state.models.len() as u16 * 2 + 5).min(area.height.saturating_sub(2));
+        // Each section header: 1 line + spacing
+        // Each model: 1 line
+        // Plus borders and padding
+        let content_height = state.items.len() as u16 + 4; // items + padding
+        let dialog_height = content_height.min(area.height.saturating_sub(4));
+        let dialog_width: u16 = 40;
 
-        // Render dialog frame
-        let title = format!("Select {} Model", state.agent_type);
-        let frame = DialogFrame::new(&title, 50, dialog_height);
+        // Render dialog frame (no title for this popup style)
+        let frame = DialogFrame::new("", dialog_width, dialog_height)
+            .border_color(Color::DarkGray);
         let inner = frame.render(area, buf);
 
-        // Layout inside dialog
-        let mut constraints = vec![Constraint::Length(1)]; // Header
-        for _ in &state.models {
-            constraints.push(Constraint::Length(2));
+        if inner.height < 4 {
+            return;
         }
-        constraints.push(Constraint::Length(1)); // Spacing
-        constraints.push(Constraint::Length(1)); // Instructions
 
-        let chunks = Layout::vertical(constraints).split(inner);
+        let selected_item_idx = state.selected_item_index();
 
-        // Render header
-        let header = Paragraph::new("Choose a model:")
-            .style(Style::default().fg(Color::White));
-        header.render(chunks[0], buf);
-
-        // Render model options
-        for (i, model) in state.models.iter().enumerate() {
-            let chunk_idx = i + 1;
-            if chunk_idx >= chunks.len() - 2 {
+        // Render items
+        let mut y = inner.y;
+        for (item_idx, item) in state.items.iter().enumerate() {
+            if y >= inner.y + inner.height.saturating_sub(1) {
                 break;
             }
 
-            let is_selected = i == state.selected;
-
-            let style = if is_selected {
-                Style::default()
-                    .bg(Color::Rgb(40, 60, 80))
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            // Model name and alias
-            let name_line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "▶ " } else { "  " },
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(&model.display_name, style),
-                Span::styled(
-                    format!(" ({})", model.alias),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-
-            // Description
-            let desc_line = Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    &model.description,
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-
-            // Render both lines
-            let option = Paragraph::new(vec![name_line, desc_line]);
-            option.render(chunks[chunk_idx], buf);
-
-            // Highlight background for selected
-            if is_selected {
-                for dy in 0..2 {
-                    let row_y = chunks[chunk_idx].y + dy;
-                    if row_y < chunks[chunk_idx].y + chunks[chunk_idx].height {
-                        for dx in 0..chunks[chunk_idx].width {
-                            buf[(chunks[chunk_idx].x + dx, row_y)]
-                                .set_bg(Color::Rgb(40, 60, 80));
+            match item {
+                ModelSelectorItem::SectionHeader(agent_type) => {
+                    // Add spacing before section (except first)
+                    if item_idx > 0 {
+                        y += 1;
+                        if y >= inner.y + inner.height.saturating_sub(1) {
+                            break;
                         }
                     }
+
+                    // Render section header
+                    let title = ModelRegistry::agent_section_title(*agent_type);
+                    let header_line = Line::from(Span::styled(
+                        title,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    let header = Paragraph::new(header_line);
+                    header.render(
+                        Rect {
+                            x: inner.x + 1,
+                            y,
+                            width: inner.width.saturating_sub(2),
+                            height: 1,
+                        },
+                        buf,
+                    );
+                    y += 1;
+                }
+                ModelSelectorItem::Model(model) => {
+                    let is_selected = selected_item_idx == Some(item_idx);
+                    let is_current = state
+                        .current_model_id
+                        .as_ref()
+                        .map(|id| id == &model.id)
+                        .unwrap_or(false);
+
+                    // Build the line
+                    let icon = ModelRegistry::agent_icon(model.agent_type);
+                    let mut spans = vec![
+                        Span::styled(
+                            format!("  {} ", icon),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled(
+                            &model.display_name,
+                            if is_selected {
+                                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(Color::White)
+                            },
+                        ),
+                    ];
+
+                    // Add NEW badge if applicable
+                    if model.is_new {
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            " NEW ",
+                            Style::default()
+                                .fg(Color::Rgb(180, 160, 140))
+                                .bg(Color::Rgb(60, 50, 45)),
+                        ));
+                    }
+
+                    // Calculate remaining space for checkmark
+                    let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
+                    let checkmark_col = inner.width.saturating_sub(4) as usize;
+
+                    if is_current && content_len < checkmark_col {
+                        // Add padding to right-align checkmark
+                        let padding = checkmark_col.saturating_sub(content_len);
+                        spans.push(Span::raw(" ".repeat(padding)));
+                        spans.push(Span::styled("✓", Style::default().fg(Color::White)));
+                    }
+
+                    let line = Line::from(spans);
+                    let para = Paragraph::new(line);
+
+                    let row_rect = Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    };
+
+                    // Highlight selected row background
+                    if is_selected {
+                        for dx in 0..row_rect.width {
+                            buf[(row_rect.x + dx, row_rect.y)]
+                                .set_bg(Color::Rgb(50, 50, 50));
+                        }
+                    }
+
+                    para.render(row_rect, buf);
+                    y += 1;
                 }
             }
         }
-
-        // Render instructions
-        let instructions_idx = chunks.len() - 1;
-        let instructions = InstructionBar::new(vec![
-            ("↑↓", "select"),
-            ("Enter", "confirm"),
-            ("Esc", "cancel"),
-        ]);
-        instructions.render(chunks[instructions_idx], buf);
     }
 }
 

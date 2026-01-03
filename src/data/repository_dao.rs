@@ -104,6 +104,23 @@ impl RepositoryDao {
         Ok(count > 0)
     }
 
+    /// Get a repository by base path
+    pub fn get_by_path(&self, path: &PathBuf) -> SqliteResult<Option<Repository>> {
+        let conn = self.conn.lock().unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, base_path, repository_url, created_at, updated_at
+             FROM repositories WHERE base_path = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![path_str])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::row_to_repository(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Convert a database row to a Repository
     fn row_to_repository(row: &rusqlite::Row) -> SqliteResult<Repository> {
         let id_str: String = row.get(0)?;

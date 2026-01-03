@@ -6,12 +6,13 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::agent::{AgentType, SessionId, TokenUsage};
+use crate::agent::{AgentType, ModelRegistry, SessionId, TokenUsage};
 use crate::ui::components::Spinner;
 
 /// Status bar component showing session info
 pub struct StatusBar {
     agent_type: AgentType,
+    model: Option<String>,
     session_id: Option<SessionId>,
     token_usage: TokenUsage,
     estimated_cost: f64,
@@ -23,6 +24,7 @@ impl StatusBar {
     pub fn new(agent_type: AgentType) -> Self {
         Self {
             agent_type,
+            model: None,
             session_id: None,
             token_usage: TokenUsage::default(),
             estimated_cost: 0.0,
@@ -40,6 +42,14 @@ impl StatusBar {
 
     pub fn set_session_id(&mut self, id: Option<SessionId>) {
         self.session_id = id;
+    }
+
+    pub fn set_agent_type(&mut self, agent_type: AgentType) {
+        self.agent_type = agent_type;
+    }
+
+    pub fn set_model(&mut self, model: Option<String>) {
+        self.model = model;
     }
 
     pub fn set_token_usage(&mut self, usage: TokenUsage) {
@@ -71,14 +81,15 @@ impl StatusBar {
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut spans = Vec::new();
 
-        // Agent type indicator
+        // Agent type indicator with icon
         let agent_color = match self.agent_type {
             AgentType::Claude => Color::Cyan,
             AgentType::Codex => Color::Magenta,
         };
+        let agent_icon = ModelRegistry::agent_icon(self.agent_type);
 
         spans.push(Span::styled(
-            format!(" {} ", self.agent_type.display_name()),
+            format!(" {} {} ", agent_icon, self.agent_type.display_name()),
             Style::default()
                 .bg(agent_color)
                 .fg(Color::Black)
@@ -87,13 +98,30 @@ impl StatusBar {
 
         spans.push(Span::raw(" "));
 
-        // Session ID
+        // Model name
+        let model_display = if let Some(ref model_id) = self.model {
+            // Try to find the model's display name
+            ModelRegistry::find_model(self.agent_type, model_id)
+                .map(|m| m.display_name)
+                .unwrap_or_else(|| model_id.clone())
+        } else {
+            // Show default model
+            ModelRegistry::default_model(self.agent_type)
+        };
+
+        spans.push(Span::styled(
+            format!("{} ", model_display),
+            Style::default().fg(Color::White),
+        ));
+
+        // Session ID (smaller, dimmed)
         if let Some(ref id) = self.session_id {
             let short_id = &id.as_str()[..8.min(id.as_str().len())];
             spans.push(Span::styled(
-                format!("sess:{} ", short_id),
+                format!("({})", short_id),
                 Style::default().fg(Color::DarkGray),
             ));
+            spans.push(Span::raw(" "));
         }
 
         // Processing indicator with spinner

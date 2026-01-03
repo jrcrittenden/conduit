@@ -54,7 +54,7 @@ impl TabManager {
 
     /// Close a tab by index
     pub fn close_tab(&mut self, index: usize) -> bool {
-        if index >= self.sessions.len() || self.sessions.len() <= 1 {
+        if index >= self.sessions.len() {
             return false;
         }
 

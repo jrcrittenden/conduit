@@ -23,6 +23,15 @@ pub enum ConfirmationType {
     Danger,
 }
 
+/// Context for what action the confirmation dialog is for
+#[derive(Debug, Clone)]
+pub enum ConfirmationContext {
+    /// Archiving a single workspace
+    ArchiveWorkspace(Uuid),
+    /// Removing a project (archives all workspaces and deletes repository)
+    RemoveProject(Uuid),
+}
+
 impl ConfirmationType {
     /// Get the border color for this confirmation type
     pub fn border_color(&self) -> Color {
@@ -62,8 +71,8 @@ pub struct ConfirmationDialogState {
     pub cancel_text: String,
     /// Currently selected button (0 = Cancel, 1 = Confirm)
     pub selected: usize,
-    /// Context data (e.g., workspace ID to archive)
-    pub context: Option<Uuid>,
+    /// Context for the action being confirmed
+    pub context: Option<ConfirmationContext>,
 }
 
 impl ConfirmationDialogState {
@@ -90,7 +99,7 @@ impl ConfirmationDialogState {
         warnings: Vec<String>,
         confirmation_type: ConfirmationType,
         confirm_text: impl Into<String>,
-        context: Option<Uuid>,
+        context: Option<ConfirmationContext>,
     ) {
         self.visible = true;
         self.title = title.into();
@@ -160,10 +169,24 @@ impl<'a> ConfirmationDialog<'a> {
 
     /// Calculate the required dialog height based on content
     fn calculate_height(&self, dialog_width: u16) -> u16 {
-        // Title border (1) + message lines + spacing (1) + warnings + spacing (1) + buttons (1) + instructions (1) + border (1)
+        // Layout:
+        // - Top border (1)
+        // - Empty line (1)
+        // - Message lines
+        // - Empty line after message (1)
+        // - Warnings (if any)
+        // - Empty line before buttons (1)
+        // - Buttons (1)
+        // - Empty line (1)
+        // - Instructions (1)
+        // - Bottom border (1)
         let message_lines = self.calculate_message_lines(dialog_width);
-        let warnings_height = self.state.warnings.len() as u16;
-        let base_height: u16 = 6; // borders + spacing + buttons + instructions
+        let warnings_height = if self.state.warnings.is_empty() {
+            0
+        } else {
+            self.state.warnings.len() as u16 + 1 // warnings + spacing before them
+        };
+        let base_height: u16 = 10; // borders + padding + buttons + instructions
         base_height + message_lines + warnings_height
     }
 }
@@ -182,11 +205,12 @@ impl Widget for ConfirmationDialog<'_> {
             .border_color(self.state.confirmation_type.border_color());
         let inner = frame.render(area, buf);
 
-        if inner.height < 4 {
+        if inner.height < 6 {
             return;
         }
 
-        let mut y_offset = 0;
+        // Start with top padding
+        let mut y_offset: u16 = 1;
 
         // Render message with wrapping
         let message_lines = self.calculate_message_lines(dialog_width);
@@ -206,9 +230,12 @@ impl Widget for ConfirmationDialog<'_> {
         }
         y_offset += message_lines;
 
+        // Add spacing after message
+        y_offset += 1;
+
         // Render warnings
         if !self.state.warnings.is_empty() {
-            y_offset += 1; // Add spacing before warnings
+            // Spacing before warnings already included in y_offset
 
             let warning_color = self.state.confirmation_type.warning_color();
             for warning in &self.state.warnings {
@@ -234,9 +261,9 @@ impl Widget for ConfirmationDialog<'_> {
             }
         }
 
-        // Render buttons at bottom
-        let buttons_y = inner.y + inner.height.saturating_sub(3);
-        if buttons_y > inner.y + y_offset {
+        // Render buttons at bottom (with spacing before instructions)
+        let buttons_y = inner.y + inner.height.saturating_sub(4);
+        if buttons_y >= inner.y + y_offset {
             let cancel_style = if self.state.is_cancel_selected() {
                 Style::default()
                     .fg(Color::Black)

@@ -78,6 +78,10 @@ pub enum InputMode {
     PickingProject,
     /// Showing a confirmation dialog
     Confirming,
+    /// Removing a project (showing spinner)
+    RemovingProject,
+    /// Showing an error dialog
+    ShowingError,
 }
 
 /// View mode for the main content area
