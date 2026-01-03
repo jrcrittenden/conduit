@@ -915,8 +915,13 @@ impl App {
 
             // ========== Input Box Editing ==========
             Action::InsertNewline => {
-                if let Some(session) = self.tab_manager.active_session_mut() {
-                    session.input_box.insert_newline();
+                // Don't insert newlines in help dialog or command mode
+                if self.input_mode != InputMode::ShowingHelp
+                    && self.input_mode != InputMode::Command
+                {
+                    if let Some(session) = self.tab_manager.active_session_mut() {
+                        session.input_box.insert_newline();
+                    }
                 }
             }
             Action::Backspace => {
@@ -1474,6 +1479,8 @@ impl App {
                 | KeyContext::AddRepository
                 | KeyContext::BaseDir
                 | KeyContext::ProjectPicker
+                | KeyContext::Command
+                | KeyContext::HelpDialog
         )
     }
 
@@ -3221,9 +3228,10 @@ impl App {
                 // Render command prompt if in command mode (outside session borrow)
                 if is_command_mode {
                     self.render_command_prompt(chunks[2], f.buffer_mut());
-                    // Cursor at end of command buffer (after ":")
-                    let cx = chunks[2].x + 1 + self.command_buffer.len() as u16;
-                    let cy = chunks[2].y;
+                    // Cursor at end of command buffer (after ":" inside border)
+                    // +1 for left border, +1 for colon, then buffer length
+                    let cx = chunks[2].x + 2 + self.command_buffer.len() as u16;
+                    let cy = chunks[2].y + 1; // +1 for top border
                     f.set_cursor_position((cx, cy));
                 }
 

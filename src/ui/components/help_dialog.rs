@@ -238,6 +238,10 @@ impl HelpDialogState {
 
     /// Handle character input for search
     pub fn insert_char(&mut self, c: char) {
+        // Only accept printable characters for search (no control chars/newlines)
+        if c.is_control() {
+            return;
+        }
         self.search.insert_char(c);
         self.calculate_total_lines();
         self.scroll_offset = 0;
