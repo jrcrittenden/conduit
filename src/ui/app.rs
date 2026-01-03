@@ -596,17 +596,45 @@ impl App {
                     let event_start = Instant::now();
 
                     // Handle keyboard and mouse input
-                    if event::poll(Duration::from_millis(0))? {
+                    let mut pending_scroll_up = 0usize;
+                    let mut pending_scroll_down = 0usize;
+
+                    while event::poll(Duration::from_millis(0))? {
                         match event::read()? {
                             Event::Key(key) => {
+                                self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
                                 self.handle_key_event(key).await?;
                             }
                             Event::Mouse(mouse) => {
-                                self.handle_mouse_event(mouse);
+                                match mouse.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        if self.should_route_scroll_to_chat() {
+                                            self.record_chat_scroll(1);
+                                        }
+                                        pending_scroll_up = pending_scroll_up.saturating_add(1);
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        if self.should_route_scroll_to_chat() {
+                                            self.record_chat_scroll(1);
+                                        }
+                                        pending_scroll_down = pending_scroll_down.saturating_add(1);
+                                    }
+                                    _ => {
+                                        self.flush_scroll_deltas(
+                                            &mut pending_scroll_up,
+                                            &mut pending_scroll_down,
+                                        );
+                                        self.handle_mouse_event(mouse);
+                                    }
+                                }
                             }
-                            _ => {}
+                            _ => {
+                                self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+                            }
                         }
                     }
+
+                    self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
 
                     // Tick animations (every 6 frames = ~100ms)
                     self.tick_count += 1;
@@ -2182,6 +2210,35 @@ impl App {
         if lines > 0 {
             self.metrics.record_scroll_event(lines);
         }
+    }
+
+    fn should_route_scroll_to_chat(&self) -> bool {
+        !(self.input_mode == InputMode::PickingProject && self.project_picker_state.is_visible())
+    }
+
+    fn flush_scroll_deltas(&mut self, pending_up: &mut usize, pending_down: &mut usize) {
+        if *pending_up == 0 && *pending_down == 0 {
+            return;
+        }
+
+        if self.input_mode == InputMode::PickingProject && self.project_picker_state.is_visible() {
+            for _ in 0..*pending_up {
+                self.project_picker_state.select_prev();
+            }
+            for _ in 0..*pending_down {
+                self.project_picker_state.select_next();
+            }
+        } else if let Some(session) = self.tab_manager.active_session_mut() {
+            if *pending_up > 0 {
+                session.chat_view.scroll_up(*pending_up);
+            }
+            if *pending_down > 0 {
+                session.chat_view.scroll_down(*pending_down);
+            }
+        }
+
+        *pending_up = 0;
+        *pending_down = 0;
     }
 
     fn handle_mouse_event(&mut self, mouse: event::MouseEvent) {
