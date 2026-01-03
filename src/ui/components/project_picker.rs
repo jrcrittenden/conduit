@@ -368,7 +368,7 @@ impl ProjectPicker {
         let instructions = InstructionBar::new(vec![
             ("↑↓", "Navigate"),
             ("Enter", "Select"),
-            ("a", "Custom path"),
+            ("^A", "Custom path"),
             ("Esc", "Cancel"),
         ]);
         instructions.render(chunks[5], buf);

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::agent::AgentType;
 use crate::ui::session::AgentSession;
 
@@ -27,6 +29,23 @@ impl TabManager {
         }
 
         let session = AgentSession::new(agent_type);
+        self.sessions.push(session);
+        let new_index = self.sessions.len() - 1;
+        self.active_tab = new_index;
+        Some(new_index)
+    }
+
+    /// Create a new tab with the given agent type and working directory
+    pub fn new_tab_with_working_dir(
+        &mut self,
+        agent_type: AgentType,
+        working_dir: PathBuf,
+    ) -> Option<usize> {
+        if self.sessions.len() >= self.max_tabs {
+            return None;
+        }
+
+        let session = AgentSession::with_working_dir(agent_type, working_dir);
         self.sessions.push(session);
         let new_index = self.sessions.len() - 1;
         self.active_tab = new_index;

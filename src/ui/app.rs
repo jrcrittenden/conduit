@@ -25,8 +25,7 @@ use crate::agent::{
 };
 use crate::config::Config;
 use crate::data::{
-    AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, Workspace,
-    WorkspaceDao,
+    AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, WorkspaceDao,
 };
 use crate::git::WorktreeManager;
 use crate::ui::components::{
@@ -62,8 +61,6 @@ pub struct App {
     tick_count: u32,
     /// Splash screen (shown when no tabs)
     splash_screen: SplashScreen,
-    /// Database connection
-    database: Option<Database>,
     /// Repository DAO
     repo_dao: Option<RepositoryDao>,
     /// Workspace DAO
@@ -90,16 +87,14 @@ pub struct App {
     base_dir_dialog_state: BaseDirDialogState,
     /// Project picker state
     project_picker_state: ProjectPickerState,
-    /// Pending project path (selected in picker, waiting for agent selection)
-    pending_project_path: Option<PathBuf>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        // Initialize database
-        let (database, repo_dao, workspace_dao, app_state_dao, session_tab_dao) =
+        // Initialize database and DAOs
+        let (repo_dao, workspace_dao, app_state_dao, session_tab_dao) =
             match Database::open_default() {
                 Ok(db) => {
                     let repo_dao = RepositoryDao::new(db.connection());
@@ -107,7 +102,6 @@ impl App {
                     let app_state_dao = AppStateDao::new(db.connection());
                     let session_tab_dao = SessionTabDao::new(db.connection());
                     (
-                        Some(db),
                         Some(repo_dao),
                         Some(workspace_dao),
                         Some(app_state_dao),
@@ -116,17 +110,12 @@ impl App {
                 }
                 Err(e) => {
                     eprintln!("Warning: Failed to open database: {}", e);
-                    (None, None, None, None, None)
+                    (None, None, None, None)
                 }
             };
 
-        // Initialize worktree manager with managed directory
-        let worktree_dir = dirs::data_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
-            .map(|d| d.join("conduit").join("worktrees"))
-            .unwrap_or_else(|| PathBuf::from(".conduit/worktrees"));
-
-        let worktree_manager = WorktreeManager::with_managed_dir(worktree_dir);
+        // Initialize worktree manager with managed directory (~/.conduit/worktrees)
+        let worktree_manager = WorktreeManager::with_managed_dir(crate::util::worktrees_dir());
 
         let mut app = Self {
             config: config.clone(),
@@ -140,7 +129,6 @@ impl App {
             event_rx,
             tick_count: 0,
             splash_screen: SplashScreen::new(),
-            database,
             repo_dao,
             workspace_dao,
             app_state_dao,
@@ -154,7 +142,6 @@ impl App {
             show_first_time_splash: true, // Will be set properly in restore_session_state
             base_dir_dialog_state: BaseDirDialogState::new(),
             project_picker_state: ProjectPickerState::new(),
-            pending_project_path: None,
         };
 
         // Load sidebar data
@@ -208,6 +195,15 @@ impl App {
             let mut session = AgentSession::new(tab.agent_type);
             session.workspace_id = tab.workspace_id;
             session.model = tab.model;
+
+            // Look up workspace to get working_dir
+            if let Some(workspace_id) = tab.workspace_id {
+                if let Some(workspace_dao) = &self.workspace_dao {
+                    if let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) {
+                        session.working_dir = Some(workspace.path);
+                    }
+                }
+            }
 
             // Set resume session ID if available
             if let Some(ref session_id_str) = tab.agent_session_id {
@@ -420,8 +416,34 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('n') => {
-                    self.agent_selector_state.show();
-                    self.input_mode = InputMode::SelectingAgent;
+                    // Show sidebar so user can create a new workspace
+                    // If no projects, show project picker instead
+                    if self.sidebar_data.nodes.is_empty() {
+                        // No projects - trigger project picker flow
+                        let base_dir = self
+                            .app_state_dao
+                            .as_ref()
+                            .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
+
+                        if let Some(base_dir_str) = base_dir {
+                            let base_path = if base_dir_str.starts_with('~') {
+                                dirs::home_dir()
+                                    .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
+                                    .unwrap_or_else(|| PathBuf::from(&base_dir_str))
+                            } else {
+                                PathBuf::from(&base_dir_str)
+                            };
+                            self.project_picker_state.show(base_path);
+                            self.input_mode = InputMode::PickingProject;
+                        } else {
+                            self.base_dir_dialog_state.show();
+                            self.input_mode = InputMode::SettingBaseDir;
+                        }
+                    } else {
+                        // Has projects - show sidebar focused
+                        self.sidebar_state.show();
+                        self.input_mode = InputMode::SidebarNavigation;
+                    }
                     return Ok(());
                 }
                 KeyCode::Char('w') => {
@@ -442,7 +464,7 @@ impl App {
                     if let Some(session) = self.tab_manager.active_session_mut() {
                         if session.is_processing {
                             session.chat_view.push(ChatMessage::system("Interrupted"));
-                            session.is_processing = false;
+                            session.stop_processing();
                             // TODO: Actually kill the agent process
                         }
                     }
@@ -636,7 +658,6 @@ impl App {
                     }
                     KeyCode::Esc => {
                         self.agent_selector_state.hide();
-                        self.pending_project_path = None;
                         self.input_mode = InputMode::Normal;
                     }
                     _ => {}
@@ -726,7 +747,18 @@ impl App {
                             }
                         }
                         KeyCode::Char(c) => {
-                            session.input_box.insert_char(c);
+                            if self.view_mode == ViewMode::RawEvents {
+                                // Vim-style navigation in raw events view
+                                match c {
+                                    'j' => session.raw_events_view.select_next(),
+                                    'k' => session.raw_events_view.select_prev(),
+                                    'l' => session.raw_events_view.toggle_expand(),
+                                    'h' => session.raw_events_view.collapse(),
+                                    _ => {}
+                                }
+                            } else {
+                                session.input_box.insert_char(c);
+                            }
                         }
                         KeyCode::Esc => {
                             if self.view_mode == ViewMode::RawEvents {
@@ -780,14 +812,24 @@ impl App {
                     KeyCode::Enter | KeyCode::Right => {
                         let selected = self.sidebar_state.tree_state.selected;
                         if let Some(node) = self.sidebar_data.get_at(selected) {
-                            if node.is_leaf {
-                                // Open workspace
-                                self.open_workspace(node.id);
-                                self.input_mode = InputMode::Normal;
-                                self.sidebar_state.set_focused(false);
-                            } else {
-                                // Toggle expand
-                                self.sidebar_data.toggle_at(selected);
+                            use crate::ui::components::{ActionType, NodeType};
+                            match node.node_type {
+                                NodeType::Action(ActionType::NewWorkspace) => {
+                                    // Create new workspace under parent repo
+                                    if let Some(parent_id) = node.parent_id {
+                                        self.start_workspace_creation(parent_id);
+                                    }
+                                }
+                                NodeType::Workspace => {
+                                    // Open workspace
+                                    self.open_workspace(node.id);
+                                    self.input_mode = InputMode::Normal;
+                                    self.sidebar_state.set_focused(false);
+                                }
+                                NodeType::Repository => {
+                                    // Toggle expand
+                                    self.sidebar_data.toggle_at(selected);
+                                }
                             }
                         }
                     }
@@ -795,7 +837,7 @@ impl App {
                         // Collapse current node
                         let selected = self.sidebar_state.tree_state.selected;
                         if let Some(node) = self.sidebar_data.get_at(selected) {
-                            if !node.is_leaf && node.expanded {
+                            if !node.is_leaf() && node.expanded {
                                 self.sidebar_data.toggle_at(selected);
                             }
                         }
@@ -829,9 +871,25 @@ impl App {
                 match key.code {
                     KeyCode::Enter => {
                         if self.add_repo_dialog_state.is_valid {
-                            self.add_repository();
+                            let repo_id = self.add_repository();
                             self.add_repo_dialog_state.hide();
-                            self.input_mode = InputMode::Normal;
+
+                            // If repo was created, expand and select it
+                            if let Some(id) = repo_id {
+                                self.sidebar_data.expand_repo(id);
+                                // Select the "+ New workspace" action (index 1 if repo is at 0)
+                                if let Some(repo_index) = self.sidebar_data.find_repo_index(id) {
+                                    // Action is first child of expanded repo, so repo_index + 1
+                                    self.sidebar_state.tree_state.selected = repo_index + 1;
+                                }
+                                self.sidebar_state.show();
+                                self.sidebar_state.set_focused(true);
+                                // No longer first-time, we have a project now
+                                self.show_first_time_splash = false;
+                                self.input_mode = InputMode::SidebarNavigation;
+                            } else {
+                                self.input_mode = InputMode::Normal;
+                            }
                         }
                     }
                     KeyCode::Esc => {
@@ -938,13 +996,27 @@ impl App {
             InputMode::PickingProject => {
                 match key.code {
                     KeyCode::Enter => {
-                        // Select the current project
+                        // Select the current project and add it to sidebar
                         if let Some(project) = self.project_picker_state.selected_project() {
-                            self.pending_project_path = Some(project.path.clone());
+                            let repo_id = self.add_project_to_sidebar(project.path.clone());
                             self.project_picker_state.hide();
-                            // Show agent selector
-                            self.agent_selector_state.show();
-                            self.input_mode = InputMode::SelectingAgent;
+
+                            // If repo was created, expand and select it
+                            if let Some(id) = repo_id {
+                                self.sidebar_data.expand_repo(id);
+                                // Select the "+ New workspace" action (index 1 if repo is at 0)
+                                if let Some(repo_index) = self.sidebar_data.find_repo_index(id) {
+                                    // Action is first child of expanded repo, so repo_index + 1
+                                    self.sidebar_state.tree_state.selected = repo_index + 1;
+                                }
+                                self.sidebar_state.show();
+                                self.sidebar_state.set_focused(true);
+                                // No longer first-time, we have a project now
+                                self.show_first_time_splash = false;
+                                self.input_mode = InputMode::SidebarNavigation;
+                            } else {
+                                self.input_mode = InputMode::Normal;
+                            }
                         }
                     }
                     KeyCode::Esc => {
@@ -975,7 +1047,9 @@ impl App {
                     KeyCode::End => {
                         self.project_picker_state.move_cursor_end();
                     }
-                    KeyCode::Char('a') if key.modifiers.is_empty() => {
+                    KeyCode::Char('a')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         // Open custom path dialog
                         self.project_picker_state.hide();
                         self.add_repo_dialog_state.show();
@@ -999,21 +1073,178 @@ impl App {
             return;
         };
 
-        let Ok(Some(_workspace)) = workspace_dao.get_by_id(workspace_id) else {
+        let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) else {
             return;
         };
+
+        // Verify workspace path exists
+        if !workspace.path.exists() {
+            tracing::error!(
+                workspace_id = %workspace_id,
+                path = %workspace.path.display(),
+                "Workspace path does not exist"
+            );
+            // TODO: Could offer to recreate the worktree or delete the workspace
+            return;
+        }
 
         // Update last accessed
         let _ = workspace_dao.update_last_accessed(workspace_id);
 
         // Create a new tab with the workspace's working directory
-        // For now, default to Claude agent
-        self.tab_manager.new_tab(AgentType::Claude);
-        // TODO: Store workspace_id in session and use workspace.path as working_dir
+        self.tab_manager
+            .new_tab_with_working_dir(AgentType::Claude, workspace.path.clone());
+
+        // Store workspace_id in session
+        if let Some(session) = self.tab_manager.active_session_mut() {
+            session.workspace_id = Some(workspace_id);
+        }
     }
 
-    /// Add a repository from the dialog
-    fn add_repository(&mut self) {
+    /// Start the workspace creation process for a repository
+    fn start_workspace_creation(&mut self, repo_id: uuid::Uuid) {
+        use crate::data::Workspace;
+        use crate::util::{generate_branch_name, generate_workspace_name, get_git_username};
+
+        // Get the repository to find its base path
+        let repo = if let Some(repo_dao) = &self.repo_dao {
+            match repo_dao.get_by_id(repo_id) {
+                Ok(Some(repo)) => repo,
+                Ok(None) => {
+                    tracing::error!(repo_id = %repo_id, "Repository not found");
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get repository");
+                    return;
+                }
+            }
+        } else {
+            tracing::error!("No repository DAO available");
+            return;
+        };
+
+        let Some(base_path) = repo.base_path.as_ref() else {
+            tracing::error!(repo_id = %repo_id, "Repository has no base path");
+            return;
+        };
+
+        // Get existing workspace names for this repo
+        let existing_names: Vec<String> = if let Some(workspace_dao) = &self.workspace_dao {
+            workspace_dao
+                .get_by_repository(repo_id)
+                .unwrap_or_default()
+                .iter()
+                .map(|w| w.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Generate workspace and branch names
+        let workspace_name = generate_workspace_name(&existing_names);
+        let username = get_git_username();
+        let branch_name = generate_branch_name(&username, &workspace_name);
+
+        tracing::info!(
+            repo_id = %repo_id,
+            workspace_name = %workspace_name,
+            branch_name = %branch_name,
+            "Creating workspace"
+        );
+
+        // Create the git worktree
+        let worktree_path = match self.worktree_manager.create_worktree(
+            base_path,
+            &branch_name,
+            &workspace_name,
+        ) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create worktree");
+                return;
+            }
+        };
+
+        // Create workspace in database
+        let workspace = Workspace::new(repo_id, &workspace_name, &branch_name, worktree_path);
+        let workspace_id = workspace.id;
+
+        if let Some(workspace_dao) = &self.workspace_dao {
+            if let Err(e) = workspace_dao.create(&workspace) {
+                tracing::error!(error = %e, "Failed to save workspace to database");
+                // Worktree was created but DB save failed - try to clean up
+                if let Err(cleanup_err) =
+                    self.worktree_manager
+                        .remove_worktree(base_path, &workspace.path)
+                {
+                    tracing::error!(error = %cleanup_err, "Failed to clean up worktree after DB error");
+                }
+                return;
+            }
+        }
+
+        tracing::info!(
+            workspace_id = %workspace_id,
+            "Workspace created successfully"
+        );
+
+        // Refresh sidebar to show new workspace
+        self.refresh_sidebar_data();
+
+        // Expand the repository to show the new workspace
+        self.sidebar_data.expand_repo(repo_id);
+
+        // Find and select the new workspace in sidebar
+        if let Some(index) = self.find_workspace_index(workspace_id) {
+            self.sidebar_state.tree_state.selected = index;
+        }
+
+        // Open the workspace
+        self.open_workspace(workspace_id);
+        self.input_mode = InputMode::Normal;
+        self.sidebar_state.set_focused(false);
+    }
+
+    /// Find the visible index of a workspace by its ID
+    fn find_workspace_index(&self, workspace_id: uuid::Uuid) -> Option<usize> {
+        use crate::ui::components::NodeType;
+        self.sidebar_data
+            .visible_nodes()
+            .iter()
+            .position(|node| node.id == workspace_id && node.node_type == NodeType::Workspace)
+    }
+
+    /// Add a project to the sidebar (repository only, no workspace)
+    /// Returns the repository ID if created successfully
+    fn add_project_to_sidebar(&mut self, path: std::path::PathBuf) -> Option<uuid::Uuid> {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+
+        let Some(repo_dao) = &self.repo_dao else {
+            return None;
+        };
+
+        // Create repository (without default workspace)
+        let repo = Repository::from_local_path(&name, path);
+        if repo_dao.create(&repo).is_err() {
+            return None;
+        }
+
+        let repo_id = repo.id;
+
+        // Refresh sidebar
+        self.refresh_sidebar_data();
+
+        Some(repo_id)
+    }
+
+    /// Add a repository from the custom path dialog
+    /// Returns the repository ID if created successfully
+    fn add_repository(&mut self) -> Option<uuid::Uuid> {
         let path = self.add_repo_dialog_state.expanded_path();
         let name = self
             .add_repo_dialog_state
@@ -1022,71 +1253,26 @@ impl App {
             .unwrap_or_else(|| "Unknown".to_string());
 
         let Some(repo_dao) = &self.repo_dao else {
-            return;
-        };
-        let Some(workspace_dao) = &self.workspace_dao else {
-            return;
+            return None;
         };
 
-        // Create repository
-        let repo = Repository::from_local_path(&name, path.clone());
+        // Create repository (without default workspace)
+        let repo = Repository::from_local_path(&name, path);
         if repo_dao.create(&repo).is_err() {
-            return;
+            return None;
         }
 
-        // Get current branch
-        let branch = self
-            .worktree_manager
-            .get_current_branch(&path)
-            .unwrap_or_else(|_| "main".to_string());
-
-        // Create default workspace
-        let workspace = Workspace::new_default(repo.id, &branch, &branch, path);
-        let _ = workspace_dao.create(&workspace);
+        let repo_id = repo.id;
 
         // Refresh sidebar
         self.refresh_sidebar_data();
+
+        Some(repo_id)
     }
 
-    /// Create a tab with the selected agent type, using pending_project_path if set
+    /// Create a new tab with the selected agent type
     fn create_tab_with_agent(&mut self, agent_type: AgentType) {
-        // If we have a pending project path, add it as a repository first
-        if let Some(project_path) = self.pending_project_path.take() {
-            let name = project_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Unknown")
-                .to_string();
-
-            if let (Some(repo_dao), Some(workspace_dao)) =
-                (&self.repo_dao, &self.workspace_dao)
-            {
-                // Create repository
-                let repo = Repository::from_local_path(&name, project_path.clone());
-                if repo_dao.create(&repo).is_ok() {
-                    // Get current branch
-                    let branch = self
-                        .worktree_manager
-                        .get_current_branch(&project_path)
-                        .unwrap_or_else(|_| "main".to_string());
-
-                    // Create default workspace
-                    let workspace =
-                        Workspace::new_default(repo.id, &branch, &branch, project_path);
-                    let _ = workspace_dao.create(&workspace);
-
-                    // Refresh sidebar
-                    self.refresh_sidebar_data();
-                }
-            }
-        }
-
-        // Create the tab
         self.tab_manager.new_tab(agent_type);
-
-        // Clear first-time splash since we now have a project
-        self.show_first_time_splash = false;
-
         self.input_mode = InputMode::Normal;
     }
 
@@ -1118,6 +1304,7 @@ impl App {
             AppEvent::Error(msg) => {
                 if let Some(session) = self.tab_manager.active_session_mut() {
                     session.chat_view.push(ChatMessage::error(msg));
+                    session.stop_processing();
                 }
             }
             _ => {}
@@ -1264,9 +1451,26 @@ impl App {
         let model = session.model.clone();
         // Take resume_session_id (clears it after first use)
         let resume_session_id = session.resume_session_id.take();
+        // Use session's working_dir if set, otherwise fall back to config
+        let working_dir = session
+            .working_dir
+            .clone()
+            .unwrap_or_else(|| self.config.working_dir.clone());
+
+        // Validate working directory exists
+        if !working_dir.exists() {
+            if let Some(session) = self.tab_manager.active_session_mut() {
+                session.chat_view.push(ChatMessage::error(format!(
+                    "Working directory does not exist: {}",
+                    working_dir.display()
+                )));
+                session.stop_processing();
+            }
+            return Ok(());
+        }
 
         // Start agent
-        let mut config = AgentStartConfig::new(prompt, self.config.working_dir.clone())
+        let mut config = AgentStartConfig::new(prompt, working_dir)
             .with_tools(self.config.claude_allowed_tools.clone());
 
         // Add model if specified

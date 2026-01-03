@@ -38,6 +38,7 @@ unicode-width = "0.2"
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
 dirs = "5.0"
+rand = "0.9.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

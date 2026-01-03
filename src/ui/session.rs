@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -17,6 +19,8 @@ pub struct AgentSession {
     pub model: Option<String>,
     /// Associated workspace ID (for project context)
     pub workspace_id: Option<Uuid>,
+    /// Working directory for the agent (workspace path)
+    pub working_dir: Option<PathBuf>,
     /// Session ID to resume on next prompt (set when restoring from saved state)
     pub resume_session_id: Option<SessionId>,
     /// Chat view component
@@ -50,6 +54,7 @@ impl AgentSession {
             agent_type,
             model: None,
             workspace_id: None,
+            working_dir: None,
             resume_session_id: None,
             chat_view: ChatView::new(),
             raw_events_view: RawEventsView::new(),
@@ -65,13 +70,28 @@ impl AgentSession {
         }
     }
 
+    /// Create a new session with a specific working directory
+    pub fn with_working_dir(agent_type: AgentType, working_dir: PathBuf) -> Self {
+        let mut session = Self::new(agent_type);
+        session.working_dir = Some(working_dir);
+        session
+    }
+
     /// Get display name for the tab
     pub fn tab_name(&self) -> String {
-        if let Some(ref session_id) = self.agent_session_id {
-            let id_short = &session_id.as_str()[..8.min(session_id.as_str().len())];
-            format!("{} ({})", self.agent_type.as_str(), id_short)
-        } else {
-            format!("{} (new)", self.agent_type.as_str())
+        // Get workspace name from working_dir path
+        let name = self
+            .working_dir
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(String::from);
+
+        match name {
+            Some(workspace_name) => {
+                format!("{} ({})", workspace_name, self.agent_type.as_str())
+            }
+            None => format!("{} (new)", self.agent_type.as_str()),
         }
     }
 
