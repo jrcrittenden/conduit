@@ -9,11 +9,31 @@ use ratatui::{
 };
 use uuid::Uuid;
 
+/// Type of action for action nodes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionType {
+    /// Create a new workspace under the parent repository
+    NewWorkspace,
+}
+
+/// Type of node in the tree view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeType {
+    /// Repository (can have children)
+    Repository,
+    /// Workspace (leaf node)
+    Workspace,
+    /// Action node (e.g., "+ New workspace")
+    Action(ActionType),
+}
+
 /// A node in the tree view
 #[derive(Debug, Clone)]
 pub struct TreeNode {
     /// Unique identifier
     pub id: Uuid,
+    /// Parent repository ID (for action nodes and workspaces)
+    pub parent_id: Option<Uuid>,
     /// Display label
     pub label: String,
     /// Optional suffix (e.g., branch name)
@@ -24,8 +44,8 @@ pub struct TreeNode {
     pub expanded: bool,
     /// Depth in the tree (0 for root nodes)
     pub depth: usize,
-    /// Whether this is a leaf node (workspace) or branch node (repository)
-    pub is_leaf: bool,
+    /// Type of this node
+    pub node_type: NodeType,
 }
 
 impl TreeNode {
@@ -33,12 +53,13 @@ impl TreeNode {
     pub fn parent(id: Uuid, label: impl Into<String>) -> Self {
         Self {
             id,
+            parent_id: None,
             label: label.into(),
             suffix: None,
             children: Vec::new(),
             expanded: false,
             depth: 0,
-            is_leaf: false,
+            node_type: NodeType::Repository,
         }
     }
 
@@ -46,25 +67,54 @@ impl TreeNode {
     pub fn leaf(id: Uuid, label: impl Into<String>, suffix: impl Into<String>) -> Self {
         Self {
             id,
+            parent_id: None, // Will be set when added as child
             label: label.into(),
             suffix: Some(suffix.into()),
             children: Vec::new(),
             expanded: false,
             depth: 1,
-            is_leaf: true,
+            node_type: NodeType::Workspace,
         }
+    }
+
+    /// Create a new action node
+    pub fn action(parent_id: Uuid, action_type: ActionType) -> Self {
+        let label = match action_type {
+            ActionType::NewWorkspace => "+ New workspace".to_string(),
+        };
+        Self {
+            id: Uuid::nil(), // Action nodes don't need unique IDs
+            parent_id: Some(parent_id),
+            label,
+            suffix: None,
+            children: Vec::new(),
+            expanded: false,
+            depth: 1, // Will be set when added as child
+            node_type: NodeType::Action(action_type),
+        }
+    }
+
+    /// Check if this is a leaf node (workspace or action)
+    pub fn is_leaf(&self) -> bool {
+        matches!(self.node_type, NodeType::Workspace | NodeType::Action(_))
+    }
+
+    /// Check if this is an action node
+    pub fn is_action(&self) -> bool {
+        matches!(self.node_type, NodeType::Action(_))
     }
 
     /// Add a child node
     pub fn with_child(mut self, mut child: TreeNode) -> Self {
         child.depth = self.depth + 1;
+        child.parent_id = Some(self.id);
         self.children.push(child);
         self
     }
 
     /// Toggle expanded state
     pub fn toggle_expanded(&mut self) {
-        if !self.is_leaf {
+        if !self.is_leaf() {
             self.expanded = !self.expanded;
         }
     }
@@ -224,7 +274,7 @@ impl StatefulWidget for TreeView<'_> {
 
             // Build the line
             let indent = "  ".repeat(node.depth);
-            let expand_marker = if node.is_leaf {
+            let expand_marker = if node.is_leaf() {
                 "  "
             } else if node.expanded {
                 "▼ "
@@ -232,10 +282,17 @@ impl StatefulWidget for TreeView<'_> {
                 "▶ "
             };
 
+            // Style based on node type
+            let label_style = if node.is_action() {
+                Style::default().fg(Color::Cyan)
+            } else {
+                self.style
+            };
+
             let mut spans = vec![
                 Span::raw(indent),
                 Span::styled(expand_marker, self.expand_style),
-                Span::styled(&node.label, self.style),
+                Span::styled(&node.label, label_style),
             ];
 
             if let Some(suffix) = &node.suffix {
@@ -304,6 +361,11 @@ impl SidebarData {
     ) {
         let mut repo_node = TreeNode::parent(repo_id, repo_name);
 
+        // Add action node as first child
+        let action_node = TreeNode::action(repo_id, ActionType::NewWorkspace);
+        repo_node = repo_node.with_child(action_node);
+
+        // Add workspace nodes
         for (ws_id, ws_name, branch) in workspaces {
             let ws_node = TreeNode::leaf(ws_id, ws_name, branch);
             repo_node = repo_node.with_child(ws_node);
@@ -341,5 +403,22 @@ impl SidebarData {
     /// Get the node at a given index
     pub fn get_at(&self, index: usize) -> Option<&TreeNode> {
         self.visible_nodes().get(index).copied()
+    }
+
+    /// Find the visible index of a repository by its ID
+    pub fn find_repo_index(&self, repo_id: Uuid) -> Option<usize> {
+        self.visible_nodes()
+            .iter()
+            .position(|node| node.id == repo_id && node.node_type == NodeType::Repository)
+    }
+
+    /// Expand a repository by its ID
+    pub fn expand_repo(&mut self, repo_id: Uuid) {
+        for node in &mut self.nodes {
+            if node.id == repo_id {
+                node.expanded = true;
+                return;
+            }
+        }
     }
 }

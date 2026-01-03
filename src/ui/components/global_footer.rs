@@ -42,9 +42,9 @@ impl GlobalFooter {
                 ("Ctrl+Q", "Quit"),
             ],
             ViewMode::RawEvents => vec![
-                ("↑/↓", "Navigate"),
-                ("Enter", "Expand"),
-                ("Esc", "Collapse"),
+                ("j/k", "Navigate"),
+                ("l/Enter", "Expand"),
+                ("h/Esc", "Collapse"),
                 ("^G", "Chat"),
                 ("Ctrl+Q", "Quit"),
             ],

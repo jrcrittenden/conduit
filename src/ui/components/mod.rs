@@ -37,5 +37,5 @@ pub use splash_screen::SplashScreen;
 pub use status_bar::StatusBar;
 pub use tab_bar::TabBar;
 pub use thinking_indicator::{ProcessingState, ThinkingIndicator};
-pub use tree_view::{SidebarData, TreeNode, TreeView, TreeViewState};
+pub use tree_view::{ActionType, NodeType, SidebarData, TreeNode, TreeView, TreeViewState};
 pub use turn_summary::{FileChange, TurnSummary};

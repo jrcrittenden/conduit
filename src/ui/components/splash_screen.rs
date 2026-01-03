@@ -192,11 +192,19 @@ impl SplashScreen {
             }
         }
 
-        // Calculate center position
+        // Calculate content area for blue background
         let content_width = 60;
         let content_height = 22;
         let start_x = area.x + (area.width.saturating_sub(content_width)) / 2;
         let start_y = area.y + (area.height.saturating_sub(content_height)) / 2;
+
+        // Fill interior of the frame with blue background
+        let interior_bg = Color::Rgb(15, 25, 45); // Dark blue background
+        for y in (start_y + 1)..(start_y + content_height - 1) {
+            for x in (start_x + 1)..(start_x + content_width - 1) {
+                buf[(x, y)].set_bg(interior_bg);
+            }
+        }
 
         // Colors - unified cyan for all pipes and boxes
         let border_color = Color::Rgb(60, 80, 100);
