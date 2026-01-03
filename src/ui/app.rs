@@ -248,6 +248,8 @@ pub struct App {
     show_metrics: bool,
     /// Spinner frame counter for tab bar animations
     spinner_frame: usize,
+    /// Last sidebar click time (for double-click detection)
+    last_sidebar_click: Option<(Instant, usize)>, // (time, clicked_index)
 }
 
 impl App {
@@ -316,6 +318,8 @@ impl App {
             metrics: PerformanceMetrics::new(),
             show_metrics: false,
             spinner_frame: 0,
+            // Double-click tracking
+            last_sidebar_click: None,
         };
 
         // Load sidebar data
@@ -2456,6 +2460,17 @@ impl App {
         let clicked_row = (y - inner_y) as usize;
         let clicked_index = clicked_row + self.sidebar_state.tree_state.offset;
 
+        // Detect double-click (same index within 500ms)
+        let now = Instant::now();
+        let is_double_click = if let Some((last_time, last_index)) = self.last_sidebar_click {
+            last_index == clicked_index && now.duration_since(last_time) < Duration::from_millis(500)
+        } else {
+            false
+        };
+
+        // Update last click tracking
+        self.last_sidebar_click = Some((now, clicked_index));
+
         // Get the node at this index
         if let Some(node) = self.sidebar_data.get_at(clicked_index) {
             use crate::ui::components::{ActionType, NodeType};
@@ -2470,9 +2485,9 @@ impl App {
                     self.sidebar_data.toggle_at(clicked_index);
                 }
                 NodeType::Workspace => {
-                    // Open workspace but keep sidebar open (clicking just selects/focuses)
-                    self.open_workspace_with_options(node.id, false);
-                    // Sidebar stays open and focused - user can press Enter or Esc to close
+                    // Single click: open workspace but keep sidebar open
+                    // Double click: open workspace and close sidebar
+                    self.open_workspace_with_options(node.id, is_double_click);
                 }
                 NodeType::Action(ActionType::NewWorkspace) => {
                     // Create new workspace
