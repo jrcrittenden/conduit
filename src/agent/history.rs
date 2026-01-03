@@ -88,6 +88,20 @@ pub fn load_claude_history(session_id: &str) -> Result<Vec<ChatMessage>, History
     parse_claude_history_file(&session_file)
 }
 
+/// Load Claude Code history with debug information
+pub fn load_claude_history_with_debug(session_id: &str) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+    let home = dirs::home_dir().ok_or(HistoryError::HomeNotFound)?;
+    let projects_dir = home.join(".claude/projects");
+
+    if !projects_dir.exists() {
+        return Err(HistoryError::SessionNotFound(session_id.to_string()));
+    }
+
+    let session_file = find_claude_session_file(&projects_dir, session_id)?;
+    let (messages, debug_entries) = parse_claude_history_file_with_debug(&session_file)?;
+    Ok((messages, debug_entries, session_file))
+}
+
 /// Find Claude session file by searching project directories
 fn find_claude_session_file(projects_dir: &PathBuf, session_id: &str) -> Result<PathBuf, HistoryError> {
     let filename = format!("{}.jsonl", session_id);
@@ -157,6 +171,137 @@ fn parse_claude_history_file(path: &PathBuf) -> Result<Vec<ChatMessage>, History
     }
 
     Ok(messages)
+}
+
+/// Parse a Claude history JSONL file with debug information
+fn parse_claude_history_file_with_debug(path: &PathBuf) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>), HistoryError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+
+    // First pass: collect all entries and build tool_use lookup
+    let mut raw_entries: Vec<(usize, Value)> = Vec::new();
+    let mut tool_uses: HashMap<String, ClaudeToolUseInfo> = HashMap::new();
+    let mut debug_entries = Vec::new();
+
+    for (line_num, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<Value>(line) {
+            Ok(entry) => {
+                // Extract tool_use blocks from assistant messages
+                if entry.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                    if let Some(message) = entry.get("message") {
+                        if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                            for block in content {
+                                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                    if let (Some(id), Some(name)) = (
+                                        block.get("id").and_then(|i| i.as_str()),
+                                        block.get("name").and_then(|n| n.as_str()),
+                                    ) {
+                                        let input = block.get("input").cloned().unwrap_or(Value::Null);
+                                        tool_uses.insert(id.to_string(), ClaudeToolUseInfo {
+                                            name: name.to_string(),
+                                            input,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                raw_entries.push((line_num, entry));
+            }
+            Err(e) => {
+                debug_entries.push(HistoryDebugEntry {
+                    line_number: line_num,
+                    entry_type: "parse_error".to_string(),
+                    status: "ERROR".to_string(),
+                    reason: e.to_string(),
+                    raw_json: Value::String(line.clone()),
+                });
+            }
+        }
+    }
+
+    // Second pass: convert entries to messages with debug info
+    let mut messages = Vec::new();
+
+    for (line_num, entry) in &raw_entries {
+        let entry_type = entry.get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let converted = convert_claude_entry_with_tools(entry, &tool_uses);
+        let (status, reason) = convert_claude_entry_debug_info(entry, converted.len());
+
+        debug_entries.push(HistoryDebugEntry {
+            line_number: *line_num,
+            entry_type,
+            status: status.to_string(),
+            reason,
+            raw_json: entry.clone(),
+        });
+
+        messages.extend(converted);
+    }
+
+    // Sort debug entries by line number
+    debug_entries.sort_by_key(|e| e.line_number);
+
+    Ok((messages, debug_entries))
+}
+
+/// Get debug info for a Claude entry conversion
+fn convert_claude_entry_debug_info(entry: &Value, converted_count: usize) -> (&'static str, String) {
+    let entry_type = match entry.get("type").and_then(|t| t.as_str()) {
+        Some(t) => t,
+        None => return ("SKIP", "missing type field".to_string()),
+    };
+
+    match entry_type {
+        "user" => {
+            if converted_count > 0 {
+                if let Some(message) = entry.get("message") {
+                    if let Some(content) = message.get("content") {
+                        if content.is_string() {
+                            let preview = content.as_str().unwrap_or("").chars().take(50).collect::<String>();
+                            return ("INCLUDE", format!("user message: {}...", preview.replace('\n', " ")));
+                        } else if let Some(blocks) = content.as_array() {
+                            let block_types: Vec<_> = blocks.iter()
+                                .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                                .collect();
+                            return ("INCLUDE", format!("user blocks: {:?}", block_types));
+                        }
+                    }
+                }
+                ("INCLUDE", "user message".to_string())
+            } else {
+                ("SKIP", "user message produced no output".to_string())
+            }
+        }
+        "assistant" => {
+            if converted_count > 0 {
+                if let Some(message) = entry.get("message") {
+                    if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                        let block_types: Vec<_> = content.iter()
+                            .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                            .collect();
+                        return ("INCLUDE", format!("assistant blocks: {:?}", block_types));
+                    }
+                }
+                ("INCLUDE", "assistant message".to_string())
+            } else {
+                ("SKIP", "assistant message with no text content".to_string())
+            }
+        }
+        "result" => ("SKIP", "result entry (metadata)".to_string()),
+        "summary" => ("SKIP", "summary entry (metadata)".to_string()),
+        _ => ("SKIP", format!("unhandled type: {}", entry_type)),
+    }
 }
 
 /// Convert a Claude JSONL entry to ChatMessage (legacy, used by tests)

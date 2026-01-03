@@ -21,14 +21,14 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::agent::{
-    load_claude_history, load_codex_history_with_debug, AgentEvent, AgentRunner, AgentStartConfig,
+    load_claude_history_with_debug, load_codex_history_with_debug, AgentEvent, AgentRunner, AgentStartConfig,
     AgentType, ClaudeCodeRunner, CodexCliRunner, HistoryDebugEntry, MessageDisplay, SessionId,
 };
 use crate::config::Config;
 use crate::data::{
     AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, WorkspaceDao,
 };
-use crate::git::WorktreeManager;
+use crate::git::{PrManager, WorktreeManager};
 use crate::ui::components::{
     AddRepoDialog, AddRepoDialogState, AgentSelector, AgentSelectorState, BaseDirDialog,
     BaseDirDialogState, ChatMessage, ConfirmationContext, ConfirmationDialog,
@@ -246,6 +246,8 @@ pub struct App {
     metrics: PerformanceMetrics,
     /// Whether to show performance metrics in status bar
     show_metrics: bool,
+    /// Spinner frame counter for tab bar animations
+    spinner_frame: usize,
 }
 
 impl App {
@@ -313,6 +315,7 @@ impl App {
             // Performance metrics
             metrics: PerformanceMetrics::new(),
             show_metrics: false,
+            spinner_frame: 0,
         };
 
         // Load sidebar data
@@ -393,7 +396,15 @@ impl App {
                 // Load chat history from agent files
                 match tab.agent_type {
                     AgentType::Claude => {
-                        if let Ok(msgs) = load_claude_history(session_id_str) {
+                        if let Ok((msgs, debug_entries, file_path)) =
+                            load_claude_history_with_debug(session_id_str)
+                        {
+                            // Populate debug pane with history load info
+                            Self::populate_debug_from_history(
+                                &mut session.raw_events_view,
+                                &debug_entries,
+                                &file_path,
+                            );
                             for msg in msgs {
                                 session.chat_view.push(msg);
                             }
@@ -639,6 +650,12 @@ impl App {
                     // Tick animations (every 6 frames = ~100ms)
                     self.tick_count += 1;
                     if self.tick_count % 6 == 0 {
+                        // Advance spinner frame for PR processing indicator
+                        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+
+                        // Tick confirmation dialog spinner (for loading state)
+                        self.confirmation_dialog_state.tick();
+
                         if self.show_first_time_splash {
                             // Animate splash screen
                             self.splash_screen.tick();
@@ -706,18 +723,6 @@ impl App {
             }
         }
 
-        // Ctrl+Shift shortcuts (check first, before plain Ctrl)
-        if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
-            match key.code {
-                KeyCode::Char('D') | KeyCode::Char('d') => {
-                    // Ctrl+Shift+D: Dump debug state to file
-                    self.dump_debug_state()?;
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
         // Global shortcuts (work in any mode, but skip if already handled by dialog)
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -727,8 +732,8 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('p') => {
-                    // Ctrl+P: Toggle performance metrics display
-                    self.show_metrics = !self.show_metrics;
+                    // Ctrl+P: Open/Create Pull Request
+                    self.handle_pr_action();
                     return Ok(());
                 }
                 KeyCode::Char('n') => {
@@ -953,6 +958,16 @@ impl App {
                     if tab_num > 0 {
                         self.tab_manager.switch_to(tab_num - 1);
                     }
+                    return Ok(());
+                }
+                KeyCode::Char('p') => {
+                    // Alt+P: Toggle performance metrics display (moved from Ctrl+P)
+                    self.show_metrics = !self.show_metrics;
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    // Alt+G: Dump debug state to file
+                    self.dump_debug_state();
                     return Ok(());
                 }
                 _ => {}
@@ -1237,6 +1252,15 @@ impl App {
                 }
             }
             InputMode::Confirming => {
+                // When loading, only allow Esc to cancel
+                if self.confirmation_dialog_state.loading {
+                    if key.code == KeyCode::Esc {
+                        self.confirmation_dialog_state.hide();
+                        self.input_mode = InputMode::Normal;
+                    }
+                    return Ok(());
+                }
+
                 match key.code {
                     KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
                         self.confirmation_dialog_state.toggle_selection();
@@ -1244,13 +1268,29 @@ impl App {
                     KeyCode::Enter => {
                         if self.confirmation_dialog_state.is_confirm_selected() {
                             // Execute the confirmed action based on context type
-                            if let Some(ref context) = self.confirmation_dialog_state.context {
+                            if let Some(context) = self.confirmation_dialog_state.context.clone() {
                                 match context {
                                     ConfirmationContext::ArchiveWorkspace(id) => {
-                                        self.execute_archive_workspace(*id);
+                                        self.execute_archive_workspace(id);
+                                        self.confirmation_dialog_state.hide();
+                                        self.input_mode = InputMode::SidebarNavigation;
+                                        return Ok(());
                                     }
                                     ConfirmationContext::RemoveProject(id) => {
-                                        self.execute_remove_project(*id);
+                                        self.execute_remove_project(id);
+                                        self.confirmation_dialog_state.hide();
+                                        self.input_mode = InputMode::SidebarNavigation;
+                                        return Ok(());
+                                    }
+                                    ConfirmationContext::CreatePullRequest {
+                                        tab_index: _,
+                                        working_dir: _,
+                                        preflight,
+                                    } => {
+                                        self.confirmation_dialog_state.hide();
+                                        self.input_mode = InputMode::Normal;
+                                        self.submit_pr_workflow(preflight).await?;
+                                        return Ok(());
                                     }
                                 }
                             }
@@ -1258,19 +1298,47 @@ impl App {
                         self.confirmation_dialog_state.hide();
                         self.input_mode = InputMode::SidebarNavigation;
                     }
-                    KeyCode::Esc | KeyCode::Char('n') => {
+                    KeyCode::Esc => {
+                        self.confirmation_dialog_state.hide();
+                        // Return to appropriate mode based on context
+                        if matches!(
+                            self.confirmation_dialog_state.context,
+                            Some(ConfirmationContext::CreatePullRequest { .. })
+                        ) {
+                            self.input_mode = InputMode::Normal;
+                        } else {
+                            self.input_mode = InputMode::SidebarNavigation;
+                        }
+                    }
+                    KeyCode::Char('n') => {
                         self.confirmation_dialog_state.hide();
                         self.input_mode = InputMode::SidebarNavigation;
                     }
                     KeyCode::Char('y') => {
                         // Quick confirm
-                        if let Some(ref context) = self.confirmation_dialog_state.context {
+                        if let Some(context) = self.confirmation_dialog_state.context.clone() {
                             match context {
                                 ConfirmationContext::ArchiveWorkspace(id) => {
-                                    self.execute_archive_workspace(*id);
+                                    self.execute_archive_workspace(id);
+                                    self.confirmation_dialog_state.hide();
+                                    self.input_mode = InputMode::SidebarNavigation;
+                                    return Ok(());
                                 }
                                 ConfirmationContext::RemoveProject(id) => {
-                                    self.execute_remove_project(*id);
+                                    self.execute_remove_project(id);
+                                    self.confirmation_dialog_state.hide();
+                                    self.input_mode = InputMode::SidebarNavigation;
+                                    return Ok(());
+                                }
+                                ConfirmationContext::CreatePullRequest {
+                                    tab_index: _,
+                                    working_dir: _,
+                                    preflight,
+                                } => {
+                                    self.confirmation_dialog_state.hide();
+                                    self.input_mode = InputMode::Normal;
+                                    self.submit_pr_workflow(preflight).await?;
+                                    return Ok(());
                                 }
                             }
                         }
@@ -1574,7 +1642,15 @@ impl App {
                     // Load chat history
                     match saved.agent_type {
                         AgentType::Claude => {
-                            if let Ok(msgs) = load_claude_history(session_id_str) {
+                            if let Ok((msgs, debug_entries, file_path)) =
+                                load_claude_history_with_debug(session_id_str)
+                            {
+                                // Populate debug pane with history load info
+                                Self::populate_debug_from_history(
+                                    &mut session.raw_events_view,
+                                    &debug_entries,
+                                    &file_path,
+                                );
                                 for msg in msgs {
                                     session.chat_view.push(msg);
                                 }
@@ -2618,6 +2694,13 @@ impl App {
                     session.stop_processing();
                 }
             }
+            AppEvent::PrPreflightCompleted {
+                tab_index,
+                working_dir,
+                result,
+            } => {
+                self.handle_pr_preflight_result(tab_index, working_dir, result);
+            }
             _ => {}
         }
 
@@ -2629,9 +2712,24 @@ impl App {
         tab_index: usize,
         event: AgentEvent,
     ) -> anyhow::Result<()> {
+        // Check if this is a non-active tab receiving content - mark as needing attention
+        let is_active_tab = self.tab_manager.active_index() == tab_index;
+        let is_content_event = matches!(
+            &event,
+            AgentEvent::AssistantMessage(_)
+                | AgentEvent::ToolCompleted(_)
+                | AgentEvent::TurnCompleted(_)
+                | AgentEvent::TurnFailed(_)
+        );
+
         let Some(session) = self.tab_manager.session_mut(tab_index) else {
             return Ok(());
         };
+
+        // Mark non-active tabs as needing attention when content arrives
+        if !is_active_tab && is_content_event {
+            session.needs_attention = true;
+        }
 
         // Record raw event for debug view
         let event_type = event.event_type_name();
@@ -2850,6 +2948,139 @@ impl App {
         Ok(())
     }
 
+    /// Handle Ctrl+P: Open existing PR or create new one
+    fn handle_pr_action(&mut self) {
+        let tab_index = self.tab_manager.active_index();
+        let session = match self.tab_manager.active_session() {
+            Some(s) => s,
+            None => return, // No active tab
+        };
+
+        let working_dir = match &session.working_dir {
+            Some(d) => d.clone(),
+            None => return, // No working dir
+        };
+
+        // Show loading dialog immediately
+        self.confirmation_dialog_state
+            .show_loading("Create Pull Request", "Checking repository status...");
+        self.input_mode = InputMode::Confirming;
+
+        // Spawn preflight check in background
+        let event_tx = self.event_tx.clone();
+        let wd = working_dir.clone();
+        tokio::spawn(async move {
+            let result = PrManager::preflight_check(&wd);
+            let _ = event_tx.send(AppEvent::PrPreflightCompleted {
+                tab_index,
+                working_dir: wd,
+                result,
+            });
+        });
+    }
+
+    /// Handle the result of the PR preflight check
+    fn handle_pr_preflight_result(
+        &mut self,
+        _tab_index: usize,
+        working_dir: std::path::PathBuf,
+        preflight: crate::git::PrPreflightResult,
+    ) {
+        // Handle blocking errors
+        if !preflight.gh_installed {
+            self.confirmation_dialog_state.hide();
+            self.error_dialog_state.show_with_details(
+                "GitHub CLI Not Found",
+                "The 'gh' command is not installed.",
+                "Install from: https://cli.github.com/\n\nbrew install gh  # macOS\napt install gh   # Debian/Ubuntu",
+            );
+            self.input_mode = InputMode::ShowingError;
+            return;
+        }
+
+        if !preflight.gh_authenticated {
+            self.confirmation_dialog_state.hide();
+            self.error_dialog_state.show_with_details(
+                "Not Authenticated",
+                "GitHub CLI is not authenticated.",
+                "Run: gh auth login",
+            );
+            self.input_mode = InputMode::ShowingError;
+            return;
+        }
+
+        if preflight.on_main_branch {
+            self.confirmation_dialog_state.hide();
+            self.error_dialog_state.show(
+                "Cannot Create PR",
+                &format!(
+                    "You're on the '{}' branch. Create a feature branch first.",
+                    preflight.branch_name
+                ),
+            );
+            self.input_mode = InputMode::ShowingError;
+            return;
+        }
+
+        // If PR exists, just open it in browser
+        if let Some(ref pr) = preflight.existing_pr {
+            if pr.exists {
+                self.confirmation_dialog_state.hide();
+                self.input_mode = InputMode::Normal;
+                if let Err(e) = PrManager::open_pr_in_browser(&working_dir) {
+                    self.error_dialog_state.show(
+                        "Failed to Open PR",
+                        &format!("Could not open PR in browser: {}", e),
+                    );
+                    self.input_mode = InputMode::ShowingError;
+                }
+                return;
+            }
+        }
+
+        // Build warnings for confirmation dialog
+        let mut warnings = Vec::new();
+        if preflight.uncommitted_count > 0 {
+            warnings.push(format!(
+                "{} file(s) will be auto-committed",
+                preflight.uncommitted_count
+            ));
+        }
+        if !preflight.has_upstream {
+            warnings.push("Branch will be pushed to remote".to_string());
+        }
+
+        // Show confirmation dialog (replace loading state)
+        self.confirmation_dialog_state.show(
+            "Create Pull Request",
+            format!(
+                "Branch: {}\nTarget: {}",
+                preflight.branch_name, preflight.target_branch
+            ),
+            warnings,
+            ConfirmationType::Info,
+            "Create PR",
+            Some(ConfirmationContext::CreatePullRequest {
+                tab_index: _tab_index,
+                working_dir,
+                preflight,
+            }),
+        );
+        // Already in Confirming mode
+    }
+
+    /// Submit the PR workflow prompt to the current chat
+    async fn submit_pr_workflow(
+        &mut self,
+        preflight: crate::git::PrPreflightResult,
+    ) -> anyhow::Result<()> {
+        // Generate prompt for PR creation
+        let prompt = PrManager::generate_pr_prompt(&preflight);
+
+        // Submit to current chat session
+        self.submit_prompt(prompt).await
+    }
+
     fn draw(&mut self, f: &mut Frame) {
         let size = f.area();
 
@@ -2945,12 +3176,35 @@ impl App {
 
                 // Draw tab bar (unfocused when sidebar is focused)
                 let tabs_focused = self.input_mode != InputMode::SidebarNavigation;
+
+                // Collect tab states for PR indicators
+                let pr_numbers: Vec<Option<u32>> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.pr_number)
+                    .collect();
+                let processing_flags: Vec<bool> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.is_processing)
+                    .collect();
+                let attention_flags: Vec<bool> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.needs_attention)
+                    .collect();
+
                 let tab_bar = TabBar::new(
                     self.tab_manager.tab_names(),
                     self.tab_manager.active_index(),
                     self.tab_manager.can_add_tab(),
                 )
-                .focused(tabs_focused);
+                .focused(tabs_focused)
+                .with_tab_states(pr_numbers, processing_flags, attention_flags)
+                .with_spinner_frame(self.spinner_frame);
                 tab_bar.render(chunks[0], f.buffer_mut());
 
                 // Draw active session components
@@ -3012,12 +3266,33 @@ impl App {
 
                 // Draw tab bar (unfocused when sidebar is focused)
                 let tabs_focused = self.input_mode != InputMode::SidebarNavigation;
+                // Collect tab states for PR indicators
+                let pr_numbers: Vec<Option<u32>> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.pr_number)
+                    .collect();
+                let processing_flags: Vec<bool> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.is_processing)
+                    .collect();
+                let attention_flags: Vec<bool> = self
+                    .tab_manager
+                    .sessions()
+                    .iter()
+                    .map(|s| s.needs_attention)
+                    .collect();
                 let tab_bar = TabBar::new(
                     self.tab_manager.tab_names(),
                     self.tab_manager.active_index(),
                     self.tab_manager.can_add_tab(),
                 )
-                .focused(tabs_focused);
+                .focused(tabs_focused)
+                .with_tab_states(pr_numbers, processing_flags, attention_flags)
+                .with_spinner_frame(self.spinner_frame);
                 tab_bar.render(chunks[0], f.buffer_mut());
 
                 // Draw raw events view
@@ -3136,12 +3411,29 @@ impl App {
     }
 
     /// Dump complete app state to a JSON file for debugging
-    fn dump_debug_state(&mut self) -> anyhow::Result<()> {
+    fn dump_debug_state(&mut self) {
         use chrono::Local;
         use serde_json::json;
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("conduit_debug_{}.json", timestamp);
+
+        // Save to ~/.conduit/debug/ directory
+        let debug_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".conduit")
+            .join("debug");
+
+        // Create directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&debug_dir) {
+            self.error_dialog_state.show(
+                "Export Failed",
+                &format!("Could not create debug directory: {}", e),
+            );
+            self.input_mode = InputMode::ShowingError;
+            return;
+        }
+
+        let filepath = debug_dir.join(format!("conduit_debug_{}.json", timestamp));
 
         let mut sessions_data = Vec::new();
 
@@ -3226,17 +3518,47 @@ impl App {
             "sessions": sessions_data,
         });
 
-        let mut file = File::create(&filename)?;
-        file.write_all(serde_json::to_string_pretty(&dump)?.as_bytes())?;
-
-        // Show confirmation in chat
-        if let Some(session) = self.tab_manager.active_session_mut() {
-            let display = MessageDisplay::System {
-                content: format!("Debug state dumped to: {}", filename),
-            };
-            session.chat_view.push(display.to_chat_message());
+        // Write to file
+        let full_path = filepath.display().to_string();
+        match File::create(&filepath) {
+            Ok(mut file) => {
+                match serde_json::to_string_pretty(&dump) {
+                    Ok(json_str) => {
+                        if let Err(e) = file.write_all(json_str.as_bytes()) {
+                            self.error_dialog_state.show(
+                                "Export Failed",
+                                &format!("Could not write to file: {}", e),
+                            );
+                            self.input_mode = InputMode::ShowingError;
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        self.error_dialog_state.show(
+                            "Export Failed",
+                            &format!("Could not serialize debug data: {}", e),
+                        );
+                        self.input_mode = InputMode::ShowingError;
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                self.error_dialog_state.show(
+                    "Export Failed",
+                    &format!("Could not create file: {}", e),
+                );
+                self.input_mode = InputMode::ShowingError;
+                return;
+            }
         }
 
-        Ok(())
+        // Show success popup with full path
+        self.error_dialog_state.show_with_details(
+            "Debug Export Complete",
+            "Session debug info has been exported.",
+            &format!("File saved to:\n{}", full_path),
+        );
+        self.input_mode = InputMode::ShowingError;
     }
 }

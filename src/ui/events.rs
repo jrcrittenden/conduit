@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use crate::agent::{AgentEvent, AgentType};
+use crate::git::PrPreflightResult;
 use uuid::Uuid;
 
 /// Application-level events
@@ -54,6 +57,13 @@ pub enum AppEvent {
 
     /// Error occurred
     Error(String),
+
+    /// PR preflight check completed
+    PrPreflightCompleted {
+        tab_index: usize,
+        working_dir: PathBuf,
+        result: PrPreflightResult,
+    },
 }
 
 /// Input mode for the application

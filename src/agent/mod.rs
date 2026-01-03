@@ -14,7 +14,7 @@ pub use codex::CodexCliRunner;
 pub use display::MessageDisplay;
 pub use error::AgentError;
 pub use events::*;
-pub use history::{load_claude_history, load_codex_history_with_debug, HistoryDebugEntry, HistoryError};
+pub use history::{load_claude_history_with_debug, load_codex_history_with_debug, HistoryDebugEntry, HistoryError};
 pub use models::{ModelInfo, ModelRegistry};
 pub use runner::{AgentHandle, AgentRunner, AgentStartConfig, AgentType};
 pub use session::{SessionId, SessionMetadata, SessionStatus};

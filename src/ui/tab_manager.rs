@@ -74,6 +74,10 @@ impl TabManager {
     pub fn switch_to(&mut self, index: usize) -> bool {
         if index < self.sessions.len() {
             self.active_tab = index;
+            // Clear needs_attention flag when switching to a tab
+            if let Some(session) = self.sessions.get_mut(index) {
+                session.needs_attention = false;
+            }
             true
         } else {
             false
@@ -84,6 +88,10 @@ impl TabManager {
     pub fn next_tab(&mut self) {
         if !self.sessions.is_empty() {
             self.active_tab = (self.active_tab + 1) % self.sessions.len();
+            // Clear needs_attention flag when switching to a tab
+            if let Some(session) = self.sessions.get_mut(self.active_tab) {
+                session.needs_attention = false;
+            }
         }
     }
 
@@ -95,6 +103,10 @@ impl TabManager {
             } else {
                 self.active_tab - 1
             };
+            // Clear needs_attention flag when switching to a tab
+            if let Some(session) = self.sessions.get_mut(self.active_tab) {
+                session.needs_attention = false;
+            }
         }
     }
 

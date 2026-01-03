@@ -49,6 +49,10 @@ pub struct AgentSession {
     pub total_usage: TokenUsage,
     /// Turn count
     pub turn_count: u32,
+    /// PR number if current branch has an open PR
+    pub pr_number: Option<u32>,
+    /// Whether this tab has unread content (new messages arrived while not focused)
+    pub needs_attention: bool,
 }
 
 impl AgentSession {
@@ -73,6 +77,8 @@ impl AgentSession {
             is_processing: false,
             total_usage: TokenUsage::default(),
             turn_count: 0,
+            pr_number: None,
+            needs_attention: false,
         }
     }
 

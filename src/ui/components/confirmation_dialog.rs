@@ -1,5 +1,7 @@
 //! Reusable confirmation dialog component
 
+use std::path::PathBuf;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
@@ -10,6 +12,7 @@ use ratatui::{
 use uuid::Uuid;
 
 use super::dialog::{DialogFrame, InstructionBar};
+use crate::git::PrPreflightResult;
 
 /// Confirmation type determines the dialog's appearance and urgency level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,6 +33,12 @@ pub enum ConfirmationContext {
     ArchiveWorkspace(Uuid),
     /// Removing a project (archives all workspaces and deletes repository)
     RemoveProject(Uuid),
+    /// Creating a pull request
+    CreatePullRequest {
+        tab_index: usize,
+        working_dir: PathBuf,
+        preflight: PrPreflightResult,
+    },
 }
 
 impl ConfirmationType {
@@ -57,6 +66,12 @@ impl ConfirmationType {
 pub struct ConfirmationDialogState {
     /// Whether the dialog is visible
     pub visible: bool,
+    /// Whether the dialog is in loading state (showing spinner)
+    pub loading: bool,
+    /// Loading message to display
+    pub loading_message: String,
+    /// Current spinner frame for loading animation
+    pub spinner_frame: usize,
     /// Dialog title
     pub title: String,
     /// Main message to display
@@ -80,6 +95,9 @@ impl ConfirmationDialogState {
     pub fn new() -> Self {
         Self {
             visible: false,
+            loading: false,
+            loading_message: String::new(),
+            spinner_frame: 0,
             title: String::new(),
             message: String::new(),
             warnings: Vec::new(),
@@ -88,6 +106,26 @@ impl ConfirmationDialogState {
             cancel_text: "Cancel".to_string(),
             selected: 0, // Default to Cancel for safety
             context: None,
+        }
+    }
+
+    /// Show the dialog in loading state with a spinner
+    pub fn show_loading(&mut self, title: impl Into<String>, loading_message: impl Into<String>) {
+        self.visible = true;
+        self.loading = true;
+        self.loading_message = loading_message.into();
+        self.spinner_frame = 0;
+        self.title = title.into();
+        self.message = String::new();
+        self.warnings = Vec::new();
+        self.confirmation_type = ConfirmationType::Info;
+        self.context = None;
+    }
+
+    /// Advance the spinner animation
+    pub fn tick(&mut self) {
+        if self.loading {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
         }
     }
 
@@ -102,6 +140,7 @@ impl ConfirmationDialogState {
         context: Option<ConfirmationContext>,
     ) {
         self.visible = true;
+        self.loading = false; // Clear loading state
         self.title = title.into();
         self.message = message.into();
         self.warnings = warnings;
@@ -114,6 +153,7 @@ impl ConfirmationDialogState {
     /// Hide the dialog and reset state
     pub fn hide(&mut self) {
         self.visible = false;
+        self.loading = false;
         self.context = None;
     }
 
@@ -191,12 +231,70 @@ impl<'a> ConfirmationDialog<'a> {
     }
 }
 
+/// Spinner animation frames
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 impl Widget for ConfirmationDialog<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if !self.state.visible {
             return;
         }
 
+        // Loading state - show compact dialog with spinner
+        if self.state.loading {
+            let dialog_width: u16 = 50;
+            let dialog_height: u16 = 7; // Compact: border + padding + spinner + padding + instructions + border
+
+            // Render dialog frame
+            let frame = DialogFrame::new(&self.state.title, dialog_width, dialog_height)
+                .border_color(Color::Cyan);
+            let inner = frame.render(area, buf);
+
+            if inner.height < 3 {
+                return;
+            }
+
+            // Render spinner and loading message centered
+            let spinner_char = SPINNER_FRAMES[self.state.spinner_frame % SPINNER_FRAMES.len()];
+            let loading_line = Line::from(vec![
+                Span::styled(
+                    format!("{} ", spinner_char),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    self.state.loading_message.as_str(),
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+
+            let loading_para = Paragraph::new(loading_line).alignment(Alignment::Center);
+            loading_para.render(
+                Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height / 2,
+                    width: inner.width,
+                    height: 1,
+                },
+                buf,
+            );
+
+            // Render instruction bar at bottom (only Esc to cancel)
+            let instructions_y = inner.y + inner.height.saturating_sub(1);
+            let instructions = InstructionBar::new(vec![("Esc", "Cancel")]);
+            instructions.render(
+                Rect {
+                    x: inner.x,
+                    y: instructions_y,
+                    width: inner.width,
+                    height: 1,
+                },
+                buf,
+            );
+
+            return;
+        }
+
+        // Normal confirmation dialog
         let dialog_width: u16 = 50;
         let dialog_height = self.calculate_height(dialog_width);
 

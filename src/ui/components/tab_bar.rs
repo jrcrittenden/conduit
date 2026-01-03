@@ -6,21 +6,37 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+/// Spinner animation frames
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// Tab bar component for switching between sessions
 pub struct TabBar {
     tabs: Vec<String>,
     active: usize,
     can_add: bool,
     focused: bool,
+    /// PR numbers for each tab (None = no PR)
+    pr_numbers: Vec<Option<u32>>,
+    /// Whether each tab is currently processing (agent working)
+    processing_flags: Vec<bool>,
+    /// Whether each tab has unread content (new messages arrived while not focused)
+    attention_flags: Vec<bool>,
+    /// Current spinner frame index
+    spinner_frame: usize,
 }
 
 impl TabBar {
     pub fn new(tabs: Vec<String>, active: usize, can_add: bool) -> Self {
+        let tab_count = tabs.len();
         Self {
             tabs,
             active,
             can_add,
             focused: true,
+            pr_numbers: vec![None; tab_count],
+            processing_flags: vec![false; tab_count],
+            attention_flags: vec![false; tab_count],
+            spinner_frame: 0,
         }
     }
 
@@ -30,20 +46,61 @@ impl TabBar {
         self
     }
 
+    /// Set tab states (PR numbers, processing, attention flags)
+    pub fn with_tab_states(
+        mut self,
+        pr_numbers: Vec<Option<u32>>,
+        processing: Vec<bool>,
+        attention: Vec<bool>,
+    ) -> Self {
+        self.pr_numbers = pr_numbers;
+        self.processing_flags = processing;
+        self.attention_flags = attention;
+        self
+    }
+
+    /// Set current spinner frame
+    pub fn with_spinner_frame(mut self, frame: usize) -> Self {
+        self.spinner_frame = frame;
+        self
+    }
+
+    /// Get spinner character for current frame
+    fn spinner_char(&self) -> &'static str {
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut spans = Vec::new();
+        let mut _total_width: usize = 0;
 
         for (i, tab) in self.tabs.iter().enumerate() {
             let is_active = i == self.active;
+            let is_processing = self.processing_flags.get(i).copied().unwrap_or(false);
+            let needs_attention = self.attention_flags.get(i).copied().unwrap_or(false);
+            let pr_number = self.pr_numbers.get(i).copied().flatten();
 
             // Tab indicator - only show when focused
             if is_active && self.focused {
-                spans.push(Span::styled(
-                    " ▶ ",
-                    Style::default().fg(Color::Cyan),
-                ));
+                spans.push(Span::styled(" ▶ ", Style::default().fg(Color::Cyan)));
+                _total_width += 3;
             } else {
                 spans.push(Span::raw("   "));
+                _total_width += 3;
+            }
+
+            // Processing spinner (yellow)
+            if is_processing {
+                spans.push(Span::styled(
+                    format!("{} ", self.spinner_char()),
+                    Style::default().fg(Color::Yellow),
+                ));
+                _total_width += 2;
+            }
+            // Attention indicator (green dot) - only if not processing
+            else if needs_attention {
+                spans.push(Span::styled("● ", Style::default().fg(Color::Green)));
+                _total_width += 2;
             }
 
             // Tab name - dim the active tab when not focused
@@ -60,9 +117,29 @@ impl TabBar {
                 Style::default().fg(Color::DarkGray)
             };
 
-            spans.push(Span::styled(format!("[{}] {}", i + 1, tab), tab_style));
+            let tab_text = format!("[{}] {}", i + 1, tab);
+            _total_width += tab_text.len();
+            spans.push(Span::styled(tab_text, tab_style));
 
             spans.push(Span::raw("  "));
+            _total_width += 2;
+
+            // Show PR badge inline for active tab
+            if is_active {
+                if let Some(pr) = pr_number {
+                    let badge = format!(" PR #{} ", pr);
+                    _total_width += badge.len();
+                    spans.push(Span::styled(
+                        badge,
+                        Style::default()
+                            .bg(Color::Blue)
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw(" "));
+                    _total_width += 1;
+                }
+            }
         }
 
         // Add new tab button
