@@ -25,7 +25,7 @@ pub fn default_keybindings() -> KeybindingConfig {
     // These work in all modes unless overridden
 
     bind(&mut config.global, "C-q", Action::Quit);
-    bind(&mut config.global, "C-\\", Action::ToggleSidebar);
+    bind(&mut config.global, "C-t", Action::ToggleSidebar);
     bind(&mut config.global, "C-n", Action::NewProject);
     bind(&mut config.global, "C-p", Action::OpenPr);
     bind(&mut config.global, "C-c", Action::InterruptAgent);

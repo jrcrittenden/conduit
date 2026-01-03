@@ -817,8 +817,8 @@ impl App {
                     }
                     return Ok(());
                 }
-                KeyCode::Char('\\') => {
-                    // Ctrl+\: Toggle sidebar
+                KeyCode::Char('t') => {
+                    // Ctrl+T: Toggle sidebar
                     self.sidebar_state.toggle();
                     if self.sidebar_state.visible {
                         self.sidebar_state.set_focused(true);
