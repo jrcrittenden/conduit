@@ -1,14 +1,14 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
 use crate::ui::events::ViewMode;
 
-/// Global footer showing keyboard shortcuts
+/// Global footer showing keyboard shortcuts in neovim style
 pub struct GlobalFooter {
     hints: Vec<(&'static str, &'static str)>,
     view_mode: ViewMode,
@@ -19,11 +19,11 @@ impl GlobalFooter {
         Self {
             hints: vec![
                 ("Tab", "Switch"),
-                ("^N", "+ Project"),
-                ("^W", "Close"),
-                ("^C", "Interrupt"),
-                ("^G", "Debug"),
-                ("^Q", "Quit"),
+                ("C-n", "Project"),
+                ("C-w", "Close"),
+                ("C-c", "Stop"),
+                ("C-g", "Debug"),
+                ("C-q", "Quit"),
             ],
             view_mode: ViewMode::Chat,
         }
@@ -35,18 +35,18 @@ impl GlobalFooter {
         self.hints = match view_mode {
             ViewMode::Chat => vec![
                 ("Tab", "Switch"),
-                ("^N", "+ Project"),
-                ("^W", "Close"),
-                ("^C", "Interrupt"),
-                ("^G", "Debug"),
-                ("^Q", "Quit"),
+                ("C-n", "Project"),
+                ("C-w", "Close"),
+                ("C-c", "Stop"),
+                ("C-g", "Debug"),
+                ("C-q", "Quit"),
             ],
             ViewMode::RawEvents => vec![
-                ("j/k", "Navigate"),
-                ("l/Enter", "Expand"),
+                ("j/k", "Nav"),
+                ("l/CR", "Expand"),
                 ("h/Esc", "Collapse"),
-                ("^G", "Chat"),
-                ("^Q", "Quit"),
+                ("C-g", "Chat"),
+                ("C-q", "Quit"),
             ],
         };
         self
@@ -62,24 +62,33 @@ impl GlobalFooter {
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut spans = Vec::new();
 
+        // Leading space
+        spans.push(Span::raw(" "));
+
         for (i, (key, action)) in self.hints.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::raw(" │ "));
+                // Spacing between items
+                spans.push(Span::raw("   "));
             }
 
+            // Key with subtle background highlight
             spans.push(Span::styled(
-                format!("[{}]", key),
+                format!(" {} ", key),
                 Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                    .fg(Color::White)
+                    .bg(Color::Rgb(60, 60, 60)),
             ));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(*action, Style::default().fg(Color::DarkGray)));
+
+            // Action text
+            spans.push(Span::styled(
+                format!(" {}", action),
+                Style::default().fg(Color::Rgb(120, 120, 120)),
+            ));
         }
 
         let line = Line::from(spans);
         let paragraph = Paragraph::new(line)
-            .style(Style::default().bg(Color::Rgb(15, 15, 15)));
+            .style(Style::default().bg(Color::Rgb(25, 25, 25)));
 
         paragraph.render(area, buf);
     }
