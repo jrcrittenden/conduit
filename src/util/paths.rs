@@ -28,3 +28,8 @@ pub fn log_file_path() -> PathBuf {
 pub fn worktrees_dir() -> PathBuf {
     data_dir().join("worktrees")
 }
+
+/// Get the config file path (~/.conduit/config.toml)
+pub fn config_path() -> PathBuf {
+    data_dir().join("config.toml")
+}

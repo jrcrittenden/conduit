@@ -52,8 +52,8 @@ async fn run_app() -> Result<()> {
         .with_ansi(false) // Disable ANSI colors in log file
         .init();
 
-    // Create config
-    let config = Config::default();
+    // Create config (loads from ~/.conduit/config.toml if present)
+    let config = Config::load();
 
     // Create and run app
     let mut app = App::new(config);
