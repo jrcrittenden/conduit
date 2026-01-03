@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     created_at TEXT NOT NULL,
     last_accessed TEXT NOT NULL,
     is_default INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
     FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
 );
 
@@ -99,6 +100,33 @@ impl Database {
     fn initialize(&self) -> Result<(), DatabaseError> {
         let conn = self.conn.lock().map_err(|_| DatabaseError::LockPoisoned)?;
         conn.execute_batch(SCHEMA)?;
+        drop(conn);
+
+        // Apply migrations for existing databases
+        self.apply_migrations()?;
+        Ok(())
+    }
+
+    /// Apply database migrations for existing databases
+    fn apply_migrations(&self) -> Result<(), DatabaseError> {
+        let conn = self.conn.lock().map_err(|_| DatabaseError::LockPoisoned)?;
+
+        // Migration 1: Add archived_at column to workspaces table
+        let has_archived_at: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('workspaces') WHERE name='archived_at'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_archived_at {
+            conn.execute(
+                "ALTER TABLE workspaces ADD COLUMN archived_at TEXT",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 

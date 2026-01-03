@@ -71,6 +71,8 @@ pub struct Workspace {
     pub last_accessed: DateTime<Utc>,
     /// Whether this is the default/main workspace
     pub is_default: bool,
+    /// When the workspace was archived (None = active)
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 impl Workspace {
@@ -91,6 +93,7 @@ impl Workspace {
             created_at: now,
             last_accessed: now,
             is_default: false,
+            archived_at: None,
         }
     }
 
@@ -109,6 +112,11 @@ impl Workspace {
     /// Update the last accessed timestamp
     pub fn touch(&mut self) {
         self.last_accessed = Utc::now();
+    }
+
+    /// Check if this workspace is archived
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
     }
 }
 

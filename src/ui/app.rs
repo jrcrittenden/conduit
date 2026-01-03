@@ -30,9 +30,10 @@ use crate::data::{
 use crate::git::WorktreeManager;
 use crate::ui::components::{
     AddRepoDialog, AddRepoDialogState, AgentSelector, AgentSelectorState, BaseDirDialog,
-    BaseDirDialogState, ChatMessage, EventDirection, GlobalFooter, ModelSelector,
-    ModelSelectorState, ProcessingState, ProjectPicker, ProjectPickerState, Sidebar, SidebarData,
-    SidebarState, SplashScreen, TabBar,
+    BaseDirDialogState, ChatMessage, ConfirmationDialog, ConfirmationDialogState,
+    ConfirmationType, EventDirection, GlobalFooter, ModelSelector, ModelSelectorState,
+    ProcessingState, ProjectPicker, ProjectPickerState, Sidebar, SidebarData, SidebarState,
+    SplashScreen, TabBar,
 };
 use crate::ui::events::{AppEvent, InputMode, ViewMode};
 use crate::ui::session::AgentSession;
@@ -87,6 +88,8 @@ pub struct App {
     base_dir_dialog_state: BaseDirDialogState,
     /// Project picker state
     project_picker_state: ProjectPickerState,
+    /// Confirmation dialog state (for archive, delete, etc.)
+    confirmation_dialog_state: ConfirmationDialogState,
 }
 
 impl App {
@@ -142,6 +145,7 @@ impl App {
             show_first_time_splash: true, // Will be set properly in restore_session_state
             base_dir_dialog_state: BaseDirDialogState::new(),
             project_picker_state: ProjectPickerState::new(),
+            confirmation_dialog_state: ConfirmationDialogState::new(),
         };
 
         // Load sidebar data
@@ -238,6 +242,25 @@ impl App {
         if let Ok(Some(visible_str)) = app_state_dao.get("sidebar_visible") {
             self.sidebar_state.visible = visible_str == "true";
         }
+
+        // Restore expanded repos
+        if let Ok(Some(expanded_str)) = app_state_dao.get("tree_expanded_repos") {
+            if !expanded_str.is_empty() {
+                for id_str in expanded_str.split(',') {
+                    if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                        self.sidebar_data.expand_repo(id);
+                    }
+                }
+            }
+        }
+
+        // Restore tree selection index (after expanding repos so visible count is correct)
+        if let Ok(Some(index_str)) = app_state_dao.get("tree_selected_index") {
+            if let Ok(index) = index_str.parse::<usize>() {
+                let visible_count = self.sidebar_data.visible_nodes().len();
+                self.sidebar_state.tree_state.selected = index.min(visible_count.saturating_sub(1));
+            }
+        }
     }
 
     /// Refresh sidebar data from database
@@ -313,6 +336,25 @@ impl App {
             },
         ) {
             eprintln!("Warning: Failed to save sidebar visibility: {}", e);
+        }
+
+        // Save tree selection index
+        if let Err(e) = app_state_dao.set(
+            "tree_selected_index",
+            &self.sidebar_state.tree_state.selected.to_string(),
+        ) {
+            eprintln!("Warning: Failed to save tree selection: {}", e);
+        }
+
+        // Save expanded repo IDs as comma-separated string
+        let expanded_ids: Vec<String> = self
+            .sidebar_data
+            .expanded_repo_ids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        if let Err(e) = app_state_dao.set("tree_expanded_repos", &expanded_ids.join(",")) {
+            eprintln!("Warning: Failed to save expanded repos: {}", e);
         }
     }
 
@@ -809,7 +851,7 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.sidebar_state.tree_state.select_next(visible_count);
                     }
-                    KeyCode::Enter | KeyCode::Right => {
+                    KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                         let selected = self.sidebar_state.tree_state.selected;
                         if let Some(node) = self.sidebar_data.get_at(selected) {
                             use crate::ui::components::{ActionType, NodeType};
@@ -833,7 +875,7 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Left => {
+                    KeyCode::Left | KeyCode::Char('h') => {
                         // Collapse current node
                         let selected = self.sidebar_state.tree_state.selected;
                         if let Some(node) = self.sidebar_data.get_at(selected) {
@@ -863,6 +905,46 @@ impl App {
                             self.base_dir_dialog_state.show();
                         }
                         self.input_mode = InputMode::SettingBaseDir;
+                    }
+                    KeyCode::Char('x') => {
+                        // Archive workspace (if workspace is selected)
+                        let selected = self.sidebar_state.tree_state.selected;
+                        if let Some(node) = self.sidebar_data.get_at(selected) {
+                            use crate::ui::components::NodeType;
+                            if node.node_type == NodeType::Workspace {
+                                self.initiate_archive_workspace(node.id);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            InputMode::Confirming => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                        self.confirmation_dialog_state.toggle_selection();
+                    }
+                    KeyCode::Enter => {
+                        if self.confirmation_dialog_state.is_confirm_selected() {
+                            // Execute the confirmed action
+                            if let Some(workspace_id) = self.confirmation_dialog_state.context {
+                                self.execute_archive_workspace(workspace_id);
+                            }
+                        }
+                        self.confirmation_dialog_state.hide();
+                        self.input_mode = InputMode::SidebarNavigation;
+                    }
+                    KeyCode::Esc | KeyCode::Char('n') => {
+                        self.confirmation_dialog_state.hide();
+                        self.input_mode = InputMode::SidebarNavigation;
+                    }
+                    KeyCode::Char('y') => {
+                        // Quick confirm
+                        if let Some(workspace_id) = self.confirmation_dialog_state.context {
+                            self.execute_archive_workspace(workspace_id);
+                        }
+                        self.confirmation_dialog_state.hide();
+                        self.input_mode = InputMode::SidebarNavigation;
                     }
                     _ => {}
                 }
@@ -1068,6 +1150,12 @@ impl App {
 
     /// Open a workspace (create or switch to tab)
     fn open_workspace(&mut self, workspace_id: uuid::Uuid) {
+        // Check if there's already a tab with this workspace - switch to it
+        if let Some(existing_index) = self.find_tab_for_workspace(workspace_id) {
+            self.tab_manager.switch_to(existing_index);
+            return;
+        }
+
         // Find the workspace
         let Some(workspace_dao) = &self.workspace_dao else {
             return;
@@ -1099,6 +1187,14 @@ impl App {
         if let Some(session) = self.tab_manager.active_session_mut() {
             session.workspace_id = Some(workspace_id);
         }
+    }
+
+    /// Find the tab index for a workspace if it's already open
+    fn find_tab_for_workspace(&self, workspace_id: uuid::Uuid) -> Option<usize> {
+        self.tab_manager
+            .sessions()
+            .iter()
+            .position(|session| session.workspace_id == Some(workspace_id))
     }
 
     /// Start the workspace creation process for a repository
@@ -1213,6 +1309,164 @@ impl App {
             .visible_nodes()
             .iter()
             .position(|node| node.id == workspace_id && node.node_type == NodeType::Workspace)
+    }
+
+    /// Initiate the archive workspace flow - check git status and show confirmation dialog
+    fn initiate_archive_workspace(&mut self, workspace_id: uuid::Uuid) {
+        // Get the workspace
+        let Some(workspace_dao) = &self.workspace_dao else {
+            return;
+        };
+
+        let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) else {
+            tracing::error!(workspace_id = %workspace_id, "Workspace not found");
+            return;
+        };
+
+        // Get git branch status
+        let branch_status = self.worktree_manager.get_branch_status(&workspace.path);
+
+        // Build warnings and determine confirmation type
+        let mut warnings = Vec::new();
+        let mut has_dirty = false;
+        let mut has_unmerged = false;
+
+        if let Ok(status) = branch_status {
+            if status.is_dirty {
+                has_dirty = true;
+                if let Some(desc) = &status.dirty_description {
+                    warnings.push(desc.clone());
+                } else {
+                    warnings.push("Uncommitted changes".to_string());
+                }
+            }
+
+            if !status.is_merged {
+                has_unmerged = true;
+                if status.commits_ahead > 0 {
+                    warnings.push(format!(
+                        "Branch not merged ({} commits ahead)",
+                        status.commits_ahead
+                    ));
+                } else {
+                    warnings.push("Branch not merged into main".to_string());
+                }
+            }
+
+            if status.commits_behind > 0 {
+                warnings.push(format!(
+                    "Branch is {} commits behind main",
+                    status.commits_behind
+                ));
+            }
+        }
+
+        // Determine confirmation type based on warnings
+        let confirmation_type = match (has_dirty, has_unmerged) {
+            (true, true) => ConfirmationType::Danger,
+            (true, false) | (false, true) => ConfirmationType::Warning,
+            (false, false) => {
+                if warnings.is_empty() {
+                    ConfirmationType::Info
+                } else {
+                    ConfirmationType::Warning
+                }
+            }
+        };
+
+        // Show confirmation dialog
+        self.confirmation_dialog_state.show(
+            format!("Archive \"{}\"?", workspace.name),
+            "This will remove the worktree but keep the branch.",
+            warnings,
+            confirmation_type,
+            "Archive",
+            Some(workspace_id),
+        );
+        self.input_mode = InputMode::Confirming;
+    }
+
+    /// Execute the archive workspace action after confirmation
+    fn execute_archive_workspace(&mut self, workspace_id: uuid::Uuid) {
+        // Get the workspace and its repository
+        let Some(workspace_dao) = &self.workspace_dao else {
+            return;
+        };
+
+        let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) else {
+            tracing::error!(workspace_id = %workspace_id, "Workspace not found");
+            return;
+        };
+
+        // Get the repository to find its base path
+        let repo_base_path = if let Some(repo_dao) = &self.repo_dao {
+            match repo_dao.get_by_id(workspace.repository_id) {
+                Ok(Some(repo)) => repo.base_path,
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // Remove the git worktree
+        if let Some(base_path) = repo_base_path {
+            if let Err(e) = self.worktree_manager.remove_worktree(&base_path, &workspace.path) {
+                tracing::error!(error = %e, "Failed to remove worktree");
+                // Continue anyway to mark as archived in DB
+            }
+        }
+
+        // Mark workspace as archived in database
+        if let Err(e) = workspace_dao.archive(workspace_id) {
+            tracing::error!(error = %e, "Failed to archive workspace in database");
+            return;
+        }
+
+        tracing::info!(workspace_id = %workspace_id, "Workspace archived successfully");
+
+        // Close any tabs using this workspace
+        self.close_tabs_for_workspace(workspace_id);
+
+        // Remember current selection to move to item above after refresh
+        let current_selection = self.sidebar_state.tree_state.selected;
+
+        // Refresh sidebar to remove archived workspace
+        self.refresh_sidebar_data();
+
+        // Move selection to item above (if exists) or clamp to valid range
+        let visible_count = self.sidebar_data.visible_nodes().len();
+        if visible_count > 0 {
+            let new_selection = if current_selection > 0 {
+                current_selection - 1
+            } else {
+                0
+            };
+            self.sidebar_state.tree_state.selected = new_selection.min(visible_count - 1);
+        } else {
+            self.sidebar_state.tree_state.selected = 0;
+        }
+    }
+
+    /// Close any tabs that are using the specified workspace
+    fn close_tabs_for_workspace(&mut self, workspace_id: uuid::Uuid) {
+        // Find tabs with this workspace and close them (in reverse order to maintain indices)
+        let indices_to_close: Vec<usize> = self
+            .tab_manager
+            .sessions()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, session)| {
+                if session.workspace_id == Some(workspace_id) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for idx in indices_to_close.into_iter().rev() {
+            self.tab_manager.close_tab(idx);
+        }
     }
 
     /// Add a project to the sidebar (repository only, no workspace)
@@ -1687,6 +1941,13 @@ impl App {
         if self.project_picker_state.is_visible() {
             let picker = ProjectPicker::new();
             picker.render(size, f.buffer_mut(), &self.project_picker_state);
+        }
+
+        // Draw confirmation dialog if open
+        if self.confirmation_dialog_state.visible {
+            use ratatui::widgets::Widget;
+            let dialog = ConfirmationDialog::new(&self.confirmation_dialog_state);
+            dialog.render(size, f.buffer_mut());
         }
     }
 

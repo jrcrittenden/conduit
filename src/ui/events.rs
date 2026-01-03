@@ -76,6 +76,8 @@ pub enum InputMode {
     SettingBaseDir,
     /// Picking a project from the list
     PickingProject,
+    /// Showing a confirmation dialog
+    Confirming,
 }
 
 /// View mode for the main content area

@@ -33,6 +33,21 @@ pub struct WorktreeInfo {
     pub is_main: bool,
 }
 
+/// Status of a git branch for archiving decisions
+#[derive(Debug, Clone, Default)]
+pub struct BranchStatus {
+    /// Whether the worktree has uncommitted changes
+    pub is_dirty: bool,
+    /// Description of dirty state (e.g., "3 uncommitted changes")
+    pub dirty_description: Option<String>,
+    /// Whether the branch has been merged into the main branch
+    pub is_merged: bool,
+    /// Number of commits ahead of the main branch
+    pub commits_ahead: usize,
+    /// Number of commits behind the main branch
+    pub commits_behind: usize,
+}
+
 /// Manager for git worktree operations
 #[derive(Debug, Default)]
 pub struct WorktreeManager {
@@ -214,6 +229,157 @@ impl WorktreeManager {
         }
 
         Ok(branch)
+    }
+
+    /// Check if a worktree has uncommitted changes
+    pub fn is_dirty(&self, worktree_path: &Path) -> Result<(bool, Option<String>), WorktreeError> {
+        if !worktree_path.exists() {
+            return Err(WorktreeError::NotFound(worktree_path.to_path_buf()));
+        }
+
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(worktree_path)
+            .output()?;
+
+        if !output.status.success() {
+            return Err(WorktreeError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let status = String::from_utf8_lossy(&output.stdout);
+        let is_dirty = !status.trim().is_empty();
+
+        if is_dirty {
+            let lines: Vec<&str> = status.lines().collect();
+            let description = format!(
+                "{} uncommitted change{}",
+                lines.len(),
+                if lines.len() == 1 { "" } else { "s" }
+            );
+            Ok((true, Some(description)))
+        } else {
+            Ok((false, None))
+        }
+    }
+
+    /// Get the main branch name for a repository (master or main)
+    pub fn get_main_branch(&self, path: &Path) -> Result<String, WorktreeError> {
+        // Check for origin/main first
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", "origin/main"])
+            .current_dir(path)
+            .output()?;
+
+        if output.status.success() {
+            return Ok("main".to_string());
+        }
+
+        // Fall back to origin/master
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", "origin/master"])
+            .current_dir(path)
+            .output()?;
+
+        if output.status.success() {
+            return Ok("master".to_string());
+        }
+
+        // Try local main
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", "main"])
+            .current_dir(path)
+            .output()?;
+
+        if output.status.success() {
+            return Ok("main".to_string());
+        }
+
+        // Default to master
+        Ok("master".to_string())
+    }
+
+    /// Check if the current branch is merged into the main branch
+    pub fn is_branch_merged(&self, worktree_path: &Path) -> Result<bool, WorktreeError> {
+        let main_branch = self.get_main_branch(worktree_path)?;
+        let current_branch = self.get_current_branch(worktree_path)?;
+
+        // If on main branch, it's considered "merged"
+        if current_branch == main_branch {
+            return Ok(true);
+        }
+
+        // Check if current branch is merged into main
+        let output = Command::new("git")
+            .args(["branch", "--merged", &main_branch])
+            .current_dir(worktree_path)
+            .output()?;
+
+        if !output.status.success() {
+            // If main branch doesn't exist locally, try with origin/
+            let output = Command::new("git")
+                .args(["branch", "--merged", &format!("origin/{}", main_branch)])
+                .current_dir(worktree_path)
+                .output()?;
+
+            if !output.status.success() {
+                // Can't determine, assume not merged
+                return Ok(false);
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == current_branch));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == current_branch))
+    }
+
+    /// Get the full branch status for archiving decisions
+    pub fn get_branch_status(&self, worktree_path: &Path) -> Result<BranchStatus, WorktreeError> {
+        let mut status = BranchStatus::default();
+
+        // Check dirty status
+        match self.is_dirty(worktree_path) {
+            Ok((is_dirty, description)) => {
+                status.is_dirty = is_dirty;
+                status.dirty_description = description;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to check dirty status");
+            }
+        }
+
+        // Check merged status
+        match self.is_branch_merged(worktree_path) {
+            Ok(is_merged) => {
+                status.is_merged = is_merged;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to check merged status");
+            }
+        }
+
+        // Get ahead/behind counts
+        let main_branch = self.get_main_branch(worktree_path).unwrap_or_else(|_| "main".to_string());
+        let output = Command::new("git")
+            .args(["rev-list", "--left-right", "--count", &format!("HEAD...origin/{}", main_branch)])
+            .current_dir(worktree_path)
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                if parts.len() == 2 {
+                    status.commits_ahead = parts[0].parse().unwrap_or(0);
+                    status.commits_behind = parts[1].parse().unwrap_or(0);
+                }
+            }
+        }
+
+        Ok(status)
     }
 
     /// Check if a path is a git repository

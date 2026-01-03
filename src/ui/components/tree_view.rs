@@ -421,4 +421,13 @@ impl SidebarData {
             }
         }
     }
+
+    /// Get IDs of all expanded repositories
+    pub fn expanded_repo_ids(&self) -> Vec<Uuid> {
+        self.nodes
+            .iter()
+            .filter(|node| node.node_type == NodeType::Repository && node.expanded)
+            .map(|node| node.id)
+            .collect()
+    }
 }

@@ -42,7 +42,7 @@ impl WorkspaceDao {
     pub fn get_by_id(&self, id: Uuid) -> SqliteResult<Option<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default
+            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default, archived_at
              FROM workspaces WHERE id = ?1",
         )?;
 
@@ -54,12 +54,12 @@ impl WorkspaceDao {
         }
     }
 
-    /// Get all workspaces for a repository
+    /// Get all active (non-archived) workspaces for a repository
     pub fn get_by_repository(&self, repository_id: Uuid) -> SqliteResult<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default
-             FROM workspaces WHERE repository_id = ?1 ORDER BY is_default DESC, name",
+            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default, archived_at
+             FROM workspaces WHERE repository_id = ?1 AND archived_at IS NULL ORDER BY is_default DESC, name",
         )?;
 
         let workspaces = stmt
@@ -72,12 +72,12 @@ impl WorkspaceDao {
         Ok(workspaces)
     }
 
-    /// Get all workspaces
+    /// Get all active (non-archived) workspaces
     pub fn get_all(&self) -> SqliteResult<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default
-             FROM workspaces ORDER BY repository_id, is_default DESC, name",
+            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default, archived_at
+             FROM workspaces WHERE archived_at IS NULL ORDER BY repository_id, is_default DESC, name",
         )?;
 
         let workspaces = stmt
@@ -139,8 +139,8 @@ impl WorkspaceDao {
     pub fn get_default_for_repository(&self, repository_id: Uuid) -> SqliteResult<Option<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default
-             FROM workspaces WHERE repository_id = ?1 AND is_default = 1",
+            "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default, archived_at
+             FROM workspaces WHERE repository_id = ?1 AND is_default = 1 AND archived_at IS NULL",
         )?;
 
         let mut rows = stmt.query(params![repository_id.to_string()])?;
@@ -151,6 +151,16 @@ impl WorkspaceDao {
         }
     }
 
+    /// Archive a workspace (soft delete - marks as archived but keeps record)
+    pub fn archive(&self, id: Uuid) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET archived_at = ?2 WHERE id = ?1",
+            params![id.to_string(), Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
     /// Convert a database row to a Workspace
     fn row_to_workspace(row: &rusqlite::Row) -> SqliteResult<Workspace> {
         let id_str: String = row.get(0)?;
@@ -159,6 +169,7 @@ impl WorkspaceDao {
         let created_at_str: String = row.get(5)?;
         let last_accessed_str: String = row.get(6)?;
         let is_default: i32 = row.get(7)?;
+        let archived_at_str: Option<String> = row.get(8)?;
 
         Ok(Workspace {
             id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
@@ -173,6 +184,11 @@ impl WorkspaceDao {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
             is_default: is_default != 0,
+            archived_at: archived_at_str.and_then(|s| {
+                DateTime::parse_from_rfc3339(&s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()
+            }),
         })
     }
 }
