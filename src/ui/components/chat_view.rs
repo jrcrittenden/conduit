@@ -1,3 +1,6 @@
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
 use ansi_to_tui::IntoText;
 use ratatui::{
     buffer::Buffer,
@@ -12,8 +15,27 @@ use ratatui::{
 
 use super::{MarkdownRenderer, TurnSummary};
 
+/// Cached rendered lines for a single message
+#[derive(Debug, Clone)]
+struct CachedMessageLines {
+    /// Pre-rendered lines for this message
+    lines: Vec<Line<'static>>,
+    /// Hash of message content for invalidation detection (reserved for future use)
+    #[allow(dead_code)]
+    content_hash: u64,
+}
+
+/// Line cache for efficient rendering
+#[derive(Debug, Clone, Default)]
+struct LineCache {
+    /// Cached lines per message (indexed by message index)
+    entries: Vec<Option<CachedMessageLines>>,
+    /// Total line count across all cached messages
+    total_line_count: usize,
+}
+
 /// Role of a chat message
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -166,6 +188,12 @@ pub struct ChatView {
     scroll_offset: usize,
     /// Currently streaming message buffer
     streaming_buffer: Option<String>,
+    /// Cached rendered lines per message
+    line_cache: LineCache,
+    /// Width the cache was built for (invalidate on change)
+    cache_width: Option<u16>,
+    /// Cached lines for current streaming message
+    streaming_cache: Option<Vec<Line<'static>>>,
 }
 
 impl ChatView {
@@ -174,7 +202,119 @@ impl ChatView {
             messages: Vec::new(),
             scroll_offset: 0,
             streaming_buffer: None,
+            line_cache: LineCache::default(),
+            cache_width: None,
+            streaming_cache: None,
         }
+    }
+
+    /// Compute a hash for a message's content (for cache invalidation)
+    fn compute_message_hash(msg: &ChatMessage) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        msg.content.hash(&mut hasher);
+        msg.role.hash(&mut hasher);
+        msg.is_collapsed.hash(&mut hasher);
+        if let Some(ref name) = msg.tool_name {
+            name.hash(&mut hasher);
+        }
+        if let Some(ref args) = msg.tool_args {
+            args.hash(&mut hasher);
+        }
+        msg.exit_code.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Render a single message to cached lines
+    fn render_message_to_cache(&self, msg: &ChatMessage, width: usize, add_spacing: bool) -> CachedMessageLines {
+        let mut lines = Vec::new();
+        self.format_message(msg, width, &mut lines);
+        if add_spacing {
+            lines.push(Line::from(""));
+        }
+        CachedMessageLines {
+            lines,
+            content_hash: Self::compute_message_hash(msg),
+        }
+    }
+
+    /// Ensure cache is valid for current width, rebuild if needed
+    fn ensure_cache(&mut self, width: u16) {
+        // Check if we need to rebuild cache due to width change
+        if self.cache_width != Some(width) {
+            self.rebuild_cache(width);
+            return;
+        }
+
+        // Ensure cache has correct number of entries
+        if self.line_cache.entries.len() != self.messages.len() {
+            self.rebuild_cache(width);
+        }
+    }
+
+    /// Rebuild entire cache (called on width change or when cache is invalid)
+    fn rebuild_cache(&mut self, width: u16) {
+        self.line_cache.entries.clear();
+        self.line_cache.total_line_count = 0;
+
+        for i in 0..self.messages.len() {
+            let add_spacing = self.should_add_spacing_after(i);
+            let cached = self.render_message_to_cache(&self.messages[i], width as usize, add_spacing);
+            self.line_cache.total_line_count += cached.lines.len();
+            self.line_cache.entries.push(Some(cached));
+        }
+
+        self.cache_width = Some(width);
+    }
+
+    /// Check if spacing should be added after message at index
+    fn should_add_spacing_after(&self, index: usize) -> bool {
+        let msg = &self.messages[index];
+        let is_summary = msg.role == MessageRole::Summary;
+        let next_is_summary = self.messages.get(index + 1)
+            .map(|m| m.role == MessageRole::Summary)
+            .unwrap_or(false);
+        !is_summary && !next_is_summary
+    }
+
+    /// Invalidate cache entry at specific index
+    fn invalidate_cache_entry(&mut self, index: usize) {
+        if index < self.line_cache.entries.len() {
+            // Subtract old line count
+            if let Some(ref old) = self.line_cache.entries[index] {
+                self.line_cache.total_line_count = self.line_cache.total_line_count.saturating_sub(old.lines.len());
+            }
+            self.line_cache.entries[index] = None;
+        }
+    }
+
+    /// Update cache entry at specific index
+    fn update_cache_entry(&mut self, index: usize, width: u16) {
+        if index < self.messages.len() {
+            let add_spacing = self.should_add_spacing_after(index);
+            let cached = self.render_message_to_cache(&self.messages[index], width as usize, add_spacing);
+            self.line_cache.total_line_count += cached.lines.len();
+
+            if index < self.line_cache.entries.len() {
+                self.line_cache.entries[index] = Some(cached);
+            } else {
+                // Extend if needed
+                while self.line_cache.entries.len() < index {
+                    self.line_cache.entries.push(None);
+                }
+                self.line_cache.entries.push(Some(cached));
+            }
+        }
+    }
+
+    /// Get cached lines for rendering (builds from cache)
+    fn get_cached_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::with_capacity(self.line_cache.total_line_count);
+        for entry in &self.line_cache.entries {
+            if let Some(cached) = entry {
+                lines.extend(cached.lines.iter().cloned());
+            }
+        }
+        lines
     }
 
     /// Add a message to the chat
@@ -183,7 +323,22 @@ impl ChatView {
         if self.streaming_buffer.is_some() {
             self.finalize_streaming();
         }
+
+        // Update previous message's spacing if needed (it may have changed)
+        if !self.messages.is_empty() && self.cache_width.is_some() {
+            let prev_idx = self.messages.len() - 1;
+            self.invalidate_cache_entry(prev_idx);
+            self.update_cache_entry(prev_idx, self.cache_width.unwrap());
+        }
+
         self.messages.push(message);
+
+        // Add cache entry for new message if cache is active
+        if let Some(width) = self.cache_width {
+            let idx = self.messages.len() - 1;
+            self.update_cache_entry(idx, width);
+        }
+
         // Auto-scroll to bottom on new message
         self.scroll_offset = 0;
     }
@@ -198,12 +353,31 @@ impl ChatView {
                 self.streaming_buffer = Some(text.to_string());
             }
         }
+        // Invalidate streaming cache so it gets rebuilt on next render
+        self.streaming_cache = None;
     }
 
     /// Finalize streaming message and add to history
     pub fn finalize_streaming(&mut self) {
         if let Some(content) = self.streaming_buffer.take() {
+            // Clear streaming cache
+            self.streaming_cache = None;
+
+            // Update previous message's spacing if needed
+            if !self.messages.is_empty() && self.cache_width.is_some() {
+                let prev_idx = self.messages.len() - 1;
+                self.invalidate_cache_entry(prev_idx);
+                self.update_cache_entry(prev_idx, self.cache_width.unwrap());
+            }
+
             self.messages.push(ChatMessage::assistant(content));
+
+            // Add cache entry for new message
+            if let Some(width) = self.cache_width {
+                let idx = self.messages.len() - 1;
+                self.update_cache_entry(idx, width);
+            }
+
             self.scroll_offset = 0;
         }
     }
@@ -213,6 +387,10 @@ impl ChatView {
         self.messages.clear();
         self.streaming_buffer = None;
         self.scroll_offset = 0;
+        // Clear all caches
+        self.line_cache = LineCache::default();
+        self.streaming_cache = None;
+        // Keep cache_width so we don't have to recalculate on next render
     }
 
     /// Scroll up by n lines
@@ -261,24 +439,47 @@ impl ChatView {
         if let Some(msg) = self.messages.get_mut(index) {
             if msg.role == MessageRole::Tool {
                 msg.is_collapsed = !msg.is_collapsed;
+                // Invalidate and update cache for this message
+                if let Some(width) = self.cache_width {
+                    self.invalidate_cache_entry(index);
+                    self.update_cache_entry(index, width);
+                }
             }
         }
     }
 
     /// Collapse all tool messages
     pub fn collapse_all_tools(&mut self) {
-        for msg in &mut self.messages {
-            if msg.role == MessageRole::Tool {
+        let mut changed_indices = Vec::new();
+        for (i, msg) in self.messages.iter_mut().enumerate() {
+            if msg.role == MessageRole::Tool && !msg.is_collapsed {
                 msg.is_collapsed = true;
+                changed_indices.push(i);
+            }
+        }
+        // Update cache for changed messages
+        if let Some(width) = self.cache_width {
+            for idx in changed_indices {
+                self.invalidate_cache_entry(idx);
+                self.update_cache_entry(idx, width);
             }
         }
     }
 
     /// Expand all tool messages
     pub fn expand_all_tools(&mut self) {
-        for msg in &mut self.messages {
-            if msg.role == MessageRole::Tool {
+        let mut changed_indices = Vec::new();
+        for (i, msg) in self.messages.iter_mut().enumerate() {
+            if msg.role == MessageRole::Tool && msg.is_collapsed {
                 msg.is_collapsed = false;
+                changed_indices.push(i);
+            }
+        }
+        // Update cache for changed messages
+        if let Some(width) = self.cache_width {
+            for idx in changed_indices {
+                self.invalidate_cache_entry(idx);
+                self.update_cache_entry(idx, width);
             }
         }
     }
@@ -296,34 +497,6 @@ impl ChatView {
                 }
             })
             .collect()
-    }
-
-    /// Build lines for rendering
-    fn build_lines(&self, width: usize) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-
-        for (i, msg) in self.messages.iter().enumerate() {
-            self.format_message(msg, width, &mut lines);
-
-            // Add spacing between messages, but not after Summary
-            // and not before the next Summary
-            let is_summary = msg.role == MessageRole::Summary;
-            let next_is_summary = self.messages.get(i + 1)
-                .map(|m| m.role == MessageRole::Summary)
-                .unwrap_or(false);
-
-            if !is_summary && !next_is_summary {
-                lines.push(Line::from("")); // Spacing between messages
-            }
-        }
-
-        // Add streaming buffer if present
-        if let Some(ref buffer) = self.streaming_buffer {
-            let msg = ChatMessage::streaming(buffer.clone());
-            self.format_message(&msg, width, &mut lines);
-        }
-
-        lines
     }
 
     fn format_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
@@ -803,7 +976,25 @@ impl ChatView {
             return;
         }
 
-        let mut lines = self.build_lines(inner.width as usize);
+        // Ensure cache is valid for current width
+        self.ensure_cache(inner.width);
+
+        // Get cached lines for messages
+        let mut lines = self.get_cached_lines();
+
+        // Handle streaming buffer (not cached with messages, has its own cache)
+        if let Some(ref buffer) = self.streaming_buffer {
+            // Check if streaming cache needs update
+            if self.streaming_cache.is_none() {
+                let msg = ChatMessage::streaming(buffer.clone());
+                let mut streaming_lines = Vec::new();
+                self.format_message(&msg, inner.width as usize, &mut streaming_lines);
+                self.streaming_cache = Some(streaming_lines);
+            }
+            if let Some(ref cached_streaming) = self.streaming_cache {
+                lines.extend(cached_streaming.iter().cloned());
+            }
+        }
 
         // Append thinking indicator if provided
         if let Some(indicator) = thinking_line {
