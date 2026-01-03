@@ -1856,10 +1856,9 @@ impl App {
             self.sidebar_state.tree_state.selected = index;
         }
 
-        // Open the workspace
-        self.open_workspace(workspace_id);
-        self.input_mode = InputMode::Normal;
-        self.sidebar_state.set_focused(false);
+        // Open the workspace but keep sidebar open and focused
+        // User can press Enter to close sidebar or continue navigating
+        self.open_workspace_with_options(workspace_id, false);
     }
 
     /// Find the visible index of a workspace by its ID
