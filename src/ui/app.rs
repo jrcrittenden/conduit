@@ -24,7 +24,7 @@ use crate::agent::{
     load_claude_history_with_debug, load_codex_history_with_debug, AgentEvent, AgentRunner, AgentStartConfig,
     AgentType, ClaudeCodeRunner, CodexCliRunner, HistoryDebugEntry, MessageDisplay, SessionId,
 };
-use crate::config::{parse_key_notation, Config, KeyCombo, KeyContext};
+use crate::config::{parse_action, parse_key_notation, Config, KeyCombo, KeyContext, COMMAND_NAMES};
 use crate::ui::action::Action;
 use crate::data::{
     AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, WorkspaceDao,
@@ -740,6 +740,26 @@ impl App {
             }
         }
 
+        // Global command mode trigger - ':' from most modes enters command mode
+        if key.code == KeyCode::Char(':')
+            && key.modifiers.is_empty()
+            && !matches!(
+                self.input_mode,
+                InputMode::Command
+                    | InputMode::ShowingHelp
+                    | InputMode::AddingRepository
+                    | InputMode::SettingBaseDir
+                    | InputMode::PickingProject
+                    | InputMode::ShowingError
+                    | InputMode::SelectingAgent
+                    | InputMode::Confirming
+            )
+        {
+            self.command_buffer.clear();
+            self.input_mode = InputMode::Command;
+            return Ok(());
+        }
+
         // Get the current context from input mode and view mode
         let context = KeyContext::from_input_mode(self.input_mode, self.view_mode);
 
@@ -1445,7 +1465,17 @@ impl App {
             }
             Action::ExecuteCommand => {
                 if self.input_mode == InputMode::Command {
-                    self.execute_command();
+                    if let Some(action) = self.execute_command() {
+                        // Prevent recursion - ExecuteCommand can't call itself
+                        if !matches!(action, Action::ExecuteCommand) {
+                            Box::pin(self.execute_action(action)).await?;
+                        }
+                    }
+                }
+            }
+            Action::CompleteCommand => {
+                if self.input_mode == InputMode::Command {
+                    self.complete_command();
                 }
             }
         }
@@ -1492,16 +1522,7 @@ impl App {
 
         match self.input_mode {
             InputMode::Normal => {
-                // Check for command mode trigger (: on empty input)
-                if c == ':' {
-                    if let Some(session) = self.tab_manager.active_session() {
-                        if session.input_box.input().is_empty() {
-                            self.command_buffer.clear();
-                            self.input_mode = InputMode::Command;
-                            return;
-                        }
-                    }
-                }
+                // Note: ':' is handled globally in handle_key_event
                 // Check for help trigger (? on empty input)
                 if c == '?' {
                     if let Some(session) = self.tab_manager.active_session() {
@@ -1536,23 +1557,90 @@ impl App {
     }
 
     /// Execute a command from command mode
-    fn execute_command(&mut self) {
+    /// Returns an action to execute if the command maps to one
+    fn execute_command(&mut self) -> Option<Action> {
         let command = self.command_buffer.trim().to_lowercase();
         self.command_buffer.clear();
         self.input_mode = InputMode::Normal;
 
+        // First check for built-in command aliases
         match command.as_str() {
-            "help" | "h" => {
+            "help" | "h" | "?" => {
                 self.help_dialog_state.show(&self.config.keybindings);
                 self.input_mode = InputMode::ShowingHelp;
+                return None;
             }
-            "q" | "quit" => {
-                self.save_session_state();
-                self.should_quit = true;
+            "q" => {
+                return Some(Action::Quit);
             }
-            // Unknown commands silently exit command mode
             _ => {}
         }
+
+        // Try to parse as an action name
+        parse_action(&command)
+    }
+
+    /// Autocomplete the command buffer
+    fn complete_command(&mut self) {
+        let prefix = self.command_buffer.trim().to_lowercase();
+        if prefix.is_empty() {
+            return;
+        }
+
+        // Find all matching commands
+        let matches: Vec<&str> = COMMAND_NAMES
+            .iter()
+            .filter(|cmd| cmd.starts_with(&prefix))
+            .copied()
+            .collect();
+
+        if matches.is_empty() {
+            return;
+        }
+
+        if matches.len() == 1 {
+            // Single match - complete fully
+            self.command_buffer = matches[0].to_string();
+        } else {
+            // Multiple matches - complete to longest common prefix
+            let common = Self::longest_common_prefix(&matches);
+            if common.len() > prefix.len() {
+                self.command_buffer = common;
+            } else {
+                // Already at common prefix - cycle to next match
+                let current = &self.command_buffer;
+                let next = matches
+                    .iter()
+                    .find(|&&cmd| cmd > current.as_str())
+                    .or(matches.first())
+                    .unwrap();
+                self.command_buffer = (*next).to_string();
+            }
+        }
+    }
+
+    /// Find longest common prefix among strings
+    fn longest_common_prefix(strings: &[&str]) -> String {
+        if strings.is_empty() {
+            return String::new();
+        }
+        if strings.len() == 1 {
+            return strings[0].to_string();
+        }
+
+        let first = strings[0];
+        let mut prefix_len = first.len();
+
+        for s in &strings[1..] {
+            prefix_len = first
+                .chars()
+                .zip(s.chars())
+                .take_while(|(a, b)| a == b)
+                .count()
+                .min(prefix_len);
+        }
+
+        first[..prefix_len].to_string()
     }
 
     /// Open a workspace (create or switch to tab)

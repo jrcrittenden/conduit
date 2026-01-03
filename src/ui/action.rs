@@ -150,6 +150,8 @@ pub enum Action {
     ShowHelp,
     /// Execute command in command mode
     ExecuteCommand,
+    /// Autocomplete command in command mode
+    CompleteCommand,
 }
 
 impl Action {
@@ -236,6 +238,7 @@ impl Action {
             // Command mode
             Action::ShowHelp => "Show help",
             Action::ExecuteCommand => "Execute command",
+            Action::CompleteCommand => "Autocomplete command",
         }
     }
 }

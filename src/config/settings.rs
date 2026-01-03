@@ -11,6 +11,9 @@ use crate::util::paths::config_path;
 use super::default_keys::default_keybindings;
 use super::keys::{parse_key_notation, KeybindingConfig, KeyContext};
 
+/// Example configuration file contents (bundled with the binary)
+pub const EXAMPLE_CONFIG: &str = include_str!("config.toml.example");
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -177,7 +180,7 @@ fn parse_context_bindings(
 }
 
 /// Parse an action name string into an Action
-fn parse_action(name: &str) -> Option<Action> {
+pub fn parse_action(name: &str) -> Option<Action> {
     match name {
         // Global
         "quit" => Some(Action::Quit),
@@ -255,17 +258,105 @@ fn parse_action(name: &str) -> Option<Action> {
         // Agent
         "select_agent" => Some(Action::SelectAgent),
 
+        // Command mode
+        "show_help" => Some(Action::ShowHelp),
+        "execute_command" => Some(Action::ExecuteCommand),
+        "complete_command" => Some(Action::CompleteCommand),
+
         _ => None,
     }
 }
+
+/// All available command names for autocomplete
+pub const COMMAND_NAMES: &[&str] = &[
+    // Global
+    "quit",
+    "toggle_sidebar",
+    "new_project",
+    "open_pr",
+    "interrupt_agent",
+    "toggle_view_mode",
+    "show_model_selector",
+    "toggle_metrics",
+    "dump_debug_state",
+    // Tab management
+    "close_tab",
+    "next_tab",
+    "prev_tab",
+    // Scrolling
+    "scroll_up",
+    "scroll_down",
+    "scroll_page_up",
+    "scroll_page_down",
+    "scroll_to_top",
+    "scroll_to_bottom",
+    // Input editing
+    "insert_newline",
+    "backspace",
+    "delete",
+    "delete_word_back",
+    "delete_word_forward",
+    "delete_to_start",
+    "delete_to_end",
+    "move_cursor_left",
+    "move_cursor_right",
+    "move_cursor_start",
+    "move_cursor_end",
+    "move_word_left",
+    "move_word_right",
+    "move_cursor_up",
+    "move_cursor_down",
+    "history_prev",
+    "history_next",
+    "submit",
+    // Navigation
+    "select_next",
+    "select_prev",
+    "select_page_down",
+    "select_page_up",
+    "confirm",
+    "cancel",
+    "expand_or_select",
+    "collapse",
+    "add_repository",
+    "open_settings",
+    "archive_or_remove",
+    // Sidebar
+    "enter_sidebar_mode",
+    "exit_sidebar_mode",
+    // Raw events
+    "raw_events_select_next",
+    "raw_events_select_prev",
+    "raw_events_toggle_expand",
+    "raw_events_collapse",
+    // Dialog
+    "confirm_yes",
+    "confirm_no",
+    "confirm_toggle",
+    "toggle_details",
+    // Agent
+    "select_agent",
+    // Command mode
+    "show_help",
+    // Aliases
+    "help",
+    "h",
+    "q",
+];
 
 impl Config {
     /// Load configuration from file, merging with defaults
     pub fn load() -> Self {
         let mut config = Config::default();
 
-        // Try to load user config
         let config_file = config_path();
+
+        // Create example config on first run
+        if !config_file.exists() {
+            Self::create_default_config(&config_file);
+        }
+
+        // Try to load user config
         if config_file.exists() {
             if let Ok(contents) = fs::read_to_string(&config_file) {
                 if let Ok(toml_config) = toml::from_str::<TomlConfig>(&contents) {
@@ -279,6 +370,24 @@ impl Config {
         }
 
         config
+    }
+
+    /// Create the default config file from the bundled example
+    fn create_default_config(path: &PathBuf) {
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    eprintln!("Failed to create config directory: {}", e);
+                    return;
+                }
+            }
+        }
+
+        // Write the example config
+        if let Err(e) = fs::write(path, EXAMPLE_CONFIG) {
+            eprintln!("Failed to write default config: {}", e);
+        }
     }
 
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {

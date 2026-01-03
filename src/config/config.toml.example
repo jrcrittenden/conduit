@@ -1,0 +1,158 @@
+# Conduit Configuration File
+# Location: ~/.conduit/config.toml
+#
+# This file allows you to customize keybindings. Settings are merged with
+# defaults, so you only need to specify the bindings you want to change.
+#
+# Key Notation:
+#   C-x     = Ctrl+x
+#   M-x     = Alt+x (Meta)
+#   S-x     = Shift+x
+#   C-S-x   = Ctrl+Shift+x
+#   M-S-x   = Alt+Shift+x
+#   <Enter> = Enter key
+#   <Esc>   = Escape key
+#   <Tab>   = Tab key
+#   <BS>    = Backspace
+#   <Del>   = Delete
+#   <Up>    = Up arrow
+#   <Down>  = Down arrow
+#   <Left>  = Left arrow
+#   <Right> = Right arrow
+#   <Home>  = Home key
+#   <End>   = End key
+#   <PgUp>  = Page Up
+#   <PgDn>  = Page Down
+
+[keys]
+# Global keybindings (work in all modes unless overridden)
+#
+# quit = "C-q"
+# toggle_sidebar = "C-t"
+# new_project = "C-n"
+# open_pr = "C-p"
+# interrupt_agent = "C-c"
+# toggle_view_mode = "C-g"
+# show_model_selector = "C-o"
+# toggle_metrics = "M-p"
+# dump_debug_state = "M-g"
+# close_tab = "C-S-w"
+#
+# Readline-style editing (global)
+# move_cursor_start = "C-a"
+# move_cursor_end = "C-e"
+# move_cursor_left = "C-b"
+# move_cursor_right = "C-f"
+# move_word_left = "M-b"
+# move_word_right = "M-f"
+# delete_to_start = "C-u"
+# delete_to_end = "C-k"
+# delete_word_back = "C-w"
+# delete = "C-d"
+# backspace = "C-h"
+# insert_newline = "C-j"
+
+[keys.chat]
+# Chat mode keybindings (when typing in the input box)
+#
+# submit = "<Enter>"
+# insert_newline = "S-<Enter>"
+# scroll_page_up = "<PgUp>"
+# scroll_page_down = "<PgDn>"
+# scroll_to_bottom = "<Esc>"
+# next_tab = "<Tab>"
+# prev_tab = "S-<Tab>"
+
+[keys.scrolling]
+# Scrolling mode keybindings (when scrolling through chat)
+#
+# scroll_up = "k"
+# scroll_down = "j"
+# scroll_page_up = "<PgUp>"
+# scroll_page_down = "<PgDn>"
+# scroll_to_top = "g"
+# scroll_to_bottom = "G"
+# cancel = "<Esc>"
+
+[keys.sidebar]
+# Sidebar navigation keybindings
+#
+# select_prev = "k"
+# select_next = "j"
+# expand_or_select = "l"
+# collapse = "h"
+# exit_sidebar_mode = "<Esc>"
+# add_repository = "r"
+# open_settings = "s"
+# archive_or_remove = "x"
+
+[keys.dialog]
+# Dialog keybindings (confirmation dialogs, etc.)
+#
+# confirm_toggle = "<Tab>"
+# confirm = "<Enter>"
+# cancel = "<Esc>"
+# confirm_yes = "y"
+# confirm_no = "n"
+# toggle_details = "d"
+
+[keys.project_picker]
+# Project picker keybindings
+#
+# select_prev = "C-k"
+# select_next = "C-j"
+# select_page_up = "C-b"
+# select_page_down = "C-f"
+# add_repository = "C-a"
+# confirm = "<Enter>"
+# cancel = "<Esc>"
+
+[keys.model_selector]
+# Model selector keybindings
+#
+# select_prev = "k"
+# select_next = "j"
+# confirm = "<Enter>"
+# cancel = "<Esc>"
+
+[keys.raw_events]
+# Raw events view keybindings
+#
+# raw_events_select_prev = "k"
+# raw_events_select_next = "j"
+# raw_events_toggle_expand = "l"
+# raw_events_collapse = "h"
+
+# Available actions:
+#
+# Global:
+#   quit, toggle_sidebar, new_project, open_pr, interrupt_agent,
+#   toggle_view_mode, show_model_selector, toggle_metrics, dump_debug_state
+#
+# Tab management:
+#   close_tab, next_tab, prev_tab
+#
+# Scrolling:
+#   scroll_up, scroll_down, scroll_page_up, scroll_page_down,
+#   scroll_to_top, scroll_to_bottom
+#
+# Input editing:
+#   insert_newline, backspace, delete, delete_word_back, delete_word_forward,
+#   delete_to_start, delete_to_end, move_cursor_left, move_cursor_right,
+#   move_cursor_start, move_cursor_end, move_word_left, move_word_right,
+#   move_cursor_up, move_cursor_down, history_prev, history_next, submit
+#
+# Navigation:
+#   select_next, select_prev, select_page_down, select_page_up,
+#   confirm, cancel, expand_or_select, collapse,
+#   add_repository, open_settings, archive_or_remove
+#
+# Sidebar:
+#   enter_sidebar_mode, exit_sidebar_mode
+#
+# Raw events:
+#   raw_events_select_next, raw_events_select_prev,
+#   raw_events_toggle_expand, raw_events_collapse
+#
+# Dialog:
+#   confirm_yes, confirm_no, confirm_toggle, toggle_details

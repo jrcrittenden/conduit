@@ -215,6 +215,7 @@ pub fn default_keybindings() -> KeybindingConfig {
     command.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::ExecuteCommand);
     command.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::Cancel);
     command.insert(KeyCombo::new(KeyCode::Backspace, KeyModifiers::NONE), Action::Backspace);
+    command.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::CompleteCommand);
 
     // ========== Help Dialog ==========
     let help = config.context.entry(KeyContext::HelpDialog).or_default();
