@@ -127,6 +127,22 @@ impl Database {
             )?;
         }
 
+        // Migration 2: Add pr_number column to session_tabs table
+        let has_pr_number: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_tabs') WHERE name='pr_number'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_pr_number {
+            conn.execute(
+                "ALTER TABLE session_tabs ADD COLUMN pr_number INTEGER",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 

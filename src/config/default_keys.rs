@@ -226,8 +226,9 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(raw, "C-k", Action::EventDetailScrollUp);
     bind(raw, "C-f", Action::EventDetailPageDown);
     bind(raw, "C-b", Action::EventDetailPageUp);
-    bind(raw, "C-g", Action::EventDetailScrollToTop);
-    bind(raw, "C-S-g", Action::EventDetailScrollToBottom);
+    // Use vim-style g/G for top/bottom (C-g is reserved for ToggleViewMode)
+    bind(raw, "g", Action::EventDetailScrollToTop);
+    bind(raw, "G", Action::EventDetailScrollToBottom);
 
     // Copy selected event
     bind(raw, "c", Action::EventDetailCopy);

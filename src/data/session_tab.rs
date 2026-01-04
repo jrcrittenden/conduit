@@ -23,8 +23,8 @@ impl SessionTabStore {
     pub fn create(&self, tab: &SessionTab) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO session_tabs (id, tab_index, workspace_id, agent_type, agent_session_id, model, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO session_tabs (id, tab_index, workspace_id, agent_type, agent_session_id, model, pr_number, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 tab.id.to_string(),
                 tab.tab_index,
@@ -32,6 +32,7 @@ impl SessionTabStore {
                 tab.agent_type.as_str(),
                 tab.agent_session_id,
                 tab.model,
+                tab.pr_number,
                 tab.created_at.to_rfc3339(),
             ],
         )?;
@@ -42,7 +43,7 @@ impl SessionTabStore {
     pub fn get_all(&self) -> SqliteResult<Vec<SessionTab>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, created_at
+            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, pr_number, created_at
              FROM session_tabs ORDER BY tab_index",
         )?;
 
@@ -58,7 +59,7 @@ impl SessionTabStore {
     pub fn get_by_id(&self, id: Uuid) -> SqliteResult<Option<SessionTab>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, created_at
+            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, pr_number, created_at
              FROM session_tabs WHERE id = ?1",
         )?;
 
@@ -75,7 +76,7 @@ impl SessionTabStore {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE session_tabs SET tab_index = ?2, workspace_id = ?3, agent_type = ?4,
-             agent_session_id = ?5, model = ?6 WHERE id = ?1",
+             agent_session_id = ?5, model = ?6, pr_number = ?7 WHERE id = ?1",
             params![
                 tab.id.to_string(),
                 tab.tab_index,
@@ -83,6 +84,7 @@ impl SessionTabStore {
                 tab.agent_type.as_str(),
                 tab.agent_session_id,
                 tab.model,
+                tab.pr_number,
             ],
         )?;
         Ok(())
@@ -117,7 +119,7 @@ impl SessionTabStore {
     pub fn get_by_workspace_id(&self, workspace_id: Uuid) -> SqliteResult<Option<SessionTab>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, created_at
+            "SELECT id, tab_index, workspace_id, agent_type, agent_session_id, model, pr_number, created_at
              FROM session_tabs WHERE workspace_id = ?1",
         )?;
 
@@ -134,7 +136,7 @@ impl SessionTabStore {
         let id_str: String = row.get(0)?;
         let workspace_id_str: Option<String> = row.get(2)?;
         let agent_type_str: String = row.get(3)?;
-        let created_at_str: String = row.get(6)?;
+        let created_at_str: String = row.get(7)?;
 
         Ok(SessionTab {
             id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
@@ -143,6 +145,7 @@ impl SessionTabStore {
             agent_type: AgentType::from_str(&agent_type_str),
             agent_session_id: row.get(4)?,
             model: row.get(5)?,
+            pr_number: row.get(6)?,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -172,6 +175,7 @@ mod tests {
             None,
             Some("session-123".to_string()),
             None,
+            None,
         );
 
         dao.create(&tab).unwrap();
@@ -186,8 +190,8 @@ mod tests {
     fn test_get_all_ordered() {
         let (_dir, _db, dao) = setup_db();
 
-        let tab1 = SessionTab::new(1, AgentType::Codex, None, None, None);
-        let tab0 = SessionTab::new(0, AgentType::Claude, None, None, None);
+        let tab1 = SessionTab::new(1, AgentType::Codex, None, None, None, None);
+        let tab0 = SessionTab::new(0, AgentType::Claude, None, None, None, None);
 
         dao.create(&tab1).unwrap();
         dao.create(&tab0).unwrap();
@@ -202,8 +206,8 @@ mod tests {
     fn test_clear_all() {
         let (_dir, _db, dao) = setup_db();
 
-        let tab1 = SessionTab::new(0, AgentType::Claude, None, None, None);
-        let tab2 = SessionTab::new(1, AgentType::Codex, None, None, None);
+        let tab1 = SessionTab::new(0, AgentType::Claude, None, None, None, None);
+        let tab2 = SessionTab::new(1, AgentType::Codex, None, None, None, None);
 
         dao.create(&tab1).unwrap();
         dao.create(&tab2).unwrap();
@@ -216,12 +220,13 @@ mod tests {
     #[test]
     fn test_update() {
         let (_dir, _db, dao) = setup_db();
-        let mut tab = SessionTab::new(0, AgentType::Claude, None, None, None);
+        let mut tab = SessionTab::new(0, AgentType::Claude, None, None, None, None);
 
         dao.create(&tab).unwrap();
 
         tab.agent_session_id = Some("updated-session".to_string());
         tab.model = Some("claude-sonnet".to_string());
+        tab.pr_number = Some(42);
         dao.update(&tab).unwrap();
 
         let retrieved = dao.get_by_id(tab.id).unwrap().unwrap();
@@ -230,5 +235,6 @@ mod tests {
             Some("updated-session".to_string())
         );
         assert_eq!(retrieved.model, Some("claude-sonnet".to_string()));
+        assert_eq!(retrieved.pr_number, Some(42));
     }
 }
