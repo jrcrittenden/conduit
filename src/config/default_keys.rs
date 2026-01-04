@@ -45,8 +45,8 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(&mut config.global, "C-h", Action::Backspace);
     bind(&mut config.global, "C-j", Action::InsertNewline);
 
-    // Close tab with Ctrl+Shift+W
-    bind(&mut config.global, "C-S-w", Action::CloseTab);
+    // Close tab with Alt+Shift+W (Ctrl+Shift doesn't work reliably in terminals)
+    bind(&mut config.global, "M-S-w", Action::CloseTab);
 
     // Alt key shortcuts
     bind(&mut config.global, "M-b", Action::MoveWordLeft);
