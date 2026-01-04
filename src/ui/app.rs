@@ -168,6 +168,7 @@ impl App {
             let mut session = AgentSession::new(tab.agent_type);
             session.workspace_id = tab.workspace_id;
             session.model = tab.model;
+            session.pr_number = tab.pr_number.map(|n| n as u32);
 
             // Look up workspace to get working_dir, workspace_name, and project_name
             if let Some(workspace_id) = tab.workspace_id {
@@ -317,6 +318,7 @@ impl App {
                         .as_ref()
                         .map(|s| s.as_str().to_string()),
                     session.model.clone(),
+                    session.pr_number.map(|n| n as i32),
                 )
             })
             .collect();
@@ -3612,6 +3614,11 @@ impl App {
         // If PR exists, show confirmation dialog to open in browser
         if let Some(ref pr) = preflight.existing_pr {
             if pr.exists {
+                // Update session's pr_number
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    session.pr_number = pr.number;
+                }
+
                 let pr_url = pr.url.clone().unwrap_or_else(|| "Unknown URL".to_string());
                 self.state.confirmation_dialog_state.show(
                     "Pull Request Exists",
@@ -3821,6 +3828,7 @@ impl App {
                         chunks[1],
                         f.buffer_mut(),
                         thinking_line,
+                        session.pr_number,
                     );
 
                     // Render input box (not in command mode)

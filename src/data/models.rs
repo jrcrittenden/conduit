@@ -135,6 +135,8 @@ pub struct SessionTab {
     pub agent_session_id: Option<String>,
     /// Selected model
     pub model: Option<String>,
+    /// PR number if a PR exists for this session's branch
+    pub pr_number: Option<i32>,
     /// When the tab was created
     pub created_at: DateTime<Utc>,
 }
@@ -147,6 +149,7 @@ impl SessionTab {
         workspace_id: Option<Uuid>,
         agent_session_id: Option<String>,
         model: Option<String>,
+        pr_number: Option<i32>,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -155,6 +158,7 @@ impl SessionTab {
             agent_type,
             agent_session_id,
             model,
+            pr_number,
             created_at: Utc::now(),
         }
     }

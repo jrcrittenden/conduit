@@ -1054,15 +1054,16 @@ impl ChatView {
 
     /// Render the chat view
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        self.render_with_indicator(area, buf, None);
+        self.render_with_indicator(area, buf, None, None);
     }
 
-    /// Render the chat view with an optional thinking indicator
+    /// Render the chat view with an optional thinking indicator and PR badge
     pub fn render_with_indicator(
         &mut self,
         area: Rect,
         buf: &mut Buffer,
         thinking_line: Option<Line<'static>>,
+        pr_number: Option<u32>,
     ) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1071,6 +1072,26 @@ impl ChatView {
 
         let inner = block.inner(area);
         block.render(area, buf);
+
+        // Render PR badge in top-right corner if PR exists
+        if let Some(pr_num) = pr_number {
+            let badge = format!(" PR #{} ", pr_num);
+            let badge_width = badge.len() as u16;
+            // Position: top-right corner inside the border
+            // area.x + area.width - 1 is the right border
+            // So we want to start at: area.x + area.width - 1 - badge_width
+            let badge_x = area.x + area.width.saturating_sub(badge_width + 2);
+            let badge_y = area.y;
+
+            let badge_span = Span::styled(
+                badge,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(139, 233, 253)) // Cyan/teal color
+                    .add_modifier(Modifier::BOLD),
+            );
+            buf.set_span(badge_x, badge_y, &badge_span, badge_width);
+        }
 
         if inner.width < 3 || inner.height < 1 {
             return;
