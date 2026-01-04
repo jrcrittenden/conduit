@@ -610,6 +610,8 @@ impl RawEventsView {
             if clicked_line >= event_start && clicked_line < event_end {
                 // Clicked on this event - select it
                 self.selected_index = i;
+                // Sync detail panel to follow selection
+                self.event_detail.sync_to_event(self.selected_index);
                 return Some(i);
             }
 

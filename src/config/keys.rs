@@ -140,7 +140,7 @@ impl KeyContext {
     pub fn from_input_mode(mode: crate::ui::events::InputMode, view_mode: crate::ui::events::ViewMode) -> Self {
         use crate::ui::events::{InputMode, ViewMode};
 
-        // RawEvents view takes precedence over input mode
+        // RawEvents view takes precedence over other input modes
         if view_mode == ViewMode::RawEvents {
             return KeyContext::RawEvents;
         }

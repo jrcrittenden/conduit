@@ -38,7 +38,7 @@ pub use global_footer::GlobalFooter;
 pub use input_box::InputBox;
 pub use markdown::MarkdownRenderer;
 pub use model_selector::{ModelSelector, ModelSelectorItem, ModelSelectorState};
-pub use raw_events_view::{EventDirection, RawEventEntry, RawEventsView};
+pub use raw_events_view::{EventDetailState, EventDirection, RawEventEntry, RawEventsView, DETAIL_PANEL_BREAKPOINT};
 pub use sidebar::{Sidebar, SidebarState};
 pub use spinner::Spinner;
 pub use splash_screen::SplashScreen;

@@ -172,10 +172,12 @@ pub struct AppState {
     pub input_area: Option<Rect>,
     pub status_bar_area: Option<Rect>,
     pub footer_area: Option<Rect>,
+    pub raw_events_area: Option<Rect>,
     pub metrics: PerformanceMetrics,
     pub show_metrics: bool,
     pub spinner_frame: usize,
     pub last_sidebar_click: Option<(Instant, usize)>,
+    pub last_raw_events_click: Option<(Instant, usize)>,
 }
 
 impl AppState {
@@ -205,10 +207,12 @@ impl AppState {
             input_area: None,
             status_bar_area: None,
             footer_area: None,
+            raw_events_area: None,
             metrics: PerformanceMetrics::new(),
             show_metrics: false,
             spinner_frame: 0,
             last_sidebar_click: None,
+            last_raw_events_click: None,
         }
     }
 }

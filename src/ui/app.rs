@@ -1295,6 +1295,81 @@ impl App {
                     session.raw_events_view.collapse();
                 }
             }
+            // ========== Event Detail Panel ==========
+            Action::EventDetailToggle => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    session.raw_events_view.toggle_detail();
+                }
+            }
+            Action::EventDetailScrollUp => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    session.raw_events_view.event_detail.scroll_up(1);
+                }
+            }
+            Action::EventDetailScrollDown => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    let content_height = session.raw_events_view.detail_content_height();
+                    let visible_height = self
+                        .state
+                        .raw_events_area
+                        .map(|r| r.height.saturating_sub(2) as usize)
+                        .unwrap_or(20);
+                    session
+                        .raw_events_view
+                        .event_detail
+                        .scroll_down(1, content_height, visible_height);
+                }
+            }
+            Action::EventDetailPageUp => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    let visible_height = self
+                        .state
+                        .raw_events_area
+                        .map(|r| r.height.saturating_sub(2) as usize)
+                        .unwrap_or(20);
+                    session.raw_events_view.event_detail.page_up(visible_height);
+                }
+            }
+            Action::EventDetailPageDown => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    let content_height = session.raw_events_view.detail_content_height();
+                    let visible_height = self
+                        .state
+                        .raw_events_area
+                        .map(|r| r.height.saturating_sub(2) as usize)
+                        .unwrap_or(20);
+                    session
+                        .raw_events_view
+                        .event_detail
+                        .page_down(visible_height, content_height);
+                }
+            }
+            Action::EventDetailScrollToTop => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    session.raw_events_view.event_detail.scroll_to_top();
+                }
+            }
+            Action::EventDetailScrollToBottom => {
+                if let Some(session) = self.state.tab_manager.active_session_mut() {
+                    let content_height = session.raw_events_view.detail_content_height();
+                    let visible_height = self
+                        .state
+                        .raw_events_area
+                        .map(|r| r.height.saturating_sub(2) as usize)
+                        .unwrap_or(20);
+                    session
+                        .raw_events_view
+                        .event_detail
+                        .scroll_to_bottom(content_height, visible_height);
+                }
+            }
+            Action::EventDetailCopy => {
+                if let Some(session) = self.state.tab_manager.active_session() {
+                    if let Some(json) = session.raw_events_view.get_selected_json() {
+                        effects.push(Effect::CopyToClipboard(json));
+                    }
+                }
+            }
 
             // ========== Confirmation Dialog ==========
             Action::ConfirmYes => {
@@ -1657,6 +1732,12 @@ impl App {
                             },
                         });
                     });
+                }
+                Effect::CopyToClipboard(text) => {
+                    use arboard::Clipboard;
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
                 }
             }
         }
@@ -2350,6 +2431,10 @@ impl App {
                     && self.state.project_picker_state.is_visible()
                 {
                     self.state.project_picker_state.select_prev();
+                } else if self.state.view_mode == ViewMode::RawEvents {
+                    if let Some(session) = self.state.tab_manager.active_session_mut() {
+                        session.raw_events_view.scroll_up(3);
+                    }
                 } else if let Some(session) = self.state.tab_manager.active_session_mut() {
                     session.chat_view.scroll_up(1);
                     self.record_chat_scroll(1);
@@ -2364,6 +2449,13 @@ impl App {
                     && self.state.project_picker_state.is_visible()
                 {
                     self.state.project_picker_state.select_next();
+                } else if self.state.view_mode == ViewMode::RawEvents {
+                    if let Some(raw_events_area) = self.state.raw_events_area {
+                        let visible_height = raw_events_area.height.saturating_sub(2) as usize;
+                        if let Some(session) = self.state.tab_manager.active_session_mut() {
+                            session.raw_events_view.scroll_down(3, visible_height);
+                        }
+                    }
                 } else if let Some(session) = self.state.tab_manager.active_session_mut() {
                     session.chat_view.scroll_down(1);
                     self.record_chat_scroll(1);
@@ -2441,6 +2533,40 @@ impl App {
                     effects.extend(self.execute_action(action).await?);
                 }
                 return Ok(effects);
+            }
+        }
+
+        // Check raw events area (debug view)
+        if self.state.view_mode == ViewMode::RawEvents {
+            if let Some(raw_events_area) = self.state.raw_events_area {
+                if Self::point_in_rect(x, y, raw_events_area) {
+                    if let Some(session) = self.state.tab_manager.active_session_mut() {
+                        if let Some(clicked_index) =
+                            session.raw_events_view.handle_click(x, y, raw_events_area)
+                        {
+                            // Check for double-click (same index within 500ms)
+                            let now = Instant::now();
+                            let is_double_click = if let Some((last_time, last_index)) =
+                                self.state.last_raw_events_click
+                            {
+                                last_index == clicked_index
+                                    && now.duration_since(last_time) < Duration::from_millis(500)
+                            } else {
+                                false
+                            };
+
+                            if is_double_click {
+                                // Double-click: toggle detail panel
+                                session.raw_events_view.toggle_detail();
+                                self.state.last_raw_events_click = None;
+                            } else {
+                                // Single click: just select (already done in handle_click)
+                                self.state.last_raw_events_click = Some((now, clicked_index));
+                            }
+                        }
+                    }
+                    return Ok(effects);
+                }
             }
         }
 
@@ -3394,6 +3520,7 @@ impl App {
                 // Store layout areas for mouse hit-testing
                 self.state.tab_bar_area = Some(chunks[0]);
                 self.state.chat_area = Some(chunks[1]);
+                self.state.raw_events_area = None;
                 self.state.input_area = Some(chunks[2]);
                 self.state.status_bar_area = Some(chunks[3]);
                 self.state.footer_area = Some(chunks[4]);
@@ -3502,7 +3629,8 @@ impl App {
 
                 // Store layout areas for mouse hit-testing (no input/status in this mode)
                 self.state.tab_bar_area = Some(chunks[0]);
-                self.state.chat_area = Some(chunks[1]); // Raw events view uses chat area slot
+                self.state.chat_area = None;
+                self.state.raw_events_area = Some(chunks[1]);
                 self.state.input_area = None;
                 self.state.status_bar_area = None;
                 self.state.footer_area = Some(chunks[2]);

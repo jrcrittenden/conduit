@@ -31,9 +31,12 @@ impl GlobalFooter {
 
     pub fn with_view_mode(mut self, view_mode: ViewMode) -> Self {
         self.view_mode = view_mode;
-        // Update hints based on view mode
-        // Note: These hints should match keybindings in src/config/default_keys.rs
-        self.hints = match view_mode {
+        self.update_hints();
+        self
+    }
+
+    fn update_hints(&mut self) {
+        self.hints = match self.view_mode {
             ViewMode::Chat => vec![
                 ("Tab", "Switch"),
                 ("C-t", "Sidebar"),
@@ -44,13 +47,12 @@ impl GlobalFooter {
             ],
             ViewMode::RawEvents => vec![
                 ("j/k", "Nav"),
-                ("l/CR", "Expand"),
-                ("h/Esc", "Collapse"),
+                ("e", "Detail"),
+                ("C-j/k", "Panel"),
+                ("c", "Copy"),
                 ("C-g", "Chat"),
-                ("C-q", "Quit"),
             ],
         };
-        self
     }
 
     pub fn with_hints(hints: Vec<(&'static str, &'static str)>) -> Self {

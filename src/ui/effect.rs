@@ -28,4 +28,5 @@ pub enum Effect {
     RemoveProject {
         repo_id: Uuid,
     },
+    CopyToClipboard(String),
 }
