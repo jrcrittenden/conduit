@@ -193,6 +193,12 @@ pub struct ChatView {
     line_cache: LineCache,
     /// Width the cache was built for (invalidate on change)
     cache_width: Option<u16>,
+    /// Flattened cache of all message lines
+    flat_cache: Vec<Line<'static>>,
+    /// Width the flattened cache was built for
+    flat_cache_width: Option<u16>,
+    /// Whether the flattened cache needs rebuilding
+    flat_cache_dirty: bool,
     /// Cached lines for current streaming message
     streaming_cache: Option<Vec<Line<'static>>>,
 }
@@ -205,6 +211,9 @@ impl ChatView {
             streaming_buffer: None,
             line_cache: LineCache::default(),
             cache_width: None,
+            flat_cache: Vec::new(),
+            flat_cache_width: None,
+            flat_cache_dirty: true,
             streaming_cache: None,
         }
     }
@@ -265,6 +274,7 @@ impl ChatView {
         }
 
         self.cache_width = Some(width);
+        self.flat_cache_dirty = true;
     }
 
     /// Check if spacing should be added after message at index
@@ -285,6 +295,7 @@ impl ChatView {
                 self.line_cache.total_line_count = self.line_cache.total_line_count.saturating_sub(old.lines.len());
             }
             self.line_cache.entries[index] = None;
+            self.flat_cache_dirty = true;
         }
     }
 
@@ -304,43 +315,24 @@ impl ChatView {
                 }
                 self.line_cache.entries.push(Some(cached));
             }
+            self.flat_cache_dirty = true;
         }
     }
 
-    fn append_cached_lines(
-        &self,
-        start: usize,
-        end: usize,
-        out: &mut Vec<Line<'static>>,
-    ) {
-        if start >= end {
+    fn ensure_flat_cache(&mut self) {
+        if !self.flat_cache_dirty && self.flat_cache_width == self.cache_width {
             return;
         }
 
-        let mut offset = 0usize;
+        self.flat_cache.clear();
+        self.flat_cache.reserve(self.line_cache.total_line_count);
         for entry in &self.line_cache.entries {
-            let Some(cached) = entry else {
-                continue;
-            };
-            let len = cached.lines.len();
-            if len == 0 {
-                continue;
+            if let Some(cached) = entry {
+                self.flat_cache.extend(cached.lines.iter().cloned());
             }
-            let entry_start = offset;
-            let entry_end = offset + len;
-            if end <= entry_start {
-                break;
-            }
-            if start >= entry_end {
-                offset = entry_end;
-                continue;
-            }
-
-            let slice_start = start.saturating_sub(entry_start);
-            let slice_end = end.min(entry_end).saturating_sub(entry_start);
-            out.extend(cached.lines[slice_start..slice_end].iter().cloned());
-            offset = entry_end;
         }
+        self.flat_cache_width = self.cache_width;
+        self.flat_cache_dirty = false;
     }
 
     /// Add a message to the chat
@@ -415,6 +407,9 @@ impl ChatView {
         self.scroll_offset = 0;
         // Clear all caches
         self.line_cache = LineCache::default();
+        self.flat_cache.clear();
+        self.flat_cache_width = self.cache_width;
+        self.flat_cache_dirty = false;
         self.streaming_cache = None;
         // Keep cache_width so we don't have to recalculate on next render
     }
@@ -1083,6 +1078,7 @@ impl ChatView {
 
         // Ensure cache is valid for current width
         self.ensure_cache(inner.width);
+        self.ensure_flat_cache();
 
         // Handle streaming buffer (not cached with messages, has its own cache)
         if let Some(ref buffer) = self.streaming_buffer {
@@ -1095,7 +1091,7 @@ impl ChatView {
             }
         }
 
-        let cached_len = self.line_cache.total_line_count;
+        let cached_len = self.flat_cache.len();
         let streaming_len = self
             .streaming_cache
             .as_ref()
@@ -1121,11 +1117,8 @@ impl ChatView {
         // Cached lines range
         let cached_end = cached_len;
         if start_line < cached_end {
-            self.append_cached_lines(
-                start_line,
-                end_line.min(cached_end),
-                &mut visible_lines,
-            );
+            let slice_end = end_line.min(cached_end);
+            visible_lines.extend(self.flat_cache[start_line..slice_end].iter().cloned());
         }
 
         // Streaming lines range
