@@ -78,18 +78,6 @@ pub fn default_keybindings() -> KeybindingConfig {
         bind(&mut config.global, &key, Action::SwitchToTab(i));
     }
 
-    // Global tab cycling with Shift+Tab (BackTab)
-    // This is in global so it works regardless of context
-    // Some terminals send SHIFT modifier with BackTab, some don't
-    config.global.insert(
-        KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE),
-        Action::PrevTab,
-    );
-    config.global.insert(
-        KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-        Action::PrevTab,
-    );
-
     // ========== Chat Mode (Normal InputMode) ==========
     let chat = config.context.entry(KeyContext::Chat).or_default();
 
@@ -160,6 +148,9 @@ pub fn default_keybindings() -> KeybindingConfig {
     dialog.insert(KeyCombo::new(KeyCode::Left, KeyModifiers::NONE), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Right, KeyModifiers::NONE), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::ConfirmToggle);
+    // BackTab also toggles (prevents global PrevTab from leaking)
+    dialog.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::ConfirmToggle);
+    dialog.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::Confirm);
     dialog.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::Cancel);
     bind(dialog, "y", Action::ConfirmYes);
@@ -276,6 +267,9 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(session_import, "C-f", Action::SelectPageDown);
     bind(session_import, "C-b", Action::SelectPageUp);
     session_import.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::CycleImportFilter);
+    // BackTab also cycles filter (prevents global PrevTab from leaking through)
+    session_import.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::CycleImportFilter);
+    session_import.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::CycleImportFilter);
     session_import.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::ImportSession);
     session_import.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::Cancel);
     session_import.insert(KeyCombo::new(KeyCode::Backspace, KeyModifiers::NONE), Action::Backspace);
