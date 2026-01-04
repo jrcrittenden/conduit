@@ -870,10 +870,52 @@ impl App {
                 }
             }
             Action::NextTab => {
-                self.tab_manager.next_tab();
+                // Include sidebar in tab cycle when visible
+                if self.input_mode == InputMode::SidebarNavigation {
+                    // From sidebar, go to first tab
+                    if !self.tab_manager.is_empty() {
+                        self.tab_manager.switch_to(0);
+                        self.sidebar_state.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                    }
+                } else if self.sidebar_state.visible {
+                    // Check if on last tab - if so, go to sidebar
+                    let current = self.tab_manager.active_index();
+                    let count = self.tab_manager.len();
+                    if count > 0 && current == count - 1 {
+                        // On last tab, go to sidebar
+                        self.sidebar_state.set_focused(true);
+                        self.input_mode = InputMode::SidebarNavigation;
+                    } else {
+                        self.tab_manager.next_tab();
+                    }
+                } else {
+                    self.tab_manager.next_tab();
+                }
             }
             Action::PrevTab => {
-                self.tab_manager.prev_tab();
+                // Include sidebar in tab cycle when visible
+                if self.input_mode == InputMode::SidebarNavigation {
+                    // From sidebar, go to last tab
+                    let count = self.tab_manager.len();
+                    if count > 0 {
+                        self.tab_manager.switch_to(count - 1);
+                        self.sidebar_state.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                    }
+                } else if self.sidebar_state.visible {
+                    // Check if on first tab - if so, go to sidebar
+                    let current = self.tab_manager.active_index();
+                    if current == 0 {
+                        // On first tab, go to sidebar
+                        self.sidebar_state.set_focused(true);
+                        self.input_mode = InputMode::SidebarNavigation;
+                    } else {
+                        self.tab_manager.prev_tab();
+                    }
+                } else {
+                    self.tab_manager.prev_tab();
+                }
             }
             Action::SwitchToTab(n) => {
                 if n > 0 {
