@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 /// Data access object for Workspace operations
 #[derive(Clone)]
-pub struct WorkspaceDao {
+pub struct WorkspaceStore {
     conn: Arc<Mutex<Connection>>,
 }
 
-impl WorkspaceDao {
+impl WorkspaceStore {
     /// Create a new WorkspaceDao
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -120,7 +120,10 @@ impl WorkspaceDao {
     /// Delete a workspace
     pub fn delete(&self, id: Uuid) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id.to_string()])?;
+        conn.execute(
+            "DELETE FROM workspaces WHERE id = ?1",
+            params![id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -137,7 +140,10 @@ impl WorkspaceDao {
     }
 
     /// Get the default workspace for a repository
-    pub fn get_default_for_repository(&self, repository_id: Uuid) -> SqliteResult<Option<Workspace>> {
+    pub fn get_default_for_repository(
+        &self,
+        repository_id: Uuid,
+    ) -> SqliteResult<Option<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, repository_id, name, branch, path, created_at, last_accessed, is_default, archived_at
@@ -197,14 +203,14 @@ impl WorkspaceDao {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{Database, Repository, RepositoryDao};
+    use crate::data::{Database, Repository, RepositoryStore};
     use tempfile::tempdir;
 
-    fn setup_db() -> (tempfile::TempDir, Database, RepositoryDao, WorkspaceDao) {
+    fn setup_db() -> (tempfile::TempDir, Database, RepositoryStore, WorkspaceStore) {
         let dir = tempdir().unwrap();
         let db = Database::open(dir.path().join("test.db")).unwrap();
-        let repo_dao = RepositoryDao::new(db.connection());
-        let ws_dao = WorkspaceDao::new(db.connection());
+        let repo_dao = RepositoryStore::new(db.connection());
+        let ws_dao = WorkspaceStore::new(db.connection());
         (dir, db, repo_dao, ws_dao)
     }
 
@@ -217,7 +223,12 @@ mod tests {
         repo_dao.create(&repo).unwrap();
 
         // Create a workspace
-        let ws = Workspace::new(repo.id, "main", "main", PathBuf::from("/tmp/test/worktrees/main"));
+        let ws = Workspace::new(
+            repo.id,
+            "main",
+            "main",
+            PathBuf::from("/tmp/test/worktrees/main"),
+        );
         ws_dao.create(&ws).unwrap();
 
         let retrieved = ws_dao.get_by_id(ws.id).unwrap().unwrap();
@@ -233,7 +244,12 @@ mod tests {
         repo_dao.create(&repo).unwrap();
 
         let ws1 = Workspace::new_default(repo.id, "main", "main", PathBuf::from("/tmp/main"));
-        let ws2 = Workspace::new(repo.id, "feature", "feature-branch", PathBuf::from("/tmp/feature"));
+        let ws2 = Workspace::new(
+            repo.id,
+            "feature",
+            "feature-branch",
+            PathBuf::from("/tmp/feature"),
+        );
 
         ws_dao.create(&ws1).unwrap();
         ws_dao.create(&ws2).unwrap();

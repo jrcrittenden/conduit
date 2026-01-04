@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 /// Data access object for session tab operations
 #[derive(Clone)]
-pub struct SessionTabDao {
+pub struct SessionTabStore {
     conn: Arc<Mutex<Connection>>,
 }
 
-impl SessionTabDao {
+impl SessionTabStore {
     /// Create a new SessionTabDao
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -156,17 +156,23 @@ mod tests {
     use crate::data::Database;
     use tempfile::tempdir;
 
-    fn setup_db() -> (tempfile::TempDir, Database, SessionTabDao) {
+    fn setup_db() -> (tempfile::TempDir, Database, SessionTabStore) {
         let dir = tempdir().unwrap();
         let db = Database::open(dir.path().join("test.db")).unwrap();
-        let dao = SessionTabDao::new(db.connection());
+        let dao = SessionTabStore::new(db.connection());
         (dir, db, dao)
     }
 
     #[test]
     fn test_create_and_get() {
         let (_dir, _db, dao) = setup_db();
-        let tab = SessionTab::new(0, AgentType::Claude, None, Some("session-123".to_string()), None);
+        let tab = SessionTab::new(
+            0,
+            AgentType::Claude,
+            None,
+            Some("session-123".to_string()),
+            None,
+        );
 
         dao.create(&tab).unwrap();
         let retrieved = dao.get_by_id(tab.id).unwrap().unwrap();
@@ -219,7 +225,10 @@ mod tests {
         dao.update(&tab).unwrap();
 
         let retrieved = dao.get_by_id(tab.id).unwrap().unwrap();
-        assert_eq!(retrieved.agent_session_id, Some("updated-session".to_string()));
+        assert_eq!(
+            retrieved.agent_session_id,
+            Some("updated-session".to_string())
+        );
         assert_eq!(retrieved.model, Some("claude-sonnet".to_string()));
     }
 }

@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 
 /// Data access object for app state (key-value store)
 #[derive(Clone)]
-pub struct AppStateDao {
+pub struct AppStateStore {
     conn: Arc<Mutex<Connection>>,
 }
 
-impl AppStateDao {
+impl AppStateStore {
     /// Create a new AppStateDao
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
@@ -62,10 +62,10 @@ mod tests {
     use crate::data::Database;
     use tempfile::tempdir;
 
-    fn setup_db() -> (tempfile::TempDir, Database, AppStateDao) {
+    fn setup_db() -> (tempfile::TempDir, Database, AppStateStore) {
         let dir = tempdir().unwrap();
         let db = Database::open(dir.path().join("test.db")).unwrap();
-        let dao = AppStateDao::new(db.connection());
+        let dao = AppStateStore::new(db.connection());
         (dir, db, dao)
     }
 

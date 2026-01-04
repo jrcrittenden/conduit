@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-        MouseButton, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -20,22 +20,26 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::agent::{
-    load_claude_history_with_debug, load_codex_history_with_debug, AgentEvent, AgentRunner, AgentStartConfig,
-    AgentType, ClaudeCodeRunner, CodexCliRunner, HistoryDebugEntry, MessageDisplay, SessionId,
+    load_claude_history_with_debug, load_codex_history_with_debug, AgentEvent, AgentRunner,
+    AgentStartConfig, AgentType, ClaudeCodeRunner, CodexCliRunner, HistoryDebugEntry,
+    MessageDisplay, SessionId,
 };
-use crate::config::{parse_action, parse_key_notation, Config, KeyCombo, KeyContext, COMMAND_NAMES};
-use crate::ui::action::Action;
-use crate::ui::app_state::AppState;
-use crate::ui::effect::Effect;
+use crate::config::{
+    parse_action, parse_key_notation, Config, KeyCombo, KeyContext, COMMAND_NAMES,
+};
 use crate::data::{
-    AppStateDao, Database, Repository, RepositoryDao, SessionTab, SessionTabDao, WorkspaceDao,
+    AppStateStore, Database, Repository, RepositoryStore, SessionTab, SessionTabStore,
+    WorkspaceStore,
 };
 use crate::git::{PrManager, WorktreeManager};
+use crate::ui::action::Action;
+use crate::ui::app_state::AppState;
 use crate::ui::components::{
     AddRepoDialog, AgentSelector, BaseDirDialog, ChatMessage, ConfirmationContext,
     ConfirmationDialog, ConfirmationType, ErrorDialog, EventDirection, GlobalFooter, HelpDialog,
     ModelSelector, ProcessingState, ProjectPicker, Sidebar, SidebarData, TabBar,
 };
+use crate::ui::effect::Effect;
 use crate::ui::events::{
     AppEvent, InputMode, RemoveProjectResult, ViewMode, WorkspaceArchived, WorkspaceCreated,
 };
@@ -55,13 +59,13 @@ pub struct App {
     /// Event channel receiver
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
     /// Repository DAO
-    repo_dao: Option<RepositoryDao>,
+    repo_dao: Option<RepositoryStore>,
     /// Workspace DAO
-    workspace_dao: Option<WorkspaceDao>,
+    workspace_dao: Option<WorkspaceStore>,
     /// App state DAO (for persisting app settings)
-    app_state_dao: Option<AppStateDao>,
+    app_state_dao: Option<AppStateStore>,
     /// Session tab DAO (for persisting open tabs)
-    session_tab_dao: Option<SessionTabDao>,
+    session_tab_dao: Option<SessionTabStore>,
     /// Worktree manager
     worktree_manager: WorktreeManager,
 }
@@ -74,10 +78,10 @@ impl App {
         let (repo_dao, workspace_dao, app_state_dao, session_tab_dao) =
             match Database::open_default() {
                 Ok(db) => {
-                    let repo_dao = RepositoryDao::new(db.connection());
-                    let workspace_dao = WorkspaceDao::new(db.connection());
-                    let app_state_dao = AppStateDao::new(db.connection());
-                    let session_tab_dao = SessionTabDao::new(db.connection());
+                    let repo_dao = RepositoryStore::new(db.connection());
+                    let workspace_dao = WorkspaceStore::new(db.connection());
+                    let app_state_dao = AppStateStore::new(db.connection());
+                    let session_tab_dao = SessionTabStore::new(db.connection());
                     (
                         Some(repo_dao),
                         Some(workspace_dao),
@@ -248,7 +252,8 @@ impl App {
         if let Ok(Some(index_str)) = app_state_dao.get("tree_selected_index") {
             if let Ok(index) = index_str.parse::<usize>() {
                 let visible_count = self.state.sidebar_data.visible_nodes().len();
-                self.state.sidebar_state.tree_state.selected = index.min(visible_count.saturating_sub(1));
+                self.state.sidebar_state.tree_state.selected =
+                    index.min(visible_count.saturating_sub(1));
             }
         }
     }
@@ -276,7 +281,8 @@ impl App {
                         .into_iter()
                         .map(|ws| (ws.id, ws.name, ws.branch))
                         .collect();
-                    self.state.sidebar_data
+                    self.state
+                        .sidebar_data
                         .add_repository(repo.id, &repo.name, workspace_info);
                 }
             }
@@ -321,8 +327,8 @@ impl App {
 
     fn persist_session_state(
         snapshot: SessionStateSnapshot,
-        session_tab_dao: Option<SessionTabDao>,
-        app_state_dao: Option<AppStateDao>,
+        session_tab_dao: Option<SessionTabStore>,
+        app_state_dao: Option<AppStateStore>,
     ) {
         let Some(session_tab_dao) = session_tab_dao else {
             return;
@@ -350,7 +356,11 @@ impl App {
 
         if let Err(e) = app_state_dao.set(
             "sidebar_visible",
-            if snapshot.sidebar_visible { "true" } else { "false" },
+            if snapshot.sidebar_visible {
+                "true"
+            } else {
+                "false"
+            },
         ) {
             eprintln!("Warning: Failed to save sidebar visibility: {}", e);
         }
@@ -476,7 +486,8 @@ impl App {
 
             // Record total frame time (includes sleep for accurate FPS)
             let frame_end = Instant::now();
-            self.state.metrics
+            self.state
+                .metrics
                 .record_frame(frame_end.duration_since(frame_start));
             self.state.metrics.on_frame_end(frame_end);
 
@@ -615,7 +626,9 @@ impl App {
                     // Focus on the current tab's workspace if it has one
                     if let Some(session) = self.state.tab_manager.active_session() {
                         if let Some(workspace_id) = session.workspace_id {
-                            if let Some(index) = self.state.sidebar_data.focus_workspace(workspace_id) {
+                            if let Some(index) =
+                                self.state.sidebar_data.focus_workspace(workspace_id)
+                            {
                                 self.state.sidebar_state.tree_state.selected = index;
                             }
                         }
@@ -918,42 +931,44 @@ impl App {
             }
 
             // ========== List/Tree Navigation ==========
-            Action::SelectNext => {
-                match self.state.input_mode {
-                    InputMode::SidebarNavigation => {
-                        let visible_count = self.state.sidebar_data.visible_nodes().len();
-                        self.state.sidebar_state.tree_state.select_next(visible_count);
-                    }
-                    InputMode::SelectingModel => {
-                        self.state.model_selector_state.select_next();
-                    }
-                    InputMode::SelectingAgent => {
-                        self.state.agent_selector_state.select_next();
-                    }
-                    InputMode::PickingProject => {
-                        self.state.project_picker_state.select_next();
-                    }
-                    _ => {}
+            Action::SelectNext => match self.state.input_mode {
+                InputMode::SidebarNavigation => {
+                    let visible_count = self.state.sidebar_data.visible_nodes().len();
+                    self.state
+                        .sidebar_state
+                        .tree_state
+                        .select_next(visible_count);
                 }
-            }
-            Action::SelectPrev => {
-                match self.state.input_mode {
-                    InputMode::SidebarNavigation => {
-                        let visible_count = self.state.sidebar_data.visible_nodes().len();
-                        self.state.sidebar_state.tree_state.select_previous(visible_count);
-                    }
-                    InputMode::SelectingModel => {
-                        self.state.model_selector_state.select_previous();
-                    }
-                    InputMode::SelectingAgent => {
-                        self.state.agent_selector_state.select_previous();
-                    }
-                    InputMode::PickingProject => {
-                        self.state.project_picker_state.select_prev();
-                    }
-                    _ => {}
+                InputMode::SelectingModel => {
+                    self.state.model_selector_state.select_next();
                 }
-            }
+                InputMode::SelectingAgent => {
+                    self.state.agent_selector_state.select_next();
+                }
+                InputMode::PickingProject => {
+                    self.state.project_picker_state.select_next();
+                }
+                _ => {}
+            },
+            Action::SelectPrev => match self.state.input_mode {
+                InputMode::SidebarNavigation => {
+                    let visible_count = self.state.sidebar_data.visible_nodes().len();
+                    self.state
+                        .sidebar_state
+                        .tree_state
+                        .select_previous(visible_count);
+                }
+                InputMode::SelectingModel => {
+                    self.state.model_selector_state.select_previous();
+                }
+                InputMode::SelectingAgent => {
+                    self.state.agent_selector_state.select_previous();
+                }
+                InputMode::PickingProject => {
+                    self.state.project_picker_state.select_prev();
+                }
+                _ => {}
+            },
             Action::SelectPageDown => {
                 if self.state.input_mode == InputMode::PickingProject {
                     self.state.project_picker_state.page_down();
@@ -964,199 +979,199 @@ impl App {
                     self.state.project_picker_state.page_up();
                 }
             }
-            Action::Confirm => {
-                match self.state.input_mode {
-                    InputMode::SidebarNavigation => {
-                        let selected = self.state.sidebar_state.tree_state.selected;
-                        if let Some(node) = self.state.sidebar_data.get_at(selected) {
-                            use crate::ui::components::{ActionType, NodeType};
-                            match node.node_type {
-                                NodeType::Action(ActionType::NewWorkspace) => {
-                                    if let Some(parent_id) = node.parent_id {
-                                        effects.push(self.start_workspace_creation(parent_id));
-                                    }
+            Action::Confirm => match self.state.input_mode {
+                InputMode::SidebarNavigation => {
+                    let selected = self.state.sidebar_state.tree_state.selected;
+                    if let Some(node) = self.state.sidebar_data.get_at(selected) {
+                        use crate::ui::components::{ActionType, NodeType};
+                        match node.node_type {
+                            NodeType::Action(ActionType::NewWorkspace) => {
+                                if let Some(parent_id) = node.parent_id {
+                                    effects.push(self.start_workspace_creation(parent_id));
                                 }
-                                NodeType::Workspace => {
-                                    self.open_workspace(node.id);
+                            }
+                            NodeType::Workspace => {
+                                self.open_workspace(node.id);
+                                self.state.input_mode = InputMode::Normal;
+                                self.state.sidebar_state.set_focused(false);
+                            }
+                            NodeType::Repository => {
+                                self.state.sidebar_data.toggle_at(selected);
+                            }
+                        }
+                    }
+                }
+                InputMode::SelectingModel => {
+                    if let Some(model) = self.state.model_selector_state.selected_model() {
+                        let model_id = model.id.clone();
+                        let agent_type = model.agent_type;
+                        let display_name = model.display_name.clone();
+                        if let Some(session) = self.state.tab_manager.active_session_mut() {
+                            let agent_changed = session.agent_type != agent_type;
+                            session.model = Some(model_id.clone());
+                            session.agent_type = agent_type;
+                            session.update_status();
+                            let msg = if agent_changed {
+                                format!("Switched to {} with model: {}", agent_type, display_name)
+                            } else {
+                                format!("Model changed to: {}", display_name)
+                            };
+                            let display = MessageDisplay::System { content: msg };
+                            session.chat_view.push(display.to_chat_message());
+                        }
+                    }
+                    self.state.model_selector_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::SelectingAgent => {
+                    let agent_type = self.state.agent_selector_state.selected_agent();
+                    self.state.agent_selector_state.hide();
+                    self.create_tab_with_agent(agent_type);
+                }
+                InputMode::PickingProject => {
+                    if let Some(project) = self.state.project_picker_state.selected_project() {
+                        let repo_id = self.add_project_to_sidebar(project.path.clone());
+                        self.state.project_picker_state.hide();
+                        if let Some(id) = repo_id {
+                            self.state.sidebar_data.expand_repo(id);
+                            if let Some(repo_index) = self.state.sidebar_data.find_repo_index(id) {
+                                self.state.sidebar_state.tree_state.selected = repo_index + 1;
+                            }
+                            self.state.sidebar_state.show();
+                            self.state.sidebar_state.set_focused(true);
+                            self.state.show_first_time_splash = false;
+                            self.state.input_mode = InputMode::SidebarNavigation;
+                        } else {
+                            self.state.input_mode = InputMode::Normal;
+                        }
+                    }
+                }
+                InputMode::AddingRepository => {
+                    if self.state.add_repo_dialog_state.is_valid {
+                        let repo_id = self.add_repository();
+                        self.state.add_repo_dialog_state.hide();
+                        if let Some(id) = repo_id {
+                            self.state.sidebar_data.expand_repo(id);
+                            if let Some(repo_index) = self.state.sidebar_data.find_repo_index(id) {
+                                self.state.sidebar_state.tree_state.selected = repo_index + 1;
+                            }
+                            self.state.sidebar_state.show();
+                            self.state.sidebar_state.set_focused(true);
+                            self.state.show_first_time_splash = false;
+                            self.state.input_mode = InputMode::SidebarNavigation;
+                        } else {
+                            self.state.input_mode = InputMode::Normal;
+                        }
+                    }
+                }
+                InputMode::SettingBaseDir => {
+                    if self.state.base_dir_dialog_state.is_valid {
+                        if let Some(dao) = &self.app_state_dao {
+                            if let Err(e) = dao.set(
+                                "projects_base_dir",
+                                self.state.base_dir_dialog_state.input(),
+                            ) {
+                                self.state.base_dir_dialog_state.hide();
+                                self.show_error(
+                                    "Failed to Save",
+                                    &format!("Could not save projects directory: {}", e),
+                                );
+                                return Ok(effects);
+                            }
+                        }
+                        let base_path = self.state.base_dir_dialog_state.expanded_path();
+                        self.state.base_dir_dialog_state.hide();
+                        self.state.project_picker_state.show(base_path);
+                        self.state.input_mode = InputMode::PickingProject;
+                    }
+                }
+                InputMode::Confirming => {
+                    if self.state.confirmation_dialog_state.is_confirm_selected() {
+                        if let Some(context) = self.state.confirmation_dialog_state.context.clone()
+                        {
+                            match context {
+                                ConfirmationContext::ArchiveWorkspace(id) => {
+                                    effects.push(self.execute_archive_workspace(id));
+                                    self.state.confirmation_dialog_state.hide();
+                                    self.state.input_mode = InputMode::SidebarNavigation;
+                                    return Ok(effects);
+                                }
+                                ConfirmationContext::RemoveProject(id) => {
+                                    effects.push(self.execute_remove_project(id));
+                                    self.state.confirmation_dialog_state.hide();
+                                    return Ok(effects);
+                                }
+                                ConfirmationContext::CreatePullRequest { preflight, .. } => {
+                                    self.state.confirmation_dialog_state.hide();
                                     self.state.input_mode = InputMode::Normal;
-                                    self.state.sidebar_state.set_focused(false);
-                                }
-                                NodeType::Repository => {
-                                    self.state.sidebar_data.toggle_at(selected);
-                                }
-                            }
-                        }
-                    }
-                    InputMode::SelectingModel => {
-                        if let Some(model) = self.state.model_selector_state.selected_model() {
-                            let model_id = model.id.clone();
-                            let agent_type = model.agent_type;
-                            let display_name = model.display_name.clone();
-                            if let Some(session) = self.state.tab_manager.active_session_mut() {
-                                let agent_changed = session.agent_type != agent_type;
-                                session.model = Some(model_id.clone());
-                                session.agent_type = agent_type;
-                                session.update_status();
-                                let msg = if agent_changed {
-                                    format!("Switched to {} with model: {}", agent_type, display_name)
-                                } else {
-                                    format!("Model changed to: {}", display_name)
-                                };
-                                let display = MessageDisplay::System { content: msg };
-                                session.chat_view.push(display.to_chat_message());
-                            }
-                        }
-                        self.state.model_selector_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::SelectingAgent => {
-                        let agent_type = self.state.agent_selector_state.selected_agent();
-                        self.state.agent_selector_state.hide();
-                        self.create_tab_with_agent(agent_type);
-                    }
-                    InputMode::PickingProject => {
-                        if let Some(project) = self.state.project_picker_state.selected_project() {
-                            let repo_id = self.add_project_to_sidebar(project.path.clone());
-                            self.state.project_picker_state.hide();
-                            if let Some(id) = repo_id {
-                                self.state.sidebar_data.expand_repo(id);
-                                if let Some(repo_index) = self.state.sidebar_data.find_repo_index(id) {
-                                    self.state.sidebar_state.tree_state.selected = repo_index + 1;
-                                }
-                                self.state.sidebar_state.show();
-                                self.state.sidebar_state.set_focused(true);
-                                self.state.show_first_time_splash = false;
-                                self.state.input_mode = InputMode::SidebarNavigation;
-                            } else {
-                                self.state.input_mode = InputMode::Normal;
-                            }
-                        }
-                    }
-                    InputMode::AddingRepository => {
-                        if self.state.add_repo_dialog_state.is_valid {
-                            let repo_id = self.add_repository();
-                            self.state.add_repo_dialog_state.hide();
-                            if let Some(id) = repo_id {
-                                self.state.sidebar_data.expand_repo(id);
-                                if let Some(repo_index) = self.state.sidebar_data.find_repo_index(id) {
-                                    self.state.sidebar_state.tree_state.selected = repo_index + 1;
-                                }
-                                self.state.sidebar_state.show();
-                                self.state.sidebar_state.set_focused(true);
-                                self.state.show_first_time_splash = false;
-                                self.state.input_mode = InputMode::SidebarNavigation;
-                            } else {
-                                self.state.input_mode = InputMode::Normal;
-                            }
-                        }
-                    }
-                    InputMode::SettingBaseDir => {
-                        if self.state.base_dir_dialog_state.is_valid {
-                            if let Some(dao) = &self.app_state_dao {
-                                if let Err(e) = dao.set("projects_base_dir", self.state.base_dir_dialog_state.input()) {
-                                    self.state.base_dir_dialog_state.hide();
-                                    self.show_error(
-                                        "Failed to Save",
-                                        &format!("Could not save projects directory: {}", e),
-                                    );
+                                    effects.extend(self.submit_pr_workflow(preflight)?);
                                     return Ok(effects);
                                 }
                             }
-                            let base_path = self.state.base_dir_dialog_state.expanded_path();
-                            self.state.base_dir_dialog_state.hide();
-                            self.state.project_picker_state.show(base_path);
-                            self.state.input_mode = InputMode::PickingProject;
                         }
                     }
-                    InputMode::Confirming => {
-                        if self.state.confirmation_dialog_state.is_confirm_selected() {
-                            if let Some(context) = self.state.confirmation_dialog_state.context.clone() {
-                                match context {
-                                    ConfirmationContext::ArchiveWorkspace(id) => {
-                                        effects.push(self.execute_archive_workspace(id));
-                                        self.state.confirmation_dialog_state.hide();
-                                        self.state.input_mode = InputMode::SidebarNavigation;
-                                        return Ok(effects);
-                                    }
-                                    ConfirmationContext::RemoveProject(id) => {
-                                        effects.push(self.execute_remove_project(id));
-                                        self.state.confirmation_dialog_state.hide();
-                                        return Ok(effects);
-                                    }
-                                    ConfirmationContext::CreatePullRequest { preflight, .. } => {
-                                        self.state.confirmation_dialog_state.hide();
-                                        self.state.input_mode = InputMode::Normal;
-                                        effects.extend(self.submit_pr_workflow(preflight)?);
-                                        return Ok(effects);
-                                    }
-                                }
-                            }
-                        }
-                        self.state.confirmation_dialog_state.hide();
+                    self.state.confirmation_dialog_state.hide();
+                    self.state.input_mode = InputMode::SidebarNavigation;
+                }
+                InputMode::ShowingError => {
+                    self.state.error_dialog_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                _ => {}
+            },
+            Action::Cancel => match self.state.input_mode {
+                InputMode::SidebarNavigation => {
+                    self.state.input_mode = InputMode::Normal;
+                    self.state.sidebar_state.set_focused(false);
+                }
+                InputMode::SelectingModel => {
+                    self.state.model_selector_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::SelectingAgent => {
+                    self.state.agent_selector_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::PickingProject => {
+                    self.state.project_picker_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::AddingRepository => {
+                    self.state.add_repo_dialog_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::SettingBaseDir => {
+                    self.state.base_dir_dialog_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::Confirming => {
+                    self.state.confirmation_dialog_state.hide();
+                    if matches!(
+                        self.state.confirmation_dialog_state.context,
+                        Some(ConfirmationContext::CreatePullRequest { .. })
+                    ) {
+                        self.state.input_mode = InputMode::Normal;
+                    } else {
                         self.state.input_mode = InputMode::SidebarNavigation;
                     }
-                    InputMode::ShowingError => {
-                        self.state.error_dialog_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    _ => {}
                 }
-            }
-            Action::Cancel => {
-                match self.state.input_mode {
-                    InputMode::SidebarNavigation => {
-                        self.state.input_mode = InputMode::Normal;
-                        self.state.sidebar_state.set_focused(false);
-                    }
-                    InputMode::SelectingModel => {
-                        self.state.model_selector_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::SelectingAgent => {
-                        self.state.agent_selector_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::PickingProject => {
-                        self.state.project_picker_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::AddingRepository => {
-                        self.state.add_repo_dialog_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::SettingBaseDir => {
-                        self.state.base_dir_dialog_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::Confirming => {
-                        self.state.confirmation_dialog_state.hide();
-                        if matches!(
-                            self.state.confirmation_dialog_state.context,
-                            Some(ConfirmationContext::CreatePullRequest { .. })
-                        ) {
-                            self.state.input_mode = InputMode::Normal;
-                        } else {
-                            self.state.input_mode = InputMode::SidebarNavigation;
-                        }
-                    }
-                    InputMode::ShowingError => {
-                        self.state.error_dialog_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::Scrolling => {
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::Command => {
-                        self.state.command_buffer.clear();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    InputMode::ShowingHelp => {
-                        self.state.help_dialog_state.hide();
-                        self.state.input_mode = InputMode::Normal;
-                    }
-                    _ => {}
+                InputMode::ShowingError => {
+                    self.state.error_dialog_state.hide();
+                    self.state.input_mode = InputMode::Normal;
                 }
-            }
+                InputMode::Scrolling => {
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::Command => {
+                    self.state.command_buffer.clear();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                InputMode::ShowingHelp => {
+                    self.state.help_dialog_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
+                _ => {}
+            },
             Action::ExpandOrSelect => {
                 // Same as Confirm for sidebar
                 if self.state.input_mode == InputMode::SidebarNavigation {
@@ -1191,25 +1206,25 @@ impl App {
                     }
                 }
             }
-            Action::AddRepository => {
-                match self.state.input_mode {
-                    InputMode::SidebarNavigation => {
-                        self.state.add_repo_dialog_state.show();
-                        self.state.input_mode = InputMode::AddingRepository;
-                    }
-                    InputMode::PickingProject => {
-                        self.state.project_picker_state.hide();
-                        self.state.add_repo_dialog_state.show();
-                        self.state.input_mode = InputMode::AddingRepository;
-                    }
-                    _ => {}
+            Action::AddRepository => match self.state.input_mode {
+                InputMode::SidebarNavigation => {
+                    self.state.add_repo_dialog_state.show();
+                    self.state.input_mode = InputMode::AddingRepository;
                 }
-            }
+                InputMode::PickingProject => {
+                    self.state.project_picker_state.hide();
+                    self.state.add_repo_dialog_state.show();
+                    self.state.input_mode = InputMode::AddingRepository;
+                }
+                _ => {}
+            },
             Action::OpenSettings => {
                 if self.state.input_mode == InputMode::SidebarNavigation {
                     if let Some(dao) = &self.app_state_dao {
                         if let Ok(Some(current_dir)) = dao.get("projects_base_dir") {
-                            self.state.base_dir_dialog_state.show_with_path(&current_dir);
+                            self.state
+                                .base_dir_dialog_state
+                                .show_with_path(&current_dir);
                         } else {
                             self.state.base_dir_dialog_state.show();
                         }
@@ -1375,19 +1390,15 @@ impl App {
                         match runner.start(config).await {
                             Ok(mut handle) => {
                                 while let Some(event) = handle.events.recv().await {
-                                    if event_tx
-                                        .send(AppEvent::Agent {
-                                            tab_index,
-                                            event,
-                                        })
-                                        .is_err()
+                                    if event_tx.send(AppEvent::Agent { tab_index, event }).is_err()
                                     {
                                         break;
                                     }
                                 }
                             }
                             Err(e) => {
-                                let _ = event_tx.send(AppEvent::Error(format!("Agent error: {}", e)));
+                                let _ =
+                                    event_tx.send(AppEvent::Error(format!("Agent error: {}", e)));
                             }
                         }
                     });
@@ -1409,8 +1420,8 @@ impl App {
                 Effect::OpenPrInBrowser { working_dir } => {
                     let event_tx = self.event_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let result = PrManager::open_pr_in_browser(&working_dir)
-                            .map_err(|e| e.to_string());
+                        let result =
+                            PrManager::open_pr_in_browser(&working_dir).map_err(|e| e.to_string());
                         let _ = event_tx.send(AppEvent::OpenPrCompleted { result });
                     });
                 }
@@ -1426,8 +1437,10 @@ impl App {
 
                     tokio::task::spawn_blocking(move || {
                         let result: Result<WorkspaceCreated, String> = (|| {
-                            let repo_dao = repo_dao.ok_or_else(|| "No repository DAO available".to_string())?;
-                            let workspace_dao = workspace_dao.ok_or_else(|| "No workspace DAO available".to_string())?;
+                            let repo_dao = repo_dao
+                                .ok_or_else(|| "No repository DAO available".to_string())?;
+                            let workspace_dao = workspace_dao
+                                .ok_or_else(|| "No workspace DAO available".to_string())?;
 
                             let repo = repo_dao
                                 .get_by_id(repo_id)
@@ -1446,9 +1459,11 @@ impl App {
                                 .map(|w| w.name.clone())
                                 .collect();
 
-                            let workspace_name = crate::util::generate_workspace_name(&existing_names);
+                            let workspace_name =
+                                crate::util::generate_workspace_name(&existing_names);
                             let username = crate::util::get_git_username();
-                            let branch_name = crate::util::generate_branch_name(&username, &workspace_name);
+                            let branch_name =
+                                crate::util::generate_branch_name(&username, &workspace_name);
 
                             let worktree_path = worktree_manager
                                 .create_worktree(&base_path, &branch_name, &workspace_name)
@@ -1491,7 +1506,8 @@ impl App {
 
                     tokio::task::spawn_blocking(move || {
                         let result: Result<WorkspaceArchived, String> = (|| {
-                            let workspace_dao = workspace_dao.ok_or_else(|| "No workspace DAO available".to_string())?;
+                            let workspace_dao = workspace_dao
+                                .ok_or_else(|| "No workspace DAO available".to_string())?;
                             let workspace = workspace_dao
                                 .get_by_id(workspace_id)
                                 .map_err(|e| format!("Failed to load workspace: {}", e))?
@@ -1499,25 +1515,31 @@ impl App {
 
                             let repo_base_path = repo_dao
                                 .as_ref()
-                                .and_then(|dao| dao.get_by_id(workspace.repository_id).ok().flatten())
+                                .and_then(|dao| {
+                                    dao.get_by_id(workspace.repository_id).ok().flatten()
+                                })
                                 .and_then(|repo| repo.base_path);
 
                             let mut worktree_error = None;
                             if let Some(base_path) = repo_base_path {
-                                if let Err(e) = worktree_manager.remove_worktree(&base_path, &workspace.path) {
-                                    worktree_error = Some(format!("Failed to remove worktree: {}", e));
+                                if let Err(e) =
+                                    worktree_manager.remove_worktree(&base_path, &workspace.path)
+                                {
+                                    worktree_error =
+                                        Some(format!("Failed to remove worktree: {}", e));
                                 }
                             }
 
-                            workspace_dao
-                                .archive(workspace_id)
-                                .map_err(|e| format!("Failed to archive workspace in database: {}", e))?;
+                            workspace_dao.archive(workspace_id).map_err(|e| {
+                                format!("Failed to archive workspace in database: {}", e)
+                            })?;
 
                             Ok(WorkspaceArchived {
                                 workspace_id,
                                 worktree_error,
                             })
-                        })();
+                        })(
+                        );
 
                         let _ = event_tx.send(AppEvent::WorkspaceArchived { result });
                     });
@@ -1581,16 +1603,25 @@ impl App {
                             }
                         };
 
-                        let workspaces = workspace_dao.get_by_repository(repo_id).unwrap_or_default();
+                        let workspaces =
+                            workspace_dao.get_by_repository(repo_id).unwrap_or_default();
                         for ws in workspaces {
                             workspace_ids.push(ws.id);
                             if let Some(ref base_path) = repo_base_path {
-                                if let Err(e) = worktree_manager.remove_worktree(base_path, &ws.path) {
-                                    errors.push(format!("Failed to remove worktree '{}': {}", ws.name, e));
+                                if let Err(e) =
+                                    worktree_manager.remove_worktree(base_path, &ws.path)
+                                {
+                                    errors.push(format!(
+                                        "Failed to remove worktree '{}': {}",
+                                        ws.name, e
+                                    ));
                                 }
                             }
                             if let Err(e) = workspace_dao.archive(ws.id) {
-                                errors.push(format!("Failed to archive workspace '{}': {}", ws.name, e));
+                                errors.push(format!(
+                                    "Failed to archive workspace '{}': {}",
+                                    ws.name, e
+                                ));
                             }
                         }
 
@@ -1603,7 +1634,8 @@ impl App {
                         }
 
                         if let Err(e) = repo_dao.delete(repo_id) {
-                            errors.push(format!("Failed to delete repository from database: {}", e));
+                            errors
+                                .push(format!("Failed to delete repository from database: {}", e));
                         }
 
                         let _ = event_tx.send(AppEvent::ProjectRemoved {
@@ -1831,7 +1863,8 @@ impl App {
         let _ = workspace_dao.update_last_accessed(workspace_id);
 
         // Create a new tab with the workspace's working directory
-        self.state.tab_manager
+        self.state
+            .tab_manager
             .new_tab_with_working_dir(AgentType::Claude, workspace.path.clone());
 
         // Store workspace info in session and restore chat history if available
@@ -1901,7 +1934,8 @@ impl App {
 
     /// Find the tab index for a workspace if it's already open
     fn find_tab_for_workspace(&self, workspace_id: uuid::Uuid) -> Option<usize> {
-        self.state.tab_manager
+        self.state
+            .tab_manager
             .sessions()
             .iter()
             .position(|session| session.workspace_id == Some(workspace_id))
@@ -1936,7 +1970,10 @@ impl App {
                 "raw": entry.raw_json,
             });
 
-            let event_type = format!("L{} {} {}", entry.line_number, entry.status, entry.entry_type);
+            let event_type = format!(
+                "L{} {} {}",
+                entry.line_number, entry.status, entry.entry_type
+            );
             raw_events_view.push_event(EventDirection::Received, event_type, summary_json);
         }
     }
@@ -1949,7 +1986,8 @@ impl App {
     /// Find the visible index of a workspace by its ID
     fn find_workspace_index(&self, workspace_id: uuid::Uuid) -> Option<usize> {
         use crate::ui::components::NodeType;
-        self.state.sidebar_data
+        self.state
+            .sidebar_data
             .visible_nodes()
             .iter()
             .position(|node| node.id == workspace_id && node.node_type == NodeType::Workspace)
@@ -2038,7 +2076,9 @@ impl App {
 
     /// Show an error dialog with technical details
     fn show_error_with_details(&mut self, title: &str, message: &str, details: &str) {
-        self.state.error_dialog_state.show_with_details(title, message, details);
+        self.state
+            .error_dialog_state
+            .show_with_details(title, message, details);
         self.state.input_mode = InputMode::ShowingError;
     }
 
@@ -2244,7 +2284,8 @@ impl App {
 
     fn should_route_scroll_to_chat(&self) -> bool {
         self.state.input_mode != InputMode::ShowingHelp
-            && !(self.state.input_mode == InputMode::PickingProject && self.state.project_picker_state.is_visible())
+            && !(self.state.input_mode == InputMode::PickingProject
+                && self.state.project_picker_state.is_visible())
     }
 
     fn flush_scroll_deltas(&mut self, pending_up: &mut usize, pending_down: &mut usize) {
@@ -2260,7 +2301,9 @@ impl App {
             if *pending_down > 0 {
                 self.state.help_dialog_state.scroll_down(*pending_down);
             }
-        } else if self.state.input_mode == InputMode::PickingProject && self.state.project_picker_state.is_visible() {
+        } else if self.state.input_mode == InputMode::PickingProject
+            && self.state.project_picker_state.is_visible()
+        {
             for _ in 0..*pending_up {
                 self.state.project_picker_state.select_prev();
             }
@@ -2280,7 +2323,10 @@ impl App {
         *pending_down = 0;
     }
 
-    async fn handle_mouse_event(&mut self, mouse: event::MouseEvent) -> anyhow::Result<Vec<Effect>> {
+    async fn handle_mouse_event(
+        &mut self,
+        mouse: event::MouseEvent,
+    ) -> anyhow::Result<Vec<Effect>> {
         let x = mouse.column;
         let y = mouse.row;
 
@@ -2410,7 +2456,8 @@ impl App {
         // Detect double-click (same index within 500ms)
         let now = Instant::now();
         let is_double_click = if let Some((last_time, last_index)) = self.state.last_sidebar_click {
-            last_index == clicked_index && now.duration_since(last_time) < Duration::from_millis(500)
+            last_index == clicked_index
+                && now.duration_since(last_time) < Duration::from_millis(500)
         } else {
             false
         };
@@ -2524,11 +2571,11 @@ impl App {
         let screen_height = terminal_size.1;
 
         let dialog_width: u16 = 60;
-        let list_height = self
-            .state
-            .project_picker_state
-            .max_visible
-            .min(self.state.project_picker_state.filtered.len().max(1)) as u16;
+        let list_height =
+            self.state
+                .project_picker_state
+                .max_visible
+                .min(self.state.project_picker_state.filtered.len().max(1)) as u16;
         let dialog_height = 7 + list_height;
 
         // Calculate dialog position (centered)
@@ -2626,7 +2673,10 @@ impl App {
         let context = KeyContext::from_input_mode(self.state.input_mode, self.state.view_mode);
 
         // Look up action in keybinding config
-        self.config.keybindings.get_action(&key_combo, context).cloned()
+        self.config
+            .keybindings
+            .get_action(&key_combo, context)
+            .cloned()
     }
 
     async fn handle_app_event(&mut self, event: AppEvent) -> anyhow::Result<Vec<Effect>> {
@@ -2662,79 +2712,65 @@ impl App {
                     self.state.input_mode = InputMode::ShowingError;
                 }
             }
-            AppEvent::DebugDumped { result } => {
-                match result {
-                    Ok(path) => {
-                        self.state.error_dialog_state.show_with_details(
-                            "Debug Export Complete",
-                            "Session debug info has been exported.",
-                            &format!("File saved to:\n{}", path),
-                        );
-                        self.state.input_mode = InputMode::ShowingError;
-                    }
-                    Err(err) => {
-                        self.state.error_dialog_state.show(
-                            "Export Failed",
-                            &err,
-                        );
-                        self.state.input_mode = InputMode::ShowingError;
-                    }
+            AppEvent::DebugDumped { result } => match result {
+                Ok(path) => {
+                    self.state.error_dialog_state.show_with_details(
+                        "Debug Export Complete",
+                        "Session debug info has been exported.",
+                        &format!("File saved to:\n{}", path),
+                    );
+                    self.state.input_mode = InputMode::ShowingError;
                 }
-            }
-            AppEvent::WorkspaceCreated { result } => {
-                match result {
-                    Ok(created) => {
-                        self.refresh_sidebar_data();
-                        self.state.sidebar_data.expand_repo(created.repo_id);
-                        if let Some(index) = self.find_workspace_index(created.workspace_id) {
-                            self.state.sidebar_state.tree_state.selected = index;
-                        }
-                        self.open_workspace_with_options(created.workspace_id, false);
+                Err(err) => {
+                    self.state.error_dialog_state.show("Export Failed", &err);
+                    self.state.input_mode = InputMode::ShowingError;
+                }
+            },
+            AppEvent::WorkspaceCreated { result } => match result {
+                Ok(created) => {
+                    self.refresh_sidebar_data();
+                    self.state.sidebar_data.expand_repo(created.repo_id);
+                    if let Some(index) = self.find_workspace_index(created.workspace_id) {
+                        self.state.sidebar_state.tree_state.selected = index;
                     }
-                    Err(err) => {
-                        self.show_error(
-                            "Workspace Creation Failed",
-                            &err,
+                    self.open_workspace_with_options(created.workspace_id, false);
+                }
+                Err(err) => {
+                    self.show_error("Workspace Creation Failed", &err);
+                }
+            },
+            AppEvent::WorkspaceArchived { result } => match result {
+                Ok(archived) => {
+                    if let Some(error_msg) = archived.worktree_error {
+                        self.show_error_with_details(
+                            "Worktree Warning",
+                            "Workspace archived but worktree removal failed",
+                            &error_msg,
                         );
                     }
-                }
-            }
-            AppEvent::WorkspaceArchived { result } => {
-                match result {
-                    Ok(archived) => {
-                        if let Some(error_msg) = archived.worktree_error {
-                            self.show_error_with_details(
-                                "Worktree Warning",
-                                "Workspace archived but worktree removal failed",
-                                &error_msg,
-                            );
-                        }
 
-                        self.close_tabs_for_workspace(archived.workspace_id);
+                    self.close_tabs_for_workspace(archived.workspace_id);
 
-                        let current_selection = self.state.sidebar_state.tree_state.selected;
-                        self.refresh_sidebar_data();
+                    let current_selection = self.state.sidebar_state.tree_state.selected;
+                    self.refresh_sidebar_data();
 
-                        let visible_count = self.state.sidebar_data.visible_nodes().len();
-                        if visible_count > 0 {
-                            let new_selection = if current_selection > 0 {
-                                current_selection - 1
-                            } else {
-                                0
-                            };
-                            self.state.sidebar_state.tree_state.selected = new_selection.min(visible_count - 1);
+                    let visible_count = self.state.sidebar_data.visible_nodes().len();
+                    if visible_count > 0 {
+                        let new_selection = if current_selection > 0 {
+                            current_selection - 1
                         } else {
-                            self.state.sidebar_state.tree_state.selected = 0;
-                        }
-                    }
-                    Err(err) => {
-                        self.show_error(
-                            "Archive Failed",
-                            &err,
-                        );
+                            0
+                        };
+                        self.state.sidebar_state.tree_state.selected =
+                            new_selection.min(visible_count - 1);
+                    } else {
+                        self.state.sidebar_state.tree_state.selected = 0;
                     }
                 }
-            }
+                Err(err) => {
+                    self.show_error("Archive Failed", &err);
+                }
+            },
             AppEvent::ProjectRemoved { result } => {
                 for workspace_id in &result.workspace_ids {
                     self.close_tabs_for_workspace(*workspace_id);
@@ -2758,7 +2794,8 @@ impl App {
                     } else {
                         0
                     };
-                    self.state.sidebar_state.tree_state.selected = new_selection.min(visible_count - 1);
+                    self.state.sidebar_state.tree_state.selected =
+                        new_selection.min(visible_count - 1);
                     self.state.input_mode = InputMode::SidebarNavigation;
                 } else {
                     self.state.sidebar_state.tree_state.selected = 0;
@@ -3014,7 +3051,8 @@ impl App {
         };
 
         // Show loading dialog immediately
-        self.state.confirmation_dialog_state
+        self.state
+            .confirmation_dialog_state
             .show_loading("Create Pull Request", "Checking repository status...");
         self.state.input_mode = InputMode::Confirming;
 
@@ -3151,16 +3189,17 @@ impl App {
         }
 
         // Calculate sidebar width
-        let sidebar_width = if self.state.sidebar_state.visible { 30u16 } else { 0 };
+        let sidebar_width = if self.state.sidebar_state.visible {
+            30u16
+        } else {
+            0
+        };
 
         // Split horizontally for sidebar
         let (sidebar_area, content_area) = if sidebar_width > 0 {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(sidebar_width),
-                    Constraint::Min(20),
-                ])
+                .constraints([Constraint::Length(sidebar_width), Constraint::Min(20)])
                 .split(size);
             (chunks[0], chunks[1])
         } else {
@@ -3260,9 +3299,11 @@ impl App {
                     } else {
                         None
                     };
-                    session
-                        .chat_view
-                        .render_with_indicator(chunks[1], f.buffer_mut(), thinking_line);
+                    session.chat_view.render_with_indicator(
+                        chunks[1],
+                        f.buffer_mut(),
+                        thinking_line,
+                    );
 
                     // Render input box (not in command mode)
                     if !is_command_mode {
@@ -3483,7 +3524,9 @@ impl App {
             if line.contains('/') || line.contains('.') {
                 // Try to find a file path
                 for word in line.split_whitespace() {
-                    let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-');
+                    let word = word.trim_matches(|c: char| {
+                        !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-'
+                    });
                     if word.contains('.') && !word.starts_with('.') {
                         // Looks like a filename
                         return Some(word.to_string());
@@ -3609,8 +3652,8 @@ impl App {
         });
 
         let full_path = filepath.display().to_string();
-        let mut file = File::create(&filepath)
-            .map_err(|e| format!("Could not create file: {}", e))?;
+        let mut file =
+            File::create(&filepath).map_err(|e| format!("Could not create file: {}", e))?;
         let json_str = serde_json::to_string_pretty(&dump)
             .map_err(|e| format!("Could not serialize debug data: {}", e))?;
         file.write_all(json_str.as_bytes())

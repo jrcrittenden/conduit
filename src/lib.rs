@@ -11,7 +11,7 @@ pub use agent::{
     SessionStatus,
 };
 pub use config::Config;
-pub use data::{Database, Repository, RepositoryDao, Workspace, WorkspaceDao};
+pub use data::{Database, Repository, RepositoryStore, Workspace, WorkspaceStore};
 pub use git::{WorktreeInfo, WorktreeManager};
 pub use ui::App;
 pub use util::{generate_branch_name, generate_workspace_name, get_git_username};
