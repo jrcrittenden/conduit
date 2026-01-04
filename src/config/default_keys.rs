@@ -78,6 +78,18 @@ pub fn default_keybindings() -> KeybindingConfig {
         bind(&mut config.global, &key, Action::SwitchToTab(i));
     }
 
+    // Global tab cycling with Shift+Tab (BackTab)
+    // This is in global so it works regardless of context
+    // Some terminals send SHIFT modifier with BackTab, some don't
+    config.global.insert(
+        KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE),
+        Action::PrevTab,
+    );
+    config.global.insert(
+        KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        Action::PrevTab,
+    );
+
     // ========== Chat Mode (Normal InputMode) ==========
     let chat = config.context.entry(KeyContext::Chat).or_default();
 
