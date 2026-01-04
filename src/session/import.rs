@@ -8,13 +8,13 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use chrono::{DateTime, TimeZone, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::AgentType;
 
 /// A session discovered from an external agent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalSession {
     /// Unique identifier (session file UUID)
     pub id: String,
@@ -111,6 +111,243 @@ pub fn discover_all_sessions() -> Vec<ExternalSession> {
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sessions
 }
+
+// ============ Incremental Discovery with Caching ============
+
+use std::collections::HashSet;
+
+use crate::session::cache::{get_file_mtime, SessionCache};
+
+/// Update type for incremental session discovery
+#[derive(Debug, Clone)]
+pub enum SessionDiscoveryUpdate {
+    /// Cached sessions loaded (fast path)
+    CachedLoaded(Vec<ExternalSession>),
+    /// Single session updated (new or modified)
+    SessionUpdated(ExternalSession),
+    /// Session removed (file no longer exists)
+    SessionRemoved(PathBuf),
+    /// Discovery complete
+    Complete,
+}
+
+/// Discover sessions with caching - returns cached immediately, then updates incrementally
+///
+/// This function provides a two-tier discovery:
+/// 1. Load and return cached sessions immediately via callback
+/// 2. Scan filesystem for new/modified files and update incrementally
+pub fn discover_sessions_incremental<F>(mut on_update: F)
+where
+    F: FnMut(SessionDiscoveryUpdate),
+{
+    // 1. Load cache
+    let mut cache = SessionCache::load();
+
+    // 2. Return cached sessions immediately via callback
+    let cached_sessions = cache.get_cached_sessions();
+    on_update(SessionDiscoveryUpdate::CachedLoaded(cached_sessions));
+
+    // 3. Scan directories for file list (fast - no file reading, just paths and mtimes)
+    let file_list = scan_session_files();
+
+    // 4. Determine which files need reading
+    let stale_files: Vec<_> = file_list
+        .iter()
+        .filter(|(path, mtime)| cache.needs_refresh(path, *mtime))
+        .cloned()
+        .collect();
+
+    // 5. Read stale files, emit updates as we go
+    for (path, mtime) in stale_files {
+        if let Some(session) = read_single_session(&path) {
+            cache.update(path, session.clone(), mtime);
+            on_update(SessionDiscoveryUpdate::SessionUpdated(session));
+        }
+    }
+
+    // 6. Remove deleted files from cache
+    let existing: HashSet<_> = file_list.iter().map(|(p, _)| p.clone()).collect();
+    let removed = cache.remove_missing(&existing);
+    for path in removed {
+        on_update(SessionDiscoveryUpdate::SessionRemoved(path));
+    }
+
+    // 7. Save updated cache
+    cache.mark_refreshed();
+    let _ = cache.save();
+
+    // 8. Signal completion
+    on_update(SessionDiscoveryUpdate::Complete);
+}
+
+/// Quick scan for session files without reading content
+/// Returns (path, mtime) pairs for all session files
+fn scan_session_files() -> Vec<(PathBuf, u64)> {
+    let mut files = Vec::new();
+
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return files,
+    };
+
+    // Scan Claude sessions
+    let claude_dir = home.join(".claude");
+    if claude_dir.exists() {
+        files.extend(scan_claude_session_files(&claude_dir));
+    }
+
+    // Scan Codex sessions
+    let codex_sessions_dir = home.join(".codex").join("sessions");
+    if codex_sessions_dir.exists() {
+        files.extend(scan_codex_session_files(&codex_sessions_dir));
+    }
+
+    files
+}
+
+/// Scan Claude session files from projects directory
+fn scan_claude_session_files(claude_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
+    let mut files = Vec::new();
+    let projects_dir = claude_dir.join("projects");
+
+    if !projects_dir.exists() {
+        return files;
+    }
+
+    // Walk project directories
+    if let Ok(entries) = fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let project_path = entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+
+            // Find .jsonl files in this project directory
+            if let Ok(file_entries) = fs::read_dir(&project_path) {
+                for file_entry in file_entries.flatten() {
+                    let path = file_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        if let Some(mtime) = get_file_mtime(&path) {
+                            files.push((path, mtime));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    files
+}
+
+/// Scan Codex session files from YYYY/MM/DD directory structure
+fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
+    let mut files = Vec::new();
+
+    // Walk through YYYY/MM/DD directory structure
+    if let Ok(year_entries) = fs::read_dir(sessions_dir) {
+        for year_entry in year_entries.flatten() {
+            let year_path = year_entry.path();
+            if !year_path.is_dir() {
+                continue;
+            }
+
+            if let Ok(month_entries) = fs::read_dir(&year_path) {
+                for month_entry in month_entries.flatten() {
+                    let month_path = month_entry.path();
+                    if !month_path.is_dir() {
+                        continue;
+                    }
+
+                    if let Ok(day_entries) = fs::read_dir(&month_path) {
+                        for day_entry in day_entries.flatten() {
+                            let day_path = day_entry.path();
+                            if !day_path.is_dir() {
+                                continue;
+                            }
+
+                            if let Ok(file_entries) = fs::read_dir(&day_path) {
+                                for file_entry in file_entries.flatten() {
+                                    let path = file_entry.path();
+                                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                                        if let Some(mtime) = get_file_mtime(&path) {
+                                            files.push((path, mtime));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    files
+}
+
+/// Read a single session file and return ExternalSession
+fn read_single_session(path: &PathBuf) -> Option<ExternalSession> {
+    let home = dirs::home_dir()?;
+
+    // Determine session type based on path
+    if path.starts_with(home.join(".claude")) {
+        read_claude_session(path)
+    } else if path.starts_with(home.join(".codex")) {
+        parse_codex_session_file(path)
+    } else {
+        None
+    }
+}
+
+/// Read a single Claude session file
+fn read_claude_session(path: &PathBuf) -> Option<ExternalSession> {
+    let home = dirs::home_dir()?;
+    let claude_dir = home.join(".claude");
+    let projects_dir = claude_dir.join("projects");
+
+    // Extract project path from directory structure
+    let relative = path.strip_prefix(&projects_dir).ok()?;
+    let project_dir = relative.iter().next()?.to_str()?;
+    let project_path = decode_project_path(project_dir);
+
+    // Get session ID from filename
+    let session_id = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Peek at file for message count and first message
+    let (message_count, first_message) = peek_session_file(path);
+
+    // Skip empty sessions
+    if message_count == 0 {
+        return None;
+    }
+
+    // Get timestamp from file modification time
+    let timestamp = path
+        .metadata()
+        .and_then(|m| m.modified())
+        .map(|t| DateTime::<Utc>::from(t))
+        .unwrap_or_else(|_| Utc::now());
+
+    Some(ExternalSession {
+        id: session_id,
+        agent_type: AgentType::Claude,
+        display: if first_message.is_empty() {
+            "(No message)".to_string()
+        } else {
+            first_message
+        },
+        project: Some(project_path),
+        timestamp,
+        message_count,
+        file_path: path.clone(),
+    })
+}
+
+// ============ End Incremental Discovery ============
 
 /// Discover Claude Code sessions from ~/.claude/
 pub fn discover_claude_sessions() -> Vec<ExternalSession> {

@@ -93,10 +93,23 @@ pub enum AppEvent {
         result: RemoveProjectResult,
     },
 
-    /// External sessions discovered (Claude Code, Codex CLI)
-    SessionsDiscovered {
+    /// Cached sessions loaded (fast path from disk cache)
+    SessionsCacheLoaded {
         sessions: Vec<crate::session::ExternalSession>,
     },
+
+    /// Single session updated during background refresh
+    SessionUpdated {
+        session: crate::session::ExternalSession,
+    },
+
+    /// Session removed (file no longer exists)
+    SessionRemoved {
+        file_path: PathBuf,
+    },
+
+    /// Background session discovery complete
+    SessionDiscoveryComplete,
 }
 
 #[derive(Debug, Clone)]

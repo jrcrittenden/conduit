@@ -127,10 +127,10 @@ impl SessionImportPickerState {
         self.loading = true;
     }
 
-    /// Load discovered sessions (called after discovery completes)
+    /// Load discovered sessions (called when cached sessions are loaded)
+    /// Note: Does NOT set loading=false since background refresh may continue
     pub fn load_sessions(&mut self, sessions: Vec<ExternalSession>) {
         self.sessions = sessions;
-        self.loading = false;
         self.filter();
     }
 
@@ -244,6 +244,38 @@ impl SessionImportPickerState {
             }
         }
     }
+
+    // ============ Incremental Update Methods ============
+
+    /// Add or update a single session (for incremental discovery)
+    pub fn upsert_session(&mut self, session: ExternalSession) {
+        if let Some(pos) = self
+            .sessions
+            .iter()
+            .position(|s| s.file_path == session.file_path)
+        {
+            self.sessions[pos] = session;
+        } else {
+            self.sessions.push(session);
+        }
+        // Re-sort by timestamp (most recent first)
+        self.sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        // Reapply filters
+        self.filter();
+    }
+
+    /// Remove a session by file path
+    pub fn remove_session_by_path(&mut self, path: &std::path::Path) {
+        self.sessions.retain(|s| s.file_path != path);
+        self.filter();
+    }
+
+    /// Set loading state (called when discovery completes)
+    pub fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
+    }
+
+    // ============ End Incremental Update Methods ============
 
     /// Page up
     pub fn page_up(&mut self) {

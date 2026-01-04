@@ -7,10 +7,14 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
-        MouseEventKind,
+        MouseEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -388,7 +392,34 @@ impl App {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
+
+        // Enable Kitty keyboard protocol for proper Ctrl+Shift detection
+        // This MUST be done before EnterAlternateScreen for proper detection
+        // Supported terminals: kitty, foot, WezTerm, alacritty, Ghostty
+        let keyboard_enhancement_enabled = if supports_keyboard_enhancement()
+            .map_or(false, |supported| supported)
+        {
+            execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                )
+            )
+            .is_ok()
+        } else {
+            false
+        };
+
+        if keyboard_enhancement_enabled {
+            tracing::info!("Kitty keyboard protocol enabled");
+        } else {
+            tracing::warn!("Kitty keyboard protocol NOT available - Ctrl+Shift combos may not work");
+        }
+
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -399,6 +430,9 @@ impl App {
         let result = self.event_loop(&mut terminal).await;
 
         // Restore terminal
+        if keyboard_enhancement_enabled {
+            let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+        }
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
@@ -617,8 +651,17 @@ impl App {
         // Convert key event to KeyCombo for lookup
         let key_combo = KeyCombo::from_key_event(&key);
 
+        // Debug logging for key events (helps diagnose Kitty protocol issues)
+        tracing::debug!(
+            "Key event: {:?} modifiers={:?} -> KeyCombo: {}",
+            key.code,
+            key.modifiers,
+            key_combo
+        );
+
         // Look up action in config (context-specific first, then global)
         if let Some(action) = self.config.keybindings.get_action(&key_combo, context) {
+            tracing::debug!("Matched action: {:?}", action);
             return self.execute_action(action.clone()).await;
         }
 
@@ -1779,11 +1822,26 @@ impl App {
                     }
                 }
                 Effect::DiscoverSessions => {
-                    use crate::session::discover_all_sessions;
+                    use crate::session::{discover_sessions_incremental, SessionDiscoveryUpdate};
                     let event_tx = self.event_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let sessions = discover_all_sessions();
-                        let _ = event_tx.send(AppEvent::SessionsDiscovered { sessions });
+                        discover_sessions_incremental(|update| {
+                            let event = match update {
+                                SessionDiscoveryUpdate::CachedLoaded(sessions) => {
+                                    AppEvent::SessionsCacheLoaded { sessions }
+                                }
+                                SessionDiscoveryUpdate::SessionUpdated(session) => {
+                                    AppEvent::SessionUpdated { session }
+                                }
+                                SessionDiscoveryUpdate::SessionRemoved(file_path) => {
+                                    AppEvent::SessionRemoved { file_path }
+                                }
+                                SessionDiscoveryUpdate::Complete => {
+                                    AppEvent::SessionDiscoveryComplete
+                                }
+                            };
+                            let _ = event_tx.send(event);
+                        });
                     });
                 }
                 Effect::ImportSession(session) => {
@@ -2437,7 +2495,7 @@ impl App {
         working_dir: std::path::PathBuf,
     ) -> anyhow::Result<()> {
         // Extract session ID from the file path
-        let session_id = session_file
+        let session_id_str = session_file
             .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -2445,14 +2503,16 @@ impl App {
 
         // Create a new session with working directory
         let mut session = AgentSession::with_working_dir(agent_type.clone(), working_dir);
-        // Set the resume session ID so the agent can continue from this session
-        session.resume_session_id = Some(SessionId::from_string(&session_id));
+        // Set both resume and agent session IDs so the session can be restored after restart
+        let session_id = SessionId::from_string(&session_id_str);
+        session.resume_session_id = Some(session_id.clone());
+        session.agent_session_id = Some(session_id);
 
         // Load history based on agent type
         match agent_type {
             AgentType::Claude => {
                 if let Ok((msgs, debug_entries, file_path)) =
-                    load_claude_history_with_debug(&session_id)
+                    load_claude_history_with_debug(&session_id_str)
                 {
                     Self::populate_debug_from_history(
                         &mut session.raw_events_view,
@@ -2466,7 +2526,7 @@ impl App {
             }
             AgentType::Codex => {
                 if let Ok((msgs, debug_entries, file_path)) =
-                    load_codex_history_with_debug(&session_id)
+                    load_codex_history_with_debug(&session_id_str)
                 {
                     Self::populate_debug_from_history(
                         &mut session.raw_events_view,
@@ -3029,7 +3089,7 @@ impl App {
                 ("Tab", "Switch"),
                 ("C-t", "Sidebar"),
                 ("C-n", "Project"),
-                ("C-S-w", "Close"),
+                ("M-S-w", "Close"),
                 ("C-c", "Stop"),
                 ("C-q", "Quit"),
             ],
@@ -3223,8 +3283,22 @@ impl App {
                     }
                 }
             }
-            AppEvent::SessionsDiscovered { sessions } => {
+            AppEvent::SessionsCacheLoaded { sessions } => {
+                // Load cached sessions immediately - fast path
                 self.state.session_import_state.load_sessions(sessions);
+                // Keep loading=true since background refresh continues
+            }
+            AppEvent::SessionUpdated { session } => {
+                // Add or update single session during background refresh
+                self.state.session_import_state.upsert_session(session);
+            }
+            AppEvent::SessionRemoved { file_path } => {
+                // Remove session by file path (file no longer exists)
+                self.state.session_import_state.remove_session_by_path(&file_path);
+            }
+            AppEvent::SessionDiscoveryComplete => {
+                // Background refresh done - stop spinner
+                self.state.session_import_state.set_loading(false);
             }
             _ => {}
         }

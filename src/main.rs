@@ -63,9 +63,15 @@ async fn run_app() -> Result<()> {
 /// Run the keyboard debug mode
 fn run_debug_keys() -> Result<()> {
     use crossterm::{
-        event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+        event::{
+            self, Event, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags,
+            PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        },
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{
+            disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+            LeaveAlternateScreen,
+        },
     };
     use std::io::{stdout, Write};
 
@@ -73,6 +79,24 @@ fn run_debug_keys() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
+
+    // Enable Kitty keyboard protocol for proper Ctrl+Shift detection
+    // REPORT_ALL_KEYS_AS_ESCAPE_CODES is required for full modifier detection
+    let keyboard_enhancement_enabled = if supports_keyboard_enhancement()
+        .map_or(false, |supported| supported)
+    {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            )
+        )
+        .is_ok()
+    } else {
+        false
+    };
 
     // Clear screen and show instructions
     execute!(
@@ -82,6 +106,12 @@ fn run_debug_keys() -> Result<()> {
     )?;
 
     println!("=== Conduit Key Debug Mode ===\r");
+    println!("\r");
+    if keyboard_enhancement_enabled {
+        println!("Kitty keyboard protocol: ENABLED (Ctrl+Shift combos supported)\r");
+    } else {
+        println!("Kitty keyboard protocol: NOT AVAILABLE (limited modifier support)\r");
+    }
     println!("\r");
     println!("Press any key combination to see how it's detected.\r");
     println!("Press Ctrl+C to exit.\r");
@@ -191,6 +221,9 @@ fn run_debug_keys() -> Result<()> {
     }
 
     // Restore terminal
+    if keyboard_enhancement_enabled {
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode()?;
     execute!(stdout, LeaveAlternateScreen)?;
 
