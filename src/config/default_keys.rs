@@ -199,6 +199,7 @@ pub fn default_keybindings() -> KeybindingConfig {
     // ========== Raw Events View ==========
     let raw = config.context.entry(KeyContext::RawEvents).or_default();
 
+    // Event list navigation
     raw.insert(KeyCombo::new(KeyCode::Up, KeyModifiers::NONE), Action::RawEventsSelectPrev);
     raw.insert(KeyCombo::new(KeyCode::Down, KeyModifiers::NONE), Action::RawEventsSelectNext);
     bind(raw, "k", Action::RawEventsSelectPrev);
@@ -208,6 +209,20 @@ pub fn default_keybindings() -> KeybindingConfig {
     raw.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::RawEventsToggleExpand);
     raw.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::RawEventsToggleExpand);
     raw.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::RawEventsCollapse);
+
+    // Detail panel toggle
+    bind(raw, "e", Action::EventDetailToggle);
+
+    // Detail panel scrolling (Ctrl variants)
+    bind(raw, "C-j", Action::EventDetailScrollDown);
+    bind(raw, "C-k", Action::EventDetailScrollUp);
+    bind(raw, "C-f", Action::EventDetailPageDown);
+    bind(raw, "C-b", Action::EventDetailPageUp);
+    bind(raw, "C-g", Action::EventDetailScrollToTop);
+    bind(raw, "C-S-g", Action::EventDetailScrollToBottom);
+
+    // Copy selected event
+    bind(raw, "c", Action::EventDetailCopy);
 
     // ========== Command Mode ==========
     let command = config.context.entry(KeyContext::Command).or_default();
