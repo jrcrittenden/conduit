@@ -16,6 +16,9 @@ pub enum AppEvent {
         event: AgentEvent,
     },
 
+    /// Agent event stream ended (process exited)
+    AgentStreamEnded { tab_index: usize },
+
     /// User submitted a prompt
     PromptSubmit {
         tab_index: usize,

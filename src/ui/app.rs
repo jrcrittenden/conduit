@@ -2810,6 +2810,15 @@ impl App {
             } => {
                 self.handle_pr_preflight_result(tab_index, working_dir, result);
             }
+            AppEvent::AgentStreamEnded { tab_index } => {
+                // Agent event stream ended (process exited) - ensure processing is stopped
+                if let Some(session) = self.tab_manager.session_mut(tab_index) {
+                    if session.is_processing {
+                        session.stop_processing();
+                        session.chat_view.finalize_streaming();
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -3047,6 +3056,8 @@ impl App {
                             break;
                         }
                     }
+                    // Agent event stream ended - notify app to stop processing
+                    let _ = event_tx.send(AppEvent::AgentStreamEnded { tab_index });
                 }
                 Err(e) => {
                     let _ = event_tx.send(AppEvent::Error(format!("Agent error: {}", e)));
