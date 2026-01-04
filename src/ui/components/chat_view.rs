@@ -307,15 +307,40 @@ impl ChatView {
         }
     }
 
-    /// Get cached lines for rendering (builds from cache)
-    fn get_cached_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::with_capacity(self.line_cache.total_line_count);
-        for entry in &self.line_cache.entries {
-            if let Some(cached) = entry {
-                lines.extend(cached.lines.iter().cloned());
-            }
+    fn append_cached_lines(
+        &self,
+        start: usize,
+        end: usize,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        if start >= end {
+            return;
         }
-        lines
+
+        let mut offset = 0usize;
+        for entry in &self.line_cache.entries {
+            let Some(cached) = entry else {
+                continue;
+            };
+            let len = cached.lines.len();
+            if len == 0 {
+                continue;
+            }
+            let entry_start = offset;
+            let entry_end = offset + len;
+            if end <= entry_start {
+                break;
+            }
+            if start >= entry_end {
+                offset = entry_end;
+                continue;
+            }
+
+            let slice_start = start.saturating_sub(entry_start);
+            let slice_end = end.min(entry_end).saturating_sub(entry_start);
+            out.extend(cached.lines[slice_start..slice_end].iter().cloned());
+            offset = entry_end;
+        }
     }
 
     /// Add a message to the chat
@@ -1059,9 +1084,6 @@ impl ChatView {
         // Ensure cache is valid for current width
         self.ensure_cache(inner.width);
 
-        // Get cached lines for messages
-        let mut lines = self.get_cached_lines();
-
         // Handle streaming buffer (not cached with messages, has its own cache)
         if let Some(ref buffer) = self.streaming_buffer {
             // Check if streaming cache needs update
@@ -1071,18 +1093,18 @@ impl ChatView {
                 self.format_message(&msg, inner.width as usize, &mut streaming_lines);
                 self.streaming_cache = Some(streaming_lines);
             }
-            if let Some(ref cached_streaming) = self.streaming_cache {
-                lines.extend(cached_streaming.iter().cloned());
-            }
         }
 
-        // Append thinking indicator if provided
-        if let Some(indicator) = thinking_line {
-            lines.push(indicator);
-        }
+        let cached_len = self.line_cache.total_line_count;
+        let streaming_len = self
+            .streaming_cache
+            .as_ref()
+            .map(|lines| lines.len())
+            .unwrap_or(0);
+        let indicator_len = if thinking_line.is_some() { 1 } else { 0 };
 
+        let total_lines = cached_len + streaming_len + indicator_len;
         let visible_height = inner.height as usize;
-        let total_lines = lines.len();
 
         // Clamp scroll offset
         let max_scroll = total_lines.saturating_sub(visible_height);
@@ -1094,12 +1116,40 @@ impl ChatView {
 
         let start_line = total_lines.saturating_sub(self.scroll_offset + visible_height);
         let end_line = total_lines.saturating_sub(self.scroll_offset);
-        let visible_lines: Vec<Line<'static>> = if start_line < end_line {
-            lines[start_line..end_line].to_vec()
-        } else {
-            Vec::new()
-        };
+        let mut visible_lines: Vec<Line<'static>> = Vec::with_capacity(visible_height);
 
+        // Cached lines range
+        let cached_end = cached_len;
+        if start_line < cached_end {
+            self.append_cached_lines(
+                start_line,
+                end_line.min(cached_end),
+                &mut visible_lines,
+            );
+        }
+
+        // Streaming lines range
+        let streaming_start = cached_end;
+        let streaming_end = cached_end + streaming_len;
+        if streaming_len > 0 && end_line > streaming_start && start_line < streaming_end {
+            if let Some(ref cached_streaming) = self.streaming_cache {
+                let range_start = start_line.max(streaming_start) - streaming_start;
+                let range_end = end_line.min(streaming_end) - streaming_start;
+                visible_lines.extend(
+                    cached_streaming[range_start..range_end]
+                        .iter()
+                        .cloned(),
+                );
+            }
+        }
+
+        // Thinking indicator (single line)
+        if let Some(indicator) = thinking_line {
+            let indicator_index = streaming_end;
+            if start_line <= indicator_index && end_line > indicator_index {
+                visible_lines.push(indicator);
+            }
+        }
         Paragraph::new(visible_lines).render(inner, buf);
 
         // Render scrollbar if needed
