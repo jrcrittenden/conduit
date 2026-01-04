@@ -1199,6 +1199,12 @@ impl App {
                                     effects.extend(self.submit_pr_workflow(preflight)?);
                                     return Ok(effects);
                                 }
+                                ConfirmationContext::OpenExistingPr { working_dir, .. } => {
+                                    self.state.confirmation_dialog_state.hide();
+                                    self.state.input_mode = InputMode::Normal;
+                                    effects.push(Effect::OpenPrInBrowser { working_dir });
+                                    return Ok(effects);
+                                }
                             }
                         }
                     }
@@ -1241,6 +1247,7 @@ impl App {
                     if matches!(
                         self.state.confirmation_dialog_state.context,
                         Some(ConfirmationContext::CreatePullRequest { .. })
+                            | Some(ConfirmationContext::OpenExistingPr { .. })
                     ) {
                         self.state.input_mode = InputMode::Normal;
                     } else {
@@ -1474,6 +1481,11 @@ impl App {
                                 self.state.confirmation_dialog_state.hide();
                                 self.state.input_mode = InputMode::Normal;
                                 effects.extend(self.submit_pr_workflow(preflight)?);
+                            }
+                            ConfirmationContext::OpenExistingPr { working_dir, .. } => {
+                                self.state.confirmation_dialog_state.hide();
+                                self.state.input_mode = InputMode::Normal;
+                                effects.push(Effect::OpenPrInBrowser { working_dir });
                             }
                         }
                     }
@@ -3560,7 +3572,7 @@ impl App {
         working_dir: std::path::PathBuf,
         preflight: crate::git::PrPreflightResult,
     ) -> Vec<Effect> {
-        let mut effects = Vec::new();
+        let effects = Vec::new();
         // Handle blocking errors
         if !preflight.gh_installed {
             self.state.confirmation_dialog_state.hide();
@@ -3597,12 +3609,26 @@ impl App {
             return effects;
         }
 
-        // If PR exists, just open it in browser
+        // If PR exists, show confirmation dialog to open in browser
         if let Some(ref pr) = preflight.existing_pr {
             if pr.exists {
-                self.state.confirmation_dialog_state.hide();
-                self.state.input_mode = InputMode::Normal;
-                effects.push(Effect::OpenPrInBrowser { working_dir });
+                let pr_url = pr.url.clone().unwrap_or_else(|| "Unknown URL".to_string());
+                self.state.confirmation_dialog_state.show(
+                    "Pull Request Exists",
+                    format!(
+                        "PR #{} already exists for branch '{}'.\n\nOpen in browser?",
+                        pr.number.unwrap_or(0),
+                        preflight.branch_name
+                    ),
+                    vec![],
+                    ConfirmationType::Info,
+                    "Open PR",
+                    Some(ConfirmationContext::OpenExistingPr {
+                        working_dir,
+                        pr_url,
+                    }),
+                );
+                // Already in Confirming mode
                 return effects;
             }
         }

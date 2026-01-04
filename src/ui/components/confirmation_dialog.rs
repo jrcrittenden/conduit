@@ -39,6 +39,11 @@ pub enum ConfirmationContext {
         working_dir: PathBuf,
         preflight: PrPreflightResult,
     },
+    /// Opening an existing PR in browser
+    OpenExistingPr {
+        working_dir: PathBuf,
+        pr_url: String,
+    },
 }
 
 impl ConfirmationType {

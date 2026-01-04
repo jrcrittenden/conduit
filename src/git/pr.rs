@@ -216,9 +216,13 @@ impl PrManager {
 
     /// Open existing PR in browser
     pub fn open_pr_in_browser(working_dir: &Path) -> std::io::Result<()> {
+        use std::process::Stdio;
+        // Suppress stdout/stderr to prevent TUI corruption
         Command::new("gh")
             .args(["pr", "view", "--web"])
             .current_dir(working_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
         Ok(())
     }
