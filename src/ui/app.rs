@@ -570,6 +570,7 @@ impl App {
         }
 
         // Global command mode trigger - ':' from most modes enters command mode
+        // Only trigger when input box is empty (so pasting "hello:world" doesn't activate command mode)
         if key.code == KeyCode::Char(':')
             && key.modifiers.is_empty()
             && !matches!(
@@ -584,9 +585,19 @@ impl App {
                     | InputMode::Confirming
             )
         {
-            self.state.command_buffer.clear();
-            self.state.input_mode = InputMode::Command;
-            return Ok(Vec::new());
+            // Only enter command mode if the input box is empty
+            let input_is_empty = self
+                .state
+                .tab_manager
+                .active_session()
+                .map(|s| s.input_box.input().is_empty())
+                .unwrap_or(true);
+
+            if input_is_empty {
+                self.state.command_buffer.clear();
+                self.state.input_mode = InputMode::Command;
+                return Ok(Vec::new());
+            }
         }
 
         // Get the current context from input mode and view mode
@@ -3669,4 +3680,98 @@ struct SessionStateSnapshot {
     sidebar_visible: bool,
     tree_selected_index: usize,
     expanded_repo_ids: Vec<uuid::Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to check if a colon keypress should trigger command mode.
+    /// This mirrors the logic in handle_key_event (lines 572-601).
+    fn should_trigger_command_mode(
+        key_code: KeyCode,
+        key_modifiers: KeyModifiers,
+        input_mode: InputMode,
+        input_box_content: &str,
+    ) -> bool {
+        key_code == KeyCode::Char(':')
+            && key_modifiers.is_empty()
+            && input_box_content.is_empty() // Only trigger when input is empty
+            && !matches!(
+                input_mode,
+                InputMode::Command
+                    | InputMode::ShowingHelp
+                    | InputMode::AddingRepository
+                    | InputMode::SettingBaseDir
+                    | InputMode::PickingProject
+                    | InputMode::ShowingError
+                    | InputMode::SelectingAgent
+                    | InputMode::Confirming
+            )
+    }
+
+    #[test]
+    fn test_colon_triggers_command_mode_on_empty_input() {
+        // Typing ":" on empty input SHOULD trigger command mode
+        let result = should_trigger_command_mode(
+            KeyCode::Char(':'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            "", // empty input
+        );
+        assert!(result, "Colon should trigger command mode on empty input");
+    }
+
+    #[test]
+    fn test_colon_with_modifiers_does_not_trigger_command_mode() {
+        // Typing "Shift+:" should NOT trigger command mode
+        let result = should_trigger_command_mode(
+            KeyCode::Char(':'),
+            KeyModifiers::SHIFT,
+            InputMode::Normal,
+            "",
+        );
+        assert!(
+            !result,
+            "Colon with modifiers should not trigger command mode"
+        );
+    }
+
+    /// Test that ":" does NOT trigger command mode when input box has content.
+    /// This verifies the fix for the bug where pasting "hello:world" would
+    /// incorrectly trigger command mode when the ":" character was encountered.
+    #[test]
+    fn test_colon_does_not_trigger_command_mode_with_existing_input() {
+        // Simulate: user has typed "hello" and now types ":"
+        // ":" should be inserted as a regular character, not trigger command mode
+        let result = should_trigger_command_mode(
+            KeyCode::Char(':'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            "hello", // input already has content
+        );
+
+        assert!(
+            !result,
+            "Colon should NOT trigger command mode when input has existing content"
+        );
+    }
+
+    /// Test case: pasting "url:port" pattern should not trigger command mode
+    #[test]
+    fn test_paste_url_with_port_does_not_trigger_command_mode() {
+        // Simulate: user pastes "localhost:8080"
+        // After pasting "localhost", the ":" should be inserted, not trigger command mode
+        let result = should_trigger_command_mode(
+            KeyCode::Char(':'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            "localhost", // input has content from paste
+        );
+
+        assert!(
+            !result,
+            "Pasting 'localhost:8080' should not trigger command mode at ':'"
+        );
+    }
 }
