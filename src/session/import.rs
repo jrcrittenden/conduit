@@ -73,10 +73,13 @@ impl ExternalSession {
             .filter(|c| !c.is_control() || *c == ' ')
             .collect();
 
-        if cleaned.len() <= max_len {
+        let char_count = cleaned.chars().count();
+        if char_count <= max_len {
             cleaned
         } else {
-            format!("{}...", &cleaned[..max_len.saturating_sub(3)])
+            let take_len = max_len.saturating_sub(3);
+            let truncated: String = cleaned.chars().take(take_len).collect();
+            format!("{}...", truncated)
         }
     }
 

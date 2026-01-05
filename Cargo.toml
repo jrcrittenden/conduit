@@ -11,7 +11,7 @@ license = "MIT"
 tokio = { version = "1.42", features = ["full", "process", "sync", "macros", "rt-multi-thread"] }
 
 # TUI
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+ratatui = "0.30"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-markdown = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
