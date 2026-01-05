@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::warn;
 
 use crate::agent::AgentType;
 use crate::session::cache::{get_file_mtime, SessionCache};
@@ -190,7 +191,9 @@ where
 
     // 7. Save updated cache
     cache.mark_refreshed();
-    let _ = cache.save();
+    if let Err(e) = cache.save() {
+        warn!("Failed to save session cache: {}", e);
+    }
 
     // 8. Signal completion
     on_update(SessionDiscoveryUpdate::Complete);
@@ -543,7 +546,7 @@ fn discover_claude_from_projects(claude_dir: &PathBuf) -> Vec<ExternalSession> {
                         id: session_id,
                         agent_type: AgentType::Claude,
                         display: first_message,
-                        project: if project_name.is_empty() { None } else { Some(project_name.clone()) },
+                        project: (!project_name.is_empty()).then(|| project_name.clone()),
                         timestamp,
                         message_count,
                         file_path: session_path,
@@ -960,6 +963,24 @@ mod tests {
         let truncated = session.truncated_display(20);
         assert!(truncated.chars().count() <= 20);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncated_display_unicode() {
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "こんにちは世界、これは長いメッセージです".to_string(),
+            project: None,
+            timestamp: Utc::now(),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+
+        let truncated = session.truncated_display(10);
+        assert_eq!(truncated.chars().count(), 10);
+        assert!(truncated.ends_with("..."));
+        assert_eq!(truncated, "こんにちは世界...");
     }
 
     #[test]
