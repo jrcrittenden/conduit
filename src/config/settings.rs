@@ -258,6 +258,11 @@ pub fn parse_action(name: &str) -> Option<Action> {
         // Agent
         "select_agent" => Some(Action::SelectAgent),
 
+        // Session import
+        "open_session_import" | "import" => Some(Action::OpenSessionImport),
+        "import_session" => Some(Action::ImportSession),
+        "cycle_import_filter" => Some(Action::CycleImportFilter),
+
         // Command mode
         "show_help" => Some(Action::ShowHelp),
         "execute_command" => Some(Action::ExecuteCommand),
@@ -336,6 +341,11 @@ pub const COMMAND_NAMES: &[&str] = &[
     "toggle_details",
     // Agent
     "select_agent",
+    // Session import
+    "open_session_import",
+    "import",
+    "import_session",
+    "cycle_import_filter",
     // Command mode
     "show_help",
     // Aliases

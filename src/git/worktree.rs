@@ -49,7 +49,7 @@ pub struct BranchStatus {
 }
 
 /// Manager for git worktree operations
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct WorktreeManager {
     /// Base directory for managed worktrees
     managed_dir: Option<PathBuf>,

@@ -1,16 +1,94 @@
+use std::collections::HashSet;
 use std::time::Instant;
 
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
         StatefulWidget, Widget, Wrap,
     },
 };
 use serde_json::Value;
+
+/// State for the event detail panel
+#[derive(Debug, Clone, Default)]
+pub struct EventDetailState {
+    /// Whether the detail panel is visible
+    pub visible: bool,
+    /// Index of the event being viewed
+    pub event_index: usize,
+    /// Scroll offset within the detail content
+    pub scroll_offset: usize,
+}
+
+impl EventDetailState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Open the detail panel for a specific event
+    pub fn open(&mut self, event_index: usize) {
+        self.visible = true;
+        self.event_index = event_index;
+        self.scroll_offset = 0;
+    }
+
+    /// Close the detail panel
+    pub fn close(&mut self) {
+        self.visible = false;
+    }
+
+    /// Toggle the detail panel visibility
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+        self.scroll_offset = 0;
+    }
+
+    /// Sync to a new event index (resets scroll)
+    pub fn sync_to_event(&mut self, event_index: usize) {
+        if self.event_index != event_index {
+            self.event_index = event_index;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Scroll up by n lines
+    pub fn scroll_up(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+
+    /// Scroll down by n lines (clamped to max)
+    pub fn scroll_down(&mut self, n: usize, content_height: usize, visible_height: usize) {
+        let max_scroll = content_height.saturating_sub(visible_height);
+        self.scroll_offset = (self.scroll_offset + n).min(max_scroll);
+    }
+
+    /// Scroll up by a page
+    pub fn page_up(&mut self, visible_height: usize) {
+        self.scroll_up(visible_height.saturating_sub(2));
+    }
+
+    /// Scroll down by a page
+    pub fn page_down(&mut self, visible_height: usize, content_height: usize) {
+        self.scroll_down(visible_height.saturating_sub(2), content_height, visible_height);
+    }
+
+    /// Jump to top
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    /// Jump to bottom
+    pub fn scroll_to_bottom(&mut self, content_height: usize, visible_height: usize) {
+        self.scroll_offset = content_height.saturating_sub(visible_height);
+    }
+}
+
+/// Minimum width for split layout (below this, use overlay)
+pub const DETAIL_PANEL_BREAKPOINT: u16 = 100;
 
 /// Direction of the event (sent to agent or received from agent)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,20 +285,28 @@ impl RawEventEntry {
         for ch in chars {
             match ch {
                 '"' => {
-                    if in_string {
+                    // Check if this quote is escaped (preceded by odd number of backslashes)
+                    let is_escaped = Self::is_escaped(&current);
+
+                    if in_string && !is_escaped {
+                        // End of string (unescaped quote)
                         current.push(ch);
                         let color = if is_key { Color::Cyan } else { Color::Green };
                         spans.push(Span::styled(current.clone(), Style::default().fg(color)));
                         current.clear();
                         in_string = false;
                         is_key = false;
-                    } else {
+                    } else if !in_string {
+                        // Start of string
                         if !current.is_empty() {
                             spans.push(Span::raw(current.clone()));
                             current.clear();
                         }
                         in_string = true;
                         is_key = true;
+                        current.push(ch);
+                    } else {
+                        // Escaped quote inside string - just add it
                         current.push(ch);
                     }
                 }
@@ -256,6 +342,12 @@ impl RawEventEntry {
         spans
     }
 
+    /// Check if the current position is escaped (odd number of trailing backslashes)
+    fn is_escaped(current: &str) -> bool {
+        let trailing_backslashes = current.chars().rev().take_while(|&c| c == '\\').count();
+        trailing_backslashes % 2 == 1
+    }
+
     /// Get style for a JSON value based on its type
     fn get_value_style(value: &str) -> Style {
         let trimmed = value.trim();
@@ -277,12 +369,14 @@ pub struct RawEventsView {
     events: Vec<RawEventEntry>,
     /// Currently selected event index
     selected_index: usize,
-    /// Whether the selected event is expanded to show JSON
-    expanded: bool,
+    /// Set of expanded event indices (allows multiple items to be expanded)
+    expanded_indices: HashSet<usize>,
     /// Scroll offset for viewport (in lines)
     scroll_offset: usize,
     /// Session start time
     session_start: Instant,
+    /// Event detail panel state
+    pub event_detail: EventDetailState,
 }
 
 impl RawEventsView {
@@ -290,9 +384,10 @@ impl RawEventsView {
         Self {
             events: Vec::new(),
             selected_index: 0,
-            expanded: false,
+            expanded_indices: HashSet::new(),
             scroll_offset: 0,
             session_start: Instant::now(),
+            event_detail: EventDetailState::new(),
         }
     }
 
@@ -304,10 +399,8 @@ impl RawEventsView {
             raw_json,
             self.session_start,
         ));
-        // Auto-select new event and collapse any expansion
+        // Auto-select new event (keep existing expansions)
         self.selected_index = self.events.len().saturating_sub(1);
-        self.expanded = false;
-        self.scroll_offset = 0; // Reset scroll to show latest
     }
 
     /// Move selection to previous event
@@ -315,9 +408,9 @@ impl RawEventsView {
         if self.events.is_empty() {
             return;
         }
-        // Collapse when navigating
-        self.expanded = false;
         self.selected_index = self.selected_index.saturating_sub(1);
+        // Sync detail panel to follow selection
+        self.event_detail.sync_to_event(self.selected_index);
     }
 
     /// Move selection to next event
@@ -325,26 +418,35 @@ impl RawEventsView {
         if self.events.is_empty() {
             return;
         }
-        // Collapse when navigating
-        self.expanded = false;
         self.selected_index = (self.selected_index + 1).min(self.events.len().saturating_sub(1));
+        // Sync detail panel to follow selection
+        self.event_detail.sync_to_event(self.selected_index);
     }
 
     /// Toggle expand/collapse of selected event
     pub fn toggle_expand(&mut self) {
         if !self.events.is_empty() {
-            self.expanded = !self.expanded;
+            if self.expanded_indices.contains(&self.selected_index) {
+                self.expanded_indices.remove(&self.selected_index);
+            } else {
+                self.expanded_indices.insert(self.selected_index);
+            }
         }
     }
 
-    /// Collapse the expanded event
+    /// Collapse all expanded events
     pub fn collapse(&mut self) {
-        self.expanded = false;
+        self.expanded_indices.clear();
     }
 
-    /// Check if currently expanded
+    /// Check if the selected event is expanded
     pub fn is_expanded(&self) -> bool {
-        self.expanded
+        self.expanded_indices.contains(&self.selected_index)
+    }
+
+    /// Check if a specific event is expanded
+    fn is_index_expanded(&self, index: usize) -> bool {
+        self.expanded_indices.contains(&index)
     }
 
     /// Get event count
@@ -366,9 +468,157 @@ impl RawEventsView {
     pub fn clear(&mut self) {
         self.events.clear();
         self.selected_index = 0;
-        self.expanded = false;
+        self.expanded_indices.clear();
         self.scroll_offset = 0;
         self.session_start = Instant::now();
+        self.event_detail = EventDetailState::new();
+    }
+
+    /// Toggle detail panel visibility
+    pub fn toggle_detail(&mut self) {
+        if !self.events.is_empty() {
+            // Sync to current selection before toggling
+            self.event_detail.sync_to_event(self.selected_index);
+            self.event_detail.toggle();
+        }
+    }
+
+    /// Check if detail panel is visible
+    pub fn is_detail_visible(&self) -> bool {
+        self.event_detail.visible
+    }
+
+    /// Get the selected event's JSON as pretty-printed string (for copy action)
+    pub fn get_selected_json(&self) -> Option<String> {
+        self.events
+            .get(self.selected_index)
+            .and_then(|event| serde_json::to_string_pretty(&event.raw_json).ok())
+    }
+
+    /// Get the selected event index
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    /// Build detail content lines for the current event
+    fn build_detail_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        let Some(event) = self.events.get(self.event_detail.event_index) else {
+            lines.push(Line::from(Span::styled(
+                "No event selected",
+                Style::default().fg(Color::DarkGray),
+            )));
+            return lines;
+        };
+
+        // Header with direction and timestamp
+        let direction_symbol = event.direction.symbol();
+        let direction_label = match event.direction {
+            EventDirection::Sent => "Outgoing",
+            EventDirection::Received => "Incoming",
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} {} ", direction_symbol, direction_label),
+                Style::default().fg(event.direction.color()),
+            ),
+            Span::styled(
+                event.format_timestamp(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+
+        // Event type
+        lines.push(Line::from(vec![
+            Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                event.event_type.clone(),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
+        // Separator
+        lines.push(Line::from(""));
+
+        // Full JSON with syntax highlighting (no line limit)
+        if let Ok(pretty) = serde_json::to_string_pretty(&event.raw_json) {
+            for json_line in pretty.lines() {
+                let mut highlighted = Vec::new();
+                highlighted.extend(RawEventEntry::highlight_json_line(json_line));
+                lines.push(Line::from(highlighted));
+            }
+        }
+
+        lines
+    }
+
+    /// Get total content height for detail panel
+    pub fn detail_content_height(&self) -> usize {
+        self.build_detail_lines().len()
+    }
+
+    /// Scroll up by n lines
+    pub fn scroll_up(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+
+    /// Scroll down by n lines
+    pub fn scroll_down(&mut self, n: usize, visible_height: usize) {
+        let (lines, _, _) = self.build_lines();
+        let max_scroll = lines.len().saturating_sub(visible_height);
+        self.scroll_offset = (self.scroll_offset + n).min(max_scroll);
+    }
+
+    /// Handle a click at the given position within the view area
+    /// Returns Some(event_index) if a click was handled, None otherwise
+    pub fn handle_click(&mut self, x: u16, y: u16, area: Rect) -> Option<usize> {
+        // Check if click is within the inner area (accounting for border)
+        let inner_x = area.x + 1;
+        let inner_y = area.y + 1;
+        let inner_height = area.height.saturating_sub(2);
+
+        if x < inner_x || y < inner_y || y >= inner_y + inner_height {
+            return None;
+        }
+
+        // Calculate which line was clicked
+        let clicked_line = (y - inner_y) as usize + self.scroll_offset;
+
+        // Map the clicked line to an event index
+        let (lines, _, _) = self.build_lines();
+        if clicked_line >= lines.len() {
+            return None;
+        }
+
+        // Walk through events to find which one corresponds to the clicked line
+        let mut current_line: usize = 0;
+        for (i, _event) in self.events.iter().enumerate() {
+            let is_expanded = self.is_index_expanded(i);
+            let event_start = current_line;
+
+            // Calculate how many lines this event takes
+            let event_lines = if is_expanded {
+                // Header + JSON lines (max 20) + possible truncation line
+                1 + self.events[i].render_json_lines(20).len()
+            } else {
+                1
+            };
+
+            let event_end = current_line + event_lines;
+
+            if clicked_line >= event_start && clicked_line < event_end {
+                // Clicked on this event - select it
+                self.selected_index = i;
+                // Sync detail panel to follow selection
+                self.event_detail.sync_to_event(self.selected_index);
+                return Some(i);
+            }
+
+            current_line = event_end;
+        }
+
+        None
     }
 
     /// Build all lines for rendering, tracking which line range corresponds to selected item
@@ -387,17 +637,20 @@ impl RawEventsView {
 
         for (i, event) in self.events.iter().enumerate() {
             let is_selected = i == self.selected_index;
+            let is_expanded = self.is_index_expanded(i);
 
             if is_selected {
                 selected_start = lines.len();
             }
 
-            if is_selected && self.expanded {
+            if is_expanded {
                 // Expanded view: header with ▼ prefix, then JSON
-                let header = event.render_compact(
-                    "▼",
-                    Style::default().bg(Color::Rgb(40, 40, 50)),
-                );
+                let bg_style = if is_selected {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+                let header = event.render_compact("▼", bg_style);
                 lines.push(header);
 
                 // Add JSON lines (limit to 20 lines)
@@ -424,8 +677,34 @@ impl RawEventsView {
         (lines, selected_start, selected_end)
     }
 
-    /// Render the raw events view
+    /// Render the raw events view with optional detail panel
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        let use_split = self.event_detail.visible && area.width >= DETAIL_PANEL_BREAKPOINT;
+        let use_overlay = self.event_detail.visible && area.width < DETAIL_PANEL_BREAKPOINT;
+
+        if use_split {
+            // Split layout: event list on left, detail panel on right
+            let chunks = Layout::horizontal([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(area);
+
+            self.render_event_list(chunks[0], buf);
+            self.render_detail_panel(chunks[1], buf);
+        } else {
+            // Full width event list
+            self.render_event_list(area, buf);
+
+            // Overlay detail panel if visible
+            if use_overlay {
+                self.render_detail_overlay(area, buf);
+            }
+        }
+    }
+
+    /// Render the event list
+    fn render_event_list(&mut self, area: Rect, buf: &mut Buffer) {
         let title = format!(" Raw Events ({}) ", self.events.len());
 
         let block = Block::default()
@@ -472,6 +751,115 @@ impl RawEventsView {
                     y: inner.y,
                     width: 1,
                     height: inner.height,
+                },
+                buf,
+                &mut scrollbar_state,
+            );
+        }
+    }
+
+    /// Render the detail panel (split mode - right side)
+    fn render_detail_panel(&mut self, area: Rect, buf: &mut Buffer) {
+        let event_type = self
+            .events
+            .get(self.event_detail.event_index)
+            .map(|e| e.event_type.as_str())
+            .unwrap_or("Event");
+        let title = format!(" {} ", event_type);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title);
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        self.render_detail_content(inner, buf);
+    }
+
+    /// Render the detail overlay (centered floating dialog)
+    fn render_detail_overlay(&mut self, area: Rect, buf: &mut Buffer) {
+        // Calculate overlay size (90% width, 80% height)
+        let overlay_width = (area.width as f32 * 0.9) as u16;
+        let overlay_height = (area.height as f32 * 0.8) as u16;
+
+        let overlay_x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
+        let overlay_y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
+
+        let overlay_area = Rect {
+            x: overlay_x,
+            y: overlay_y,
+            width: overlay_width,
+            height: overlay_height,
+        };
+
+        // Clear the overlay area
+        Clear.render(overlay_area, buf);
+
+        let event_type = self
+            .events
+            .get(self.event_detail.event_index)
+            .map(|e| e.event_type.as_str())
+            .unwrap_or("Event");
+        let title = format!(" {} ", event_type);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title);
+
+        let inner = block.inner(overlay_area);
+        block.render(overlay_area, buf);
+
+        self.render_detail_content(inner, buf);
+    }
+
+    /// Render the detail content (shared by panel and overlay)
+    fn render_detail_content(&mut self, area: Rect, buf: &mut Buffer) {
+        if area.width < 3 || area.height < 1 {
+            return;
+        }
+
+        let lines = self.build_detail_lines();
+        let total_lines = lines.len();
+        let visible_height = area.height as usize;
+
+        // Clamp scroll offset
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        if self.event_detail.scroll_offset > max_scroll {
+            self.event_detail.scroll_offset = max_scroll;
+        }
+
+        // Calculate which lines to show
+        let start_line = self.event_detail.scroll_offset;
+        let end_line = (self.event_detail.scroll_offset + visible_height).min(total_lines);
+
+        let visible_lines: Vec<Line<'static>> = if start_line < end_line && end_line <= lines.len()
+        {
+            lines[start_line..end_line].to_vec()
+        } else {
+            vec![]
+        };
+
+        let paragraph = Paragraph::new(visible_lines);
+        paragraph.render(area, buf);
+
+        // Render scrollbar if content overflows
+        if total_lines > visible_height {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let mut scrollbar_state =
+                ScrollbarState::new(max_scroll).position(self.event_detail.scroll_offset);
+
+            scrollbar.render(
+                Rect {
+                    x: area.x + area.width,
+                    y: area.y,
+                    width: 1,
+                    height: area.height,
                 },
                 buf,
                 &mut scrollbar_state,

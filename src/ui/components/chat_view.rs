@@ -9,10 +9,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        StatefulWidget, Widget, Wrap,
+        StatefulWidget, Widget,
     },
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{MarkdownRenderer, TurnSummary};
 
@@ -193,6 +193,12 @@ pub struct ChatView {
     line_cache: LineCache,
     /// Width the cache was built for (invalidate on change)
     cache_width: Option<u16>,
+    /// Flattened cache of all message lines
+    flat_cache: Vec<Line<'static>>,
+    /// Width the flattened cache was built for
+    flat_cache_width: Option<u16>,
+    /// Whether the flattened cache needs rebuilding
+    flat_cache_dirty: bool,
     /// Cached lines for current streaming message
     streaming_cache: Option<Vec<Line<'static>>>,
 }
@@ -205,6 +211,9 @@ impl ChatView {
             streaming_buffer: None,
             line_cache: LineCache::default(),
             cache_width: None,
+            flat_cache: Vec::new(),
+            flat_cache_width: None,
+            flat_cache_dirty: true,
             streaming_cache: None,
         }
     }
@@ -265,6 +274,7 @@ impl ChatView {
         }
 
         self.cache_width = Some(width);
+        self.flat_cache_dirty = true;
     }
 
     /// Check if spacing should be added after message at index
@@ -285,6 +295,7 @@ impl ChatView {
                 self.line_cache.total_line_count = self.line_cache.total_line_count.saturating_sub(old.lines.len());
             }
             self.line_cache.entries[index] = None;
+            self.flat_cache_dirty = true;
         }
     }
 
@@ -304,18 +315,24 @@ impl ChatView {
                 }
                 self.line_cache.entries.push(Some(cached));
             }
+            self.flat_cache_dirty = true;
         }
     }
 
-    /// Get cached lines for rendering (builds from cache)
-    fn get_cached_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::with_capacity(self.line_cache.total_line_count);
+    fn ensure_flat_cache(&mut self) {
+        if !self.flat_cache_dirty && self.flat_cache_width == self.cache_width {
+            return;
+        }
+
+        self.flat_cache.clear();
+        self.flat_cache.reserve(self.line_cache.total_line_count);
         for entry in &self.line_cache.entries {
             if let Some(cached) = entry {
-                lines.extend(cached.lines.iter().cloned());
+                self.flat_cache.extend(cached.lines.iter().cloned());
             }
         }
-        lines
+        self.flat_cache_width = self.cache_width;
+        self.flat_cache_dirty = false;
     }
 
     /// Add a message to the chat
@@ -390,6 +407,9 @@ impl ChatView {
         self.scroll_offset = 0;
         // Clear all caches
         self.line_cache = LineCache::default();
+        self.flat_cache.clear();
+        self.flat_cache_width = self.cache_width;
+        self.flat_cache_dirty = false;
         self.streaming_cache = None;
         // Keep cache_width so we don't have to recalculate on next render
     }
@@ -502,45 +522,49 @@ impl ChatView {
 
     fn format_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         match msg.role {
-            MessageRole::Tool => self.format_tool_message(msg, lines),
-            MessageRole::User => self.format_user_message(msg, lines),
-            MessageRole::Assistant => self.format_assistant_message(msg, lines),
-            MessageRole::System => self.format_system_message(msg, lines),
-            MessageRole::Error => self.format_error_message(msg, lines),
+            MessageRole::Tool => self.format_tool_message(msg, width, lines),
+            MessageRole::User => self.format_user_message(msg, width, lines),
+            MessageRole::Assistant => self.format_assistant_message(msg, width, lines),
+            MessageRole::System => self.format_system_message(msg, width, lines),
+            MessageRole::Error => self.format_error_message(msg, width, lines),
             MessageRole::Summary => self.format_summary_message(msg, width, lines),
         }
     }
 
     /// Format user messages with chevron prefix
-    fn format_user_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+    fn format_user_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         let content_lines: Vec<&str> = msg.content.lines().collect();
+        let prefix_first = vec![Span::styled("❯ ", Style::default().fg(Color::Green))];
+        let prefix_next = vec![Span::raw("  ")];
+        let prefix_first_width = UnicodeWidthStr::width("❯ ");
+        let prefix_next_width = UnicodeWidthStr::width("  ");
+        let text_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
 
         for (i, line) in content_lines.iter().enumerate() {
-            if i == 0 {
-                // First line with chevron
-                lines.push(Line::from(vec![
-                    Span::styled("❯ ", Style::default().fg(Color::Green)),
-                    Span::styled(
-                        line.to_string(),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+            let content_spans = vec![Span::styled(line.to_string(), text_style)];
+            let (prefix, prefix_width) = if i == 0 {
+                (prefix_first.clone(), prefix_first_width)
             } else {
-                // Continuation lines indented
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", line),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                (prefix_next.clone(), prefix_next_width)
+            };
+            let content_width = width.saturating_sub(prefix_width).max(1);
+            let wrapped = wrap_spans(content_spans, content_width);
+            for (idx, wrapped_spans) in wrapped.into_iter().enumerate() {
+                let mut line_spans = if idx == 0 {
+                    prefix.clone()
+                } else {
+                    prefix_next.clone()
+                };
+                line_spans.extend(wrapped_spans);
+                lines.push(Line::from(line_spans));
             }
         }
     }
 
     /// Format assistant messages - flowing text with markdown
-    fn format_assistant_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+    fn format_assistant_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         if msg.content.is_empty() {
             return;
         }
@@ -549,18 +573,68 @@ impl ChatView {
         let renderer = MarkdownRenderer::new();
         let md_text = renderer.render(&msg.content);
 
+        let bullet_prefix = vec![Span::raw("• ")];
+        let continuation_prefix = vec![Span::raw("  ")];
+        let bullet_width = UnicodeWidthStr::width("• ");
+        let continuation_width = UnicodeWidthStr::width("  ");
+
+        let mut first_content_line = true;
         for line in md_text.lines {
-            // Indent content slightly
-            let mut indented_spans = vec![Span::raw("  ")];
-            indented_spans.extend(line.spans.into_iter().map(|s| {
-                // Apply a slightly dimmer style for assistant text
-                let mut style = s.style;
-                if style.fg.is_none() {
-                    style = style.fg(Color::Rgb(220, 220, 220)); // Slightly dimmer white
-                }
-                Span::styled(s.content.into_owned(), style)
-            }));
-            lines.push(Line::from(indented_spans));
+            if line.spans.is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
+
+            let content_spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|s| {
+                    // Apply a slightly dimmer style for assistant text
+                    let mut style = s.style;
+                    if style.fg.is_none() {
+                        style = style.fg(Color::Rgb(220, 220, 220)); // Slightly dimmer white
+                    }
+                    Span::styled(s.content.into_owned(), style)
+                })
+                .collect();
+
+            let line_text: String = content_spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let trimmed = line_text.trim_start();
+            let is_list_item = trimmed.starts_with("• ")
+                || trimmed.starts_with("- ")
+                || trimmed
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+                    && trimmed.get(1..2) == Some(".")
+                    && trimmed.get(2..3) == Some(" ");
+
+            let (first_prefix, first_prefix_width) = if first_content_line && !is_list_item {
+                (bullet_prefix.clone(), bullet_width)
+            } else {
+                (continuation_prefix.clone(), continuation_width)
+            };
+
+            let content_width = width.saturating_sub(first_prefix_width).max(1);
+            let wrapped = wrap_spans(content_spans, content_width);
+            for (idx, wrapped_spans) in wrapped.into_iter().enumerate() {
+                let prefix = if idx == 0 {
+                    first_prefix.clone()
+                } else {
+                    continuation_prefix.clone()
+                };
+                let mut line_spans = prefix;
+                line_spans.extend(wrapped_spans);
+                lines.push(Line::from(line_spans));
+            }
+
+            if first_content_line {
+                first_content_line = false;
+            }
         }
 
         // Add streaming indicator if still streaming
@@ -578,44 +652,63 @@ impl ChatView {
     }
 
     /// Format system messages with info symbol
-    fn format_system_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+    fn format_system_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         let content_lines: Vec<&str> = msg.content.lines().collect();
+        let prefix_first = vec![Span::styled("ℹ ", Style::default().fg(Color::Blue))];
+        let prefix_next = vec![Span::raw("  ")];
+        let prefix_first_width = UnicodeWidthStr::width("ℹ ");
+        let prefix_next_width = UnicodeWidthStr::width("  ");
+        let text_style = Style::default().fg(Color::Blue);
 
         for (i, line) in content_lines.iter().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled("ℹ ", Style::default().fg(Color::Blue)),
-                    Span::styled(line.to_string(), Style::default().fg(Color::Blue)),
-                ]));
+            let content_spans = vec![Span::styled(line.to_string(), text_style)];
+            let (prefix, prefix_width) = if i == 0 {
+                (prefix_first.clone(), prefix_first_width)
             } else {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", line),
-                    Style::default().fg(Color::Blue),
-                )));
+                (prefix_next.clone(), prefix_next_width)
+            };
+            let content_width = width.saturating_sub(prefix_width).max(1);
+            let wrapped = wrap_spans(content_spans, content_width);
+            for (idx, wrapped_spans) in wrapped.into_iter().enumerate() {
+                let mut line_spans = if idx == 0 {
+                    prefix.clone()
+                } else {
+                    prefix_next.clone()
+                };
+                line_spans.extend(wrapped_spans);
+                lines.push(Line::from(line_spans));
             }
         }
     }
 
     /// Format error messages with X symbol
-    fn format_error_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+    fn format_error_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         let content_lines: Vec<&str> = msg.content.lines().collect();
+        let prefix_first = vec![Span::styled("✗ ", Style::default().fg(Color::Red))];
+        let prefix_next = vec![Span::raw("  ")];
+        let prefix_first_width = UnicodeWidthStr::width("✗ ");
+        let prefix_next_width = UnicodeWidthStr::width("  ");
+        let text_style = Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD);
 
         for (i, line) in content_lines.iter().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled("✗ ", Style::default().fg(Color::Red)),
-                    Span::styled(
-                        line.to_string(),
-                        Style::default()
-                            .fg(Color::Red)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+            let content_spans = vec![Span::styled(line.to_string(), text_style)];
+            let (prefix, prefix_width) = if i == 0 {
+                (prefix_first.clone(), prefix_first_width)
             } else {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", line),
-                    Style::default().fg(Color::Red),
-                )));
+                (prefix_next.clone(), prefix_next_width)
+            };
+            let content_width = width.saturating_sub(prefix_width).max(1);
+            let wrapped = wrap_spans(content_spans, content_width);
+            for (idx, wrapped_spans) in wrapped.into_iter().enumerate() {
+                let mut line_spans = if idx == 0 {
+                    prefix.clone()
+                } else {
+                    prefix_next.clone()
+                };
+                line_spans.extend(wrapped_spans);
+                lines.push(Line::from(line_spans));
             }
         }
     }
@@ -791,7 +884,7 @@ impl ChatView {
     }
 
     /// Format tool messages as rich cards
-    fn format_tool_message(&self, msg: &ChatMessage, lines: &mut Vec<Line<'static>>) {
+    fn format_tool_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
         let tool_name = msg.tool_name.as_deref().unwrap_or("Tool");
 
         // Special formatting for TodoWrite
@@ -884,28 +977,34 @@ impl ChatView {
                 &content_lines[..]
             };
 
+            let prefix = vec![
+                Span::styled("│ ", Style::default().fg(Color::Cyan)),
+                Span::raw("  "),
+            ];
+            let prefix_width = UnicodeWidthStr::width("│ ") + UnicodeWidthStr::width("  ");
+            let content_width = width.saturating_sub(prefix_width).max(1);
+
             for line in display_lines {
                 // Parse ANSI escape codes in the line
                 let parsed_text = line.as_bytes().into_text();
                 let content_spans: Vec<Span<'static>> = match parsed_text {
-                    Ok(text) => {
-                        text.lines
-                            .into_iter()
-                            .flat_map(|l| l.spans)
-                            .map(|s| Span::styled(s.content.into_owned(), s.style))
-                            .collect()
-                    }
+                    Ok(text) => text
+                        .lines
+                        .into_iter()
+                        .flat_map(|l| l.spans)
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect(),
                     Err(_) => {
                         vec![Span::styled(line.to_string(), Style::default().fg(Color::White))]
                     }
                 };
 
-                let mut line_spans = vec![
-                    Span::styled("│ ", Style::default().fg(Color::Cyan)),
-                    Span::raw("  "),
-                ];
-                line_spans.extend(content_spans);
-                lines.push(Line::from(line_spans));
+                let wrapped = wrap_spans(content_spans, content_width);
+                for wrapped_spans in wrapped {
+                    let mut line_spans = prefix.clone();
+                    line_spans.extend(wrapped_spans);
+                    lines.push(Line::from(line_spans));
+                }
             }
 
             // Show truncation notice
@@ -953,34 +1052,18 @@ impl ChatView {
         }
     }
 
-    /// Calculate the wrapped height of a line (how many physical rows it takes)
-    fn wrapped_line_height(line: &Line, width: usize) -> usize {
-        if width == 0 {
-            return 1;
-        }
-        let line_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
-        if line_width == 0 {
-            return 1; // Empty line still takes one row
-        }
-        (line_width + width - 1) / width // Ceiling division
-    }
-
-    /// Calculate total wrapped height for all lines
-    fn total_wrapped_height(lines: &[Line], width: usize) -> usize {
-        lines.iter().map(|l| Self::wrapped_line_height(l, width)).sum()
-    }
-
     /// Render the chat view
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        self.render_with_indicator(area, buf, None);
+        self.render_with_indicator(area, buf, None, None);
     }
 
-    /// Render the chat view with an optional thinking indicator
+    /// Render the chat view with an optional thinking indicator and PR badge
     pub fn render_with_indicator(
         &mut self,
         area: Rect,
         buf: &mut Buffer,
         thinking_line: Option<Line<'static>>,
+        pr_number: Option<u32>,
     ) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -990,15 +1073,33 @@ impl ChatView {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        // Render PR badge in top-right corner if PR exists
+        if let Some(pr_num) = pr_number {
+            let badge = format!(" PR #{} ", pr_num);
+            let badge_width = badge.len() as u16;
+            // Position: top-right corner inside the border
+            // area.x + area.width - 1 is the right border
+            // So we want to start at: area.x + area.width - 1 - badge_width
+            let badge_x = area.x + area.width.saturating_sub(badge_width + 2);
+            let badge_y = area.y;
+
+            let badge_span = Span::styled(
+                badge,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(139, 233, 253)) // Cyan/teal color
+                    .add_modifier(Modifier::BOLD),
+            );
+            buf.set_span(badge_x, badge_y, &badge_span, badge_width);
+        }
+
         if inner.width < 3 || inner.height < 1 {
             return;
         }
 
         // Ensure cache is valid for current width
         self.ensure_cache(inner.width);
-
-        // Get cached lines for messages
-        let mut lines = self.get_cached_lines();
+        self.ensure_flat_cache();
 
         // Handle streaming buffer (not cached with messages, has its own cache)
         if let Some(ref buffer) = self.streaming_buffer {
@@ -1009,38 +1110,64 @@ impl ChatView {
                 self.format_message(&msg, inner.width as usize, &mut streaming_lines);
                 self.streaming_cache = Some(streaming_lines);
             }
-            if let Some(ref cached_streaming) = self.streaming_cache {
-                lines.extend(cached_streaming.iter().cloned());
-            }
         }
 
-        // Append thinking indicator if provided
-        if let Some(indicator) = thinking_line {
-            lines.push(indicator);
-        }
+        let cached_len = self.flat_cache.len();
+        let streaming_len = self
+            .streaming_cache
+            .as_ref()
+            .map(|lines| lines.len())
+            .unwrap_or(0);
+        let indicator_len = if thinking_line.is_some() { 1 } else { 0 };
 
+        let total_lines = cached_len + streaming_len + indicator_len;
         let visible_height = inner.height as usize;
-        let content_width = inner.width as usize;
 
-        // Calculate total wrapped height (physical rows after wrapping)
-        let total_wrapped = Self::total_wrapped_height(&lines, content_width);
-
-        // Clamp scroll offset based on wrapped height
-        let max_scroll = total_wrapped.saturating_sub(visible_height);
+        // Clamp scroll offset
+        let max_scroll = total_lines.saturating_sub(visible_height);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
 
         // Convert scroll_offset (from bottom) to scroll position (from top)
         // scroll_offset=0 means show bottom, so we want to scroll to max position
         let scroll_from_top = max_scroll.saturating_sub(self.scroll_offset);
 
-        let paragraph = Paragraph::new(lines.clone())
-            .wrap(Wrap { trim: false })
-            .scroll((scroll_from_top as u16, 0));
+        let start_line = total_lines.saturating_sub(self.scroll_offset + visible_height);
+        let end_line = total_lines.saturating_sub(self.scroll_offset);
+        let mut visible_lines: Vec<Line<'static>> = Vec::with_capacity(visible_height);
 
-        paragraph.render(inner, buf);
+        // Cached lines range
+        let cached_end = cached_len;
+        if start_line < cached_end {
+            let slice_end = end_line.min(cached_end);
+            visible_lines.extend(self.flat_cache[start_line..slice_end].iter().cloned());
+        }
+
+        // Streaming lines range
+        let streaming_start = cached_end;
+        let streaming_end = cached_end + streaming_len;
+        if streaming_len > 0 && end_line > streaming_start && start_line < streaming_end {
+            if let Some(ref cached_streaming) = self.streaming_cache {
+                let range_start = start_line.max(streaming_start) - streaming_start;
+                let range_end = end_line.min(streaming_end) - streaming_start;
+                visible_lines.extend(
+                    cached_streaming[range_start..range_end]
+                        .iter()
+                        .cloned(),
+                );
+            }
+        }
+
+        // Thinking indicator (single line)
+        if let Some(indicator) = thinking_line {
+            let indicator_index = streaming_end;
+            if start_line <= indicator_index && end_line > indicator_index {
+                visible_lines.push(indicator);
+            }
+        }
+        Paragraph::new(visible_lines).render(inner, buf);
 
         // Render scrollbar if needed
-        if total_wrapped > visible_height {
+        if total_lines > visible_height {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
@@ -1060,6 +1187,108 @@ impl ChatView {
             );
         }
     }
+}
+
+fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if spans.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    if max_width == 0 {
+        return vec![Vec::new()];
+    }
+
+    let mut chars: Vec<(char, Style)> = Vec::new();
+    for span in spans {
+        let style = span.style;
+        for ch in span.content.chars() {
+            if ch.is_control() {
+                continue;
+            }
+            chars.push((ch, style));
+        }
+    }
+
+    if chars.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut lines: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut current: Vec<(char, Style)> = Vec::new();
+    let mut line_width = 0usize;
+    let mut last_break: Option<(usize, usize)> = None;
+
+    for (ch, style) in chars {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+
+        if line_width + ch_width > max_width && !current.is_empty() {
+            if let Some((break_idx, break_width)) = last_break {
+                let next_line = current.split_off(break_idx);
+                lines.push(current);
+                current = next_line;
+                line_width = line_width.saturating_sub(break_width);
+                last_break = None;
+
+                let mut width = 0usize;
+                for (idx, (c, _)) in current.iter().enumerate() {
+                    let w = UnicodeWidthChar::width(*c).unwrap_or(0);
+                    width += w;
+                    if c.is_whitespace() {
+                        last_break = Some((idx + 1, width));
+                    }
+                }
+            } else {
+                lines.push(current);
+                current = Vec::new();
+                line_width = 0;
+                last_break = None;
+            }
+        }
+
+        current.push((ch, style));
+        line_width += ch_width;
+        if ch.is_whitespace() {
+            last_break = Some((current.len(), line_width));
+        }
+    }
+
+    lines.push(current);
+
+    lines
+        .into_iter()
+        .map(|line_chars| chars_to_spans(line_chars))
+        .collect()
+}
+
+fn chars_to_spans(chars: Vec<(char, Style)>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style: Option<Style> = None;
+
+    for (ch, style) in chars {
+        if current_style.map(|s| s == style).unwrap_or(false) {
+            buffer.push(ch);
+        } else {
+            if !buffer.is_empty() {
+                spans.push(Span::styled(
+                    buffer.clone(),
+                    current_style.unwrap_or_default(),
+                ));
+                buffer.clear();
+            }
+            current_style = Some(style);
+            buffer.push(ch);
+        }
+    }
+
+    if !buffer.is_empty() {
+        spans.push(Span::styled(
+            buffer,
+            current_style.unwrap_or_default(),
+        ));
+    }
+
+    spans
 }
 
 impl Default for ChatView {

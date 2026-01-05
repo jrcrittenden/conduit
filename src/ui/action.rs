@@ -131,6 +131,24 @@ pub enum Action {
     /// Collapse expanded event
     RawEventsCollapse,
 
+    // ========== Event Detail Panel ==========
+    /// Toggle event detail panel visibility
+    EventDetailToggle,
+    /// Scroll up in event detail panel
+    EventDetailScrollUp,
+    /// Scroll down in event detail panel
+    EventDetailScrollDown,
+    /// Page up in event detail panel
+    EventDetailPageUp,
+    /// Page down in event detail panel
+    EventDetailPageDown,
+    /// Jump to top of event detail panel
+    EventDetailScrollToTop,
+    /// Jump to bottom of event detail panel
+    EventDetailScrollToBottom,
+    /// Copy selected event JSON to clipboard
+    EventDetailCopy,
+
     // ========== Confirmation Dialog ==========
     /// Confirm yes in dialog
     ConfirmYes,
@@ -144,6 +162,14 @@ pub enum Action {
     // ========== Agent Selection ==========
     /// Confirm agent selection
     SelectAgent,
+
+    // ========== Session Import ==========
+    /// Open session import picker
+    OpenSessionImport,
+    /// Import the selected session
+    ImportSession,
+    /// Cycle session import agent filter
+    CycleImportFilter,
 
     // ========== Command Mode ==========
     /// Show help dialog
@@ -226,6 +252,16 @@ impl Action {
             Action::RawEventsToggleExpand => "Toggle expand",
             Action::RawEventsCollapse => "Collapse event",
 
+            // Event detail panel
+            Action::EventDetailToggle => "Toggle detail panel",
+            Action::EventDetailScrollUp => "Scroll panel up",
+            Action::EventDetailScrollDown => "Scroll panel down",
+            Action::EventDetailPageUp => "Page panel up",
+            Action::EventDetailPageDown => "Page panel down",
+            Action::EventDetailScrollToTop => "Panel to top",
+            Action::EventDetailScrollToBottom => "Panel to bottom",
+            Action::EventDetailCopy => "Copy event JSON",
+
             // Confirmation
             Action::ConfirmYes => "Yes",
             Action::ConfirmNo => "No",
@@ -234,6 +270,11 @@ impl Action {
 
             // Agent
             Action::SelectAgent => "Select agent",
+
+            // Session import
+            Action::OpenSessionImport => "Import session",
+            Action::ImportSession => "Import selected",
+            Action::CycleImportFilter => "Cycle filter",
 
             // Command mode
             Action::ShowHelp => "Show help",

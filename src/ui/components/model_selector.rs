@@ -5,12 +5,10 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 
 use crate::agent::{AgentType, ModelInfo, ModelRegistry};
-
-use super::DialogFrame;
 
 /// Represents an item in the model selector (either a section header or a model)
 #[derive(Debug, Clone)]
@@ -147,8 +145,14 @@ impl ModelSelector {
         Self
     }
 
-    /// Render the dialog
-    pub fn render(&self, area: Rect, buf: &mut Buffer, state: &ModelSelectorState) {
+    /// Render the dialog positioned above the status bar
+    pub fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &ModelSelectorState,
+        status_bar_area: Option<Rect>,
+    ) {
         if !state.visible {
             return;
         }
@@ -161,10 +165,49 @@ impl ModelSelector {
         let dialog_height = content_height.min(area.height.saturating_sub(4));
         let dialog_width: u16 = 40;
 
-        // Render dialog frame (no title for this popup style)
-        let frame = DialogFrame::new("", dialog_width, dialog_height)
-            .border_color(Color::DarkGray);
-        let inner = frame.render(area, buf);
+        // Position dialog with bottom-left aligned above the agent name in status bar
+        let (dialog_x, dialog_y) = if let Some(sb_area) = status_bar_area {
+            // Align with the start of the agent badge
+            let x = sb_area.x;
+            // Position dialog so its bottom is one line above the status bar
+            let y = sb_area.y.saturating_sub(dialog_height);
+            (x, y)
+        } else {
+            // Fallback to centered if no status bar area
+            let x = (area.width.saturating_sub(dialog_width)) / 2;
+            let y = (area.height.saturating_sub(dialog_height)) / 2;
+            (x, y)
+        };
+
+        // Ensure dialog stays within screen bounds
+        let dialog_x = dialog_x.min(area.width.saturating_sub(dialog_width));
+        let dialog_y = dialog_y.max(0);
+
+        let dialog_area = Rect {
+            x: dialog_x,
+            y: dialog_y,
+            width: dialog_width.min(area.width.saturating_sub(dialog_x)),
+            height: dialog_height,
+        };
+
+        // Clear the dialog area
+        Clear.render(dialog_area, buf);
+
+        // Render dialog border
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        let inner = block.inner(dialog_area);
+        block.render(dialog_area, buf);
+
+        // Add horizontal padding
+        let inner = Rect {
+            x: inner.x.saturating_add(1),
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: inner.height,
+        };
 
         if inner.height < 4 {
             return;

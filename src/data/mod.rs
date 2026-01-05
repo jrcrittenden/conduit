@@ -2,16 +2,16 @@
 //!
 //! This module provides SQLite-based storage for repositories and workspaces.
 
-mod app_state_dao;
+mod app_state;
 mod database;
 mod models;
-mod repository_dao;
-mod session_tab_dao;
-mod workspace_dao;
+mod repository;
+mod session_tab;
+mod workspace;
 
-pub use app_state_dao::AppStateDao;
+pub use app_state::AppStateStore;
 pub use database::Database;
 pub use models::{Repository, SessionTab, Workspace};
-pub use repository_dao::RepositoryDao;
-pub use session_tab_dao::SessionTabDao;
-pub use workspace_dao::WorkspaceDao;
+pub use repository::RepositoryStore;
+pub use session_tab::SessionTabStore;
+pub use workspace::WorkspaceStore;

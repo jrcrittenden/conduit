@@ -31,6 +31,7 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(&mut config.global, "C-c", Action::InterruptAgent);
     bind(&mut config.global, "C-g", Action::ToggleViewMode);
     bind(&mut config.global, "C-o", Action::ShowModelSelector);
+    bind(&mut config.global, "M-i", Action::OpenSessionImport);
 
     // Readline shortcuts (work globally in input modes)
     bind(&mut config.global, "C-a", Action::MoveCursorStart);
@@ -44,8 +45,8 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(&mut config.global, "C-h", Action::Backspace);
     bind(&mut config.global, "C-j", Action::InsertNewline);
 
-    // Close tab with Ctrl+Shift+W
-    bind(&mut config.global, "C-S-w", Action::CloseTab);
+    // Close tab with Alt+Shift+W (Ctrl+Shift doesn't work reliably in terminals)
+    bind(&mut config.global, "M-S-w", Action::CloseTab);
 
     // Alt key shortcuts
     bind(&mut config.global, "M-b", Action::MoveWordLeft);
@@ -99,6 +100,8 @@ pub fn default_keybindings() -> KeybindingConfig {
 
     // Tab cycling
     chat.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::NextTab);
+    // BackTab (Shift+Tab) - some terminals send SHIFT modifier, some don't
+    chat.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::PrevTab);
     chat.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::PrevTab);
 
     // ========== Scrolling Mode ==========
@@ -132,6 +135,8 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(sidebar, "h", Action::Collapse);
     sidebar.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::ExitSidebarMode);
     sidebar.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::NextTab);
+    // BackTab (Shift+Tab) - some terminals send SHIFT modifier, some don't
+    sidebar.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::PrevTab);
     sidebar.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::PrevTab);
     bind(sidebar, "r", Action::AddRepository);
     bind(sidebar, "s", Action::OpenSettings);
@@ -143,6 +148,9 @@ pub fn default_keybindings() -> KeybindingConfig {
     dialog.insert(KeyCombo::new(KeyCode::Left, KeyModifiers::NONE), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Right, KeyModifiers::NONE), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::ConfirmToggle);
+    // BackTab also toggles (prevents global PrevTab from leaking)
+    dialog.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::ConfirmToggle);
+    dialog.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::ConfirmToggle);
     dialog.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::Confirm);
     dialog.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::Cancel);
     bind(dialog, "y", Action::ConfirmYes);
@@ -199,6 +207,7 @@ pub fn default_keybindings() -> KeybindingConfig {
     // ========== Raw Events View ==========
     let raw = config.context.entry(KeyContext::RawEvents).or_default();
 
+    // Event list navigation
     raw.insert(KeyCombo::new(KeyCode::Up, KeyModifiers::NONE), Action::RawEventsSelectPrev);
     raw.insert(KeyCombo::new(KeyCode::Down, KeyModifiers::NONE), Action::RawEventsSelectNext);
     bind(raw, "k", Action::RawEventsSelectPrev);
@@ -208,6 +217,21 @@ pub fn default_keybindings() -> KeybindingConfig {
     raw.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::RawEventsToggleExpand);
     raw.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::RawEventsToggleExpand);
     raw.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::RawEventsCollapse);
+
+    // Detail panel toggle
+    bind(raw, "e", Action::EventDetailToggle);
+
+    // Detail panel scrolling (Ctrl variants)
+    bind(raw, "C-j", Action::EventDetailScrollDown);
+    bind(raw, "C-k", Action::EventDetailScrollUp);
+    bind(raw, "C-f", Action::EventDetailPageDown);
+    bind(raw, "C-b", Action::EventDetailPageUp);
+    // Use vim-style g/G for top/bottom (C-g is reserved for ToggleViewMode)
+    bind(raw, "g", Action::EventDetailScrollToTop);
+    bind(raw, "G", Action::EventDetailScrollToBottom);
+
+    // Copy selected event
+    bind(raw, "c", Action::EventDetailCopy);
 
     // ========== Command Mode ==========
     let command = config.context.entry(KeyContext::Command).or_default();
@@ -231,6 +255,25 @@ pub fn default_keybindings() -> KeybindingConfig {
     bind(help, "C-b", Action::ScrollPageUp);
     bind(help, "C-f", Action::ScrollPageDown);
     help.insert(KeyCombo::new(KeyCode::Backspace, KeyModifiers::NONE), Action::Backspace);
+
+    // ========== Session Import Picker ==========
+    let session_import = config.context.entry(KeyContext::SessionImport).or_default();
+
+    session_import.insert(KeyCombo::new(KeyCode::Up, KeyModifiers::NONE), Action::SelectPrev);
+    session_import.insert(KeyCombo::new(KeyCode::Down, KeyModifiers::NONE), Action::SelectNext);
+    bind(session_import, "k", Action::SelectPrev);
+    bind(session_import, "j", Action::SelectNext);
+    bind(session_import, "C-j", Action::SelectNext);
+    bind(session_import, "C-k", Action::SelectPrev);
+    bind(session_import, "C-f", Action::SelectPageDown);
+    bind(session_import, "C-b", Action::SelectPageUp);
+    session_import.insert(KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), Action::CycleImportFilter);
+    // BackTab also cycles filter (prevents global PrevTab from leaking through)
+    session_import.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::NONE), Action::CycleImportFilter);
+    session_import.insert(KeyCombo::new(KeyCode::BackTab, KeyModifiers::SHIFT), Action::CycleImportFilter);
+    session_import.insert(KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE), Action::ImportSession);
+    session_import.insert(KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE), Action::Cancel);
+    session_import.insert(KeyCombo::new(KeyCode::Backspace, KeyModifiers::NONE), Action::Backspace);
 
     config
 }

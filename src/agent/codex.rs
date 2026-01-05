@@ -10,8 +10,8 @@ use tokio::sync::mpsc;
 use crate::agent::display::MessageDisplay;
 use crate::agent::error::AgentError;
 use crate::agent::events::{
-    AgentEvent, AssistantMessageEvent, CommandOutputEvent, ErrorEvent, SessionInitEvent,
-    ReasoningEvent, TokenUsage, TokenUsageEvent, ToolCompletedEvent, ToolStartedEvent,
+    AgentEvent, AssistantMessageEvent, CommandOutputEvent, ErrorEvent, ReasoningEvent,
+    SessionInitEvent, TokenUsage, TokenUsageEvent, ToolCompletedEvent, ToolStartedEvent,
     TurnCompletedEvent, TurnFailedEvent,
 };
 use crate::agent::runner::{AgentHandle, AgentRunner, AgentStartConfig, AgentType};
@@ -47,12 +47,24 @@ impl CodexCliRunner {
 
         // Flags must come before positional arguments in Codex CLI
         cmd.arg("--json");
-        cmd.arg("--full-auto");
 
         // Model selection (flag, so comes before positional args)
         if let Some(model) = &config.model {
             cmd.arg("-m").arg(model);
         }
+
+        // High reasoning effort for better responses
+        cmd.arg("-c").arg("model_reasoning_effort=\"high\"");
+
+        // Enable web search
+        cmd.arg("-c").arg("features.web_search_request=true");
+
+        // Enable skills
+        cmd.arg("--enable").arg("skills");
+
+        // --yolo bypasses approvals and sandbox restrictions
+        // Required for git operations in worktrees and complex repo structures
+        cmd.arg("--yolo");
 
         // Additional args (assumed to be flags)
         for arg in &config.additional_args {
@@ -225,6 +237,12 @@ impl CodexCliRunner {
     fn convert_event_msg(payload: &Value) -> Option<AgentEvent> {
         let payload_type = payload.get("type").and_then(|t| t.as_str())?;
         match payload_type {
+            "agent_message" => payload.get("message").and_then(|m| m.as_str()).map(|text| {
+                AgentEvent::AssistantMessage(AssistantMessageEvent {
+                    text: text.to_string(),
+                    is_final: true,
+                })
+            }),
             "agent_reasoning" => payload.get("text").and_then(|t| t.as_str()).map(|text| {
                 AgentEvent::AssistantReasoning(ReasoningEvent {
                     text: text.to_string(),
@@ -342,13 +360,12 @@ impl CodexCliRunner {
 
         match item_type {
             "agent_message" | "message" => {
-                let text = item
-                    .details
-                    .get("text")
-                    .or_else(|| item.details.get("content"))
-                    .and_then(|v| v.as_str())?;
+                let text = Self::extract_text_content(&item.details);
+                if text.is_empty() {
+                    return None;
+                }
                 Some(AgentEvent::AssistantMessage(AssistantMessageEvent {
-                    text: text.to_string(),
+                    text,
                     is_final: true,
                 }))
             }
@@ -411,8 +428,10 @@ impl AgentRunner for CodexCliRunner {
 
         let pid = child.id().ok_or(AgentError::ProcessSpawnFailed)?;
         let stdout = child.stdout.take().ok_or(AgentError::StdoutCaptureFailed)?;
+        let stderr = child.stderr.take();
 
         let (tx, rx) = mpsc::channel::<AgentEvent>(256);
+        let tx_for_monitor = tx.clone();
 
         // Spawn JSONL parser task
         tokio::spawn(async move {
@@ -423,12 +442,19 @@ impl AgentRunner for CodexCliRunner {
             });
 
             let mut function_calls: HashMap<String, FunctionCallInfo> = HashMap::new();
+            let mut last_assistant_text: Option<String> = None;
 
             while let Some(raw_event) = raw_rx.recv().await {
                 if let Some((call_id, info)) = Self::extract_function_call_info(&raw_event) {
                     function_calls.insert(call_id, info);
                 }
                 if let Some(event) = Self::convert_event(&raw_event, &function_calls) {
+                    if let AgentEvent::AssistantMessage(msg) = &event {
+                        if last_assistant_text.as_deref() == Some(msg.text.as_str()) {
+                            continue;
+                        }
+                        last_assistant_text = Some(msg.text.clone());
+                    }
                     if tx.send(event).await.is_err() {
                         break;
                     }
@@ -438,9 +464,56 @@ impl AgentRunner for CodexCliRunner {
             let _ = parse_handle.await;
         });
 
-        // Monitor process
+        // Monitor process and capture stderr on failure
         tokio::spawn(async move {
-            let _ = child.wait().await;
+            use tokio::io::AsyncReadExt;
+
+            let status = child.wait().await;
+
+            // Read stderr if available
+            let stderr_content = if let Some(mut stderr) = stderr {
+                let mut buf = String::new();
+                let _ = stderr.read_to_string(&mut buf).await;
+                buf
+            } else {
+                String::new()
+            };
+
+            // Check if process failed
+            match status {
+                Ok(exit_status) if !exit_status.success() => {
+                    let error_msg = if stderr_content.is_empty() {
+                        format!("Codex process exited with status: {}", exit_status)
+                    } else {
+                        format!(
+                            "Codex process failed ({}): {}",
+                            exit_status,
+                            stderr_content.trim()
+                        )
+                    };
+                    let _ = tx_for_monitor
+                        .send(AgentEvent::Error(ErrorEvent {
+                            message: error_msg,
+                            is_fatal: true,
+                        }))
+                        .await;
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to wait for Codex process: {}", e);
+                    let _ = tx_for_monitor
+                        .send(AgentEvent::Error(ErrorEvent {
+                            message: error_msg,
+                            is_fatal: true,
+                        }))
+                        .await;
+                }
+                Ok(_) => {
+                    // Process exited successfully, but if there was stderr output, log it
+                    if !stderr_content.is_empty() {
+                        // Could log this for debugging, but don't treat as error
+                    }
+                }
+            }
         });
 
         Ok(AgentHandle::new(rx, pid))

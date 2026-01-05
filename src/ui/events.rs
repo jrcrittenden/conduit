@@ -67,6 +67,68 @@ pub enum AppEvent {
         working_dir: PathBuf,
         result: PrPreflightResult,
     },
+
+    /// Open PR in browser completed
+    OpenPrCompleted {
+        result: Result<(), String>,
+    },
+
+    /// Debug export completed
+    DebugDumped {
+        result: Result<String, String>,
+    },
+
+    /// Workspace creation completed
+    WorkspaceCreated {
+        result: Result<WorkspaceCreated, String>,
+    },
+
+    /// Workspace archive completed
+    WorkspaceArchived {
+        result: Result<WorkspaceArchived, String>,
+    },
+
+    /// Project removal completed
+    ProjectRemoved {
+        result: RemoveProjectResult,
+    },
+
+    /// Cached sessions loaded (fast path from disk cache)
+    SessionsCacheLoaded {
+        sessions: Vec<crate::session::ExternalSession>,
+    },
+
+    /// Single session updated during background refresh
+    SessionUpdated {
+        session: crate::session::ExternalSession,
+    },
+
+    /// Session removed (file no longer exists)
+    SessionRemoved {
+        file_path: PathBuf,
+    },
+
+    /// Background session discovery complete
+    SessionDiscoveryComplete,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceCreated {
+    pub repo_id: Uuid,
+    pub workspace_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceArchived {
+    pub workspace_id: Uuid,
+    pub worktree_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveProjectResult {
+    pub repo_id: Uuid,
+    pub workspace_ids: Vec<Uuid>,
+    pub errors: Vec<String>,
 }
 
 /// Input mode for the application
@@ -99,6 +161,8 @@ pub enum InputMode {
     Command,
     /// Showing help dialog
     ShowingHelp,
+    /// Importing a session from external agent
+    ImportingSession,
 }
 
 /// View mode for the main content area

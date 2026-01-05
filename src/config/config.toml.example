@@ -36,7 +36,7 @@
 # show_model_selector = "C-o"
 # toggle_metrics = "M-p"
 # dump_debug_state = "M-g"
-# close_tab = "C-S-w"
+# close_tab = "M-S-w"
 #
 # Readline-style editing (global)
 # move_cursor_start = "C-a"

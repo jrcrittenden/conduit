@@ -116,6 +116,8 @@ pub enum KeyContext {
     Command,
     /// Help dialog
     HelpDialog,
+    /// Session import picker
+    SessionImport,
 }
 
 impl KeyContext {
@@ -133,6 +135,7 @@ impl KeyContext {
             KeyContext::RawEvents,
             KeyContext::Command,
             KeyContext::HelpDialog,
+            KeyContext::SessionImport,
         ]
     }
 
@@ -140,25 +143,37 @@ impl KeyContext {
     pub fn from_input_mode(mode: crate::ui::events::InputMode, view_mode: crate::ui::events::ViewMode) -> Self {
         use crate::ui::events::{InputMode, ViewMode};
 
-        // RawEvents view takes precedence over input mode
+        // Modal dialogs always take precedence - they overlay everything
+        // Check for modal input modes first before considering view mode
+        match mode {
+            // Modal dialogs - these take precedence over view mode
+            InputMode::SelectingAgent => return KeyContext::Dialog,
+            InputMode::AddingRepository => return KeyContext::AddRepository,
+            InputMode::SelectingModel => return KeyContext::ModelSelector,
+            InputMode::SettingBaseDir => return KeyContext::BaseDir,
+            InputMode::PickingProject => return KeyContext::ProjectPicker,
+            InputMode::Confirming => return KeyContext::Dialog,
+            InputMode::RemovingProject => return KeyContext::Dialog,
+            InputMode::ShowingError => return KeyContext::Dialog,
+            InputMode::Command => return KeyContext::Command,
+            InputMode::ShowingHelp => return KeyContext::HelpDialog,
+            InputMode::ImportingSession => return KeyContext::SessionImport,
+            // Non-modal modes - continue to check view mode
+            InputMode::Normal | InputMode::Scrolling | InputMode::SidebarNavigation => {}
+        }
+
+        // RawEvents view takes precedence for non-modal input modes
         if view_mode == ViewMode::RawEvents {
             return KeyContext::RawEvents;
         }
 
+        // Standard non-modal input modes
         match mode {
             InputMode::Normal => KeyContext::Chat,
-            InputMode::SelectingAgent => KeyContext::Dialog,
             InputMode::Scrolling => KeyContext::Scrolling,
             InputMode::SidebarNavigation => KeyContext::Sidebar,
-            InputMode::AddingRepository => KeyContext::AddRepository,
-            InputMode::SelectingModel => KeyContext::ModelSelector,
-            InputMode::SettingBaseDir => KeyContext::BaseDir,
-            InputMode::PickingProject => KeyContext::ProjectPicker,
-            InputMode::Confirming => KeyContext::Dialog,
-            InputMode::RemovingProject => KeyContext::Dialog,
-            InputMode::ShowingError => KeyContext::Dialog,
-            InputMode::Command => KeyContext::Command,
-            InputMode::ShowingHelp => KeyContext::HelpDialog,
+            // These are already handled above but satisfy exhaustiveness
+            _ => KeyContext::Chat,
         }
     }
 }
@@ -602,5 +617,51 @@ mod tests {
 
         assert_eq!(combo.code, KeyCode::Up);
         assert_eq!(combo.modifiers, KeyModifiers::SHIFT);
+    }
+
+    #[test]
+    fn test_modal_dialogs_take_precedence_over_view_mode() {
+        use crate::ui::events::{InputMode, ViewMode};
+
+        // When in ImportingSession mode with RawEvents view, the dialog should take precedence
+        // This is the bug: dialogs should not be overridden by view mode
+        let context = KeyContext::from_input_mode(InputMode::ImportingSession, ViewMode::RawEvents);
+        assert_eq!(
+            context,
+            KeyContext::SessionImport,
+            "SessionImport dialog should take precedence over RawEvents view mode"
+        );
+
+        // Same for HelpDialog
+        let context = KeyContext::from_input_mode(InputMode::ShowingHelp, ViewMode::RawEvents);
+        assert_eq!(
+            context,
+            KeyContext::HelpDialog,
+            "HelpDialog should take precedence over RawEvents view mode"
+        );
+
+        // Same for ModelSelector
+        let context = KeyContext::from_input_mode(InputMode::SelectingModel, ViewMode::RawEvents);
+        assert_eq!(
+            context,
+            KeyContext::ModelSelector,
+            "ModelSelector dialog should take precedence over RawEvents view mode"
+        );
+
+        // Same for ProjectPicker
+        let context = KeyContext::from_input_mode(InputMode::PickingProject, ViewMode::RawEvents);
+        assert_eq!(
+            context,
+            KeyContext::ProjectPicker,
+            "ProjectPicker dialog should take precedence over RawEvents view mode"
+        );
+
+        // Normal mode should still respect RawEvents view
+        let context = KeyContext::from_input_mode(InputMode::Normal, ViewMode::RawEvents);
+        assert_eq!(
+            context,
+            KeyContext::RawEvents,
+            "Normal mode with RawEvents view should use RawEvents context"
+        );
     }
 }
