@@ -3,6 +3,7 @@
 //! Provides functions to discover sessions from Claude Code and Codex CLI,
 //! and parse them for display in the import picker.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::AgentType;
+use crate::session::cache::{get_file_mtime, SessionCache};
 
 /// A session discovered from an external agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,11 +59,26 @@ impl ExternalSession {
         } else if days < 7 {
             format!("{} days ago", days)
         } else if days < 30 {
-            format!("{} weeks ago", days / 7)
+            let weeks = days / 7;
+            if weeks == 1 {
+                "1 week ago".to_string()
+            } else {
+                format!("{} weeks ago", weeks)
+            }
         } else if days < 365 {
-            format!("{} months ago", days / 30)
+            let months = days / 30;
+            if months == 1 {
+                "1 month ago".to_string()
+            } else {
+                format!("{} months ago", months)
+            }
         } else {
-            format!("{} years ago", days / 365)
+            let years = days / 365;
+            if years == 1 {
+                "1 year ago".to_string()
+            } else {
+                format!("{} years ago", years)
+            }
         }
     }
 
@@ -116,10 +133,6 @@ pub fn discover_all_sessions() -> Vec<ExternalSession> {
 }
 
 // ============ Incremental Discovery with Caching ============
-
-use std::collections::HashSet;
-
-use crate::session::cache::{get_file_mtime, SessionCache};
 
 /// Update type for incremental session discovery
 #[derive(Debug, Clone)]
@@ -242,11 +255,11 @@ fn scan_claude_session_files(claude_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
     files
 }
 
-/// Scan Codex session files from YYYY/MM/DD directory structure
-fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
-    let mut files = Vec::new();
-
-    // Walk through YYYY/MM/DD directory structure
+/// Walk Codex session files from YYYY/MM/DD directory structure.
+fn walk_codex_session_files<F>(sessions_dir: &PathBuf, mut visit: F)
+where
+    F: FnMut(&PathBuf),
+{
     if let Ok(year_entries) = fs::read_dir(sessions_dir) {
         for year_entry in year_entries.flatten() {
             let year_path = year_entry.path();
@@ -271,11 +284,11 @@ fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
                             if let Ok(file_entries) = fs::read_dir(&day_path) {
                                 for file_entry in file_entries.flatten() {
                                     let path = file_entry.path();
-                                    if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                                        if let Some(mtime) = get_file_mtime(&path) {
-                                            files.push((path, mtime));
-                                        }
+                                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                                        continue;
                                     }
+
+                                    visit(&path);
                                 }
                             }
                         }
@@ -284,6 +297,16 @@ fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
             }
         }
     }
+}
+
+/// Scan Codex session files from YYYY/MM/DD directory structure
+fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
+    let mut files = Vec::new();
+    walk_codex_session_files(sessions_dir, |path| {
+        if let Some(mtime) = get_file_mtime(path) {
+            files.push((path.clone(), mtime));
+        }
+    });
 
     files
 }
@@ -547,46 +570,11 @@ pub fn discover_codex_sessions() -> Vec<ExternalSession> {
 
     let mut sessions = Vec::new();
 
-    // Walk through YYYY/MM/DD directory structure
-    if let Ok(year_entries) = fs::read_dir(&sessions_dir) {
-        for year_entry in year_entries.flatten() {
-            let year_path = year_entry.path();
-            if !year_path.is_dir() {
-                continue;
-            }
-
-            if let Ok(month_entries) = fs::read_dir(&year_path) {
-                for month_entry in month_entries.flatten() {
-                    let month_path = month_entry.path();
-                    if !month_path.is_dir() {
-                        continue;
-                    }
-
-                    if let Ok(day_entries) = fs::read_dir(&month_path) {
-                        for day_entry in day_entries.flatten() {
-                            let day_path = day_entry.path();
-                            if !day_path.is_dir() {
-                                continue;
-                            }
-
-                            if let Ok(file_entries) = fs::read_dir(&day_path) {
-                                for file_entry in file_entries.flatten() {
-                                    let file_path = file_entry.path();
-                                    if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                                        continue;
-                                    }
-
-                                    if let Some(session) = parse_codex_session_file(&file_path) {
-                                        sessions.push(session);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    walk_codex_session_files(&sessions_dir, |file_path| {
+        if let Some(session) = parse_codex_session_file(file_path) {
+            sessions.push(session);
         }
-    }
+    });
 
     sessions
 }
@@ -889,6 +877,72 @@ mod tests {
             file_path: PathBuf::new(),
         };
         assert_eq!(session.relative_time(), "Yesterday");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(7),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "1 week ago");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(14),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "2 weeks ago");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(30),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "1 month ago");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(60),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "2 months ago");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(365),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "1 year ago");
+
+        let session = ExternalSession {
+            id: "test".to_string(),
+            agent_type: AgentType::Claude,
+            display: "test".to_string(),
+            project: None,
+            timestamp: now - chrono::Duration::days(800),
+            message_count: 1,
+            file_path: PathBuf::new(),
+        };
+        assert_eq!(session.relative_time(), "2 years ago");
     }
 
     #[test]
@@ -904,7 +958,7 @@ mod tests {
         };
 
         let truncated = session.truncated_display(20);
-        assert!(truncated.len() <= 20);
+        assert!(truncated.chars().count() <= 20);
         assert!(truncated.ends_with("..."));
     }
 
