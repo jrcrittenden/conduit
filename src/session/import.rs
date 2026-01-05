@@ -404,7 +404,16 @@ fn discover_claude_from_history(
             // Try to find the session file
             if let Some(ref project) = entry.project {
                 let encoded_path = encode_project_path(project);
-                let project_dir = claude_dir.join("projects").join(&encoded_path);
+                let mut project_dir = claude_dir.join("projects").join(&encoded_path);
+                if !project_dir.exists() {
+                    let legacy_encoded = encode_project_path_legacy(project);
+                    if legacy_encoded != encoded_path {
+                        let legacy_dir = claude_dir.join("projects").join(&legacy_encoded);
+                        if legacy_dir.exists() {
+                            project_dir = legacy_dir;
+                        }
+                    }
+                }
 
                 if project_dir.exists() {
                     // Find session files in this project directory
@@ -749,19 +758,66 @@ fn peek_session_file(path: &PathBuf) -> (usize, String) {
     (message_count, first_user_message)
 }
 
-/// Encode a project path for Claude's directory naming scheme
-/// e.g., /Users/foo/bar -> -Users-foo-bar
+/// Encode a project path for Claude's directory naming scheme.
+///
+/// This is a reversible encoding: we percent-encode '-' and '%' before
+/// replacing '/' with '-'. That preserves hyphens in path segments.
+/// e.g., /Users/john-doe/bar -> -Users-john%2Ddoe-bar
 fn encode_project_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '%' => escaped.push_str("%25"),
+            '-' => escaped.push_str("%2D"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.replace('/', "-")
+}
+
+/// Legacy (lossy) encoding used by Claude: replace '/' with '-'.
+fn encode_project_path_legacy(path: &str) -> String {
     path.replace('/', "-")
 }
 
-/// Decode a Claude project directory name back to a path
-/// e.g., -Users-foo-bar -> /Users/foo/bar
+/// Decode a Claude project directory name back to a path.
+///
+/// If the name uses our reversible encoding, percent-decode after converting
+/// '-' back to '/'. For legacy Claude names (which are lossy), this is
+/// best-effort only.
 fn decode_project_path(encoded: &str) -> String {
-    if encoded.starts_with('-') {
+    let with_slashes = if encoded.starts_with('-') {
         encoded.replacen('-', "/", 1).replace('-', "/")
     } else {
         encoded.replace('-', "/")
+    };
+    percent_decode(&with_slashes)
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -773,12 +829,28 @@ mod tests {
     fn test_encode_project_path() {
         assert_eq!(encode_project_path("/Users/foo/bar"), "-Users-foo-bar");
         assert_eq!(encode_project_path("/home/user/project"), "-home-user-project");
+        assert_eq!(
+            encode_project_path("/Users/john-doe/projects/app"),
+            "-Users-john%2Ddoe-projects-app"
+        );
     }
 
     #[test]
     fn test_decode_project_path() {
         assert_eq!(decode_project_path("-Users-foo-bar"), "/Users/foo/bar");
         assert_eq!(decode_project_path("-home-user-project"), "/home/user/project");
+        assert_eq!(
+            decode_project_path("-Users-john%2Ddoe-projects-app"),
+            "/Users/john-doe/projects/app"
+        );
+    }
+
+    #[test]
+    fn test_encode_decode_round_trip_with_hyphen() {
+        let path = "/Users/john-doe/projects/app";
+        let encoded = encode_project_path(path);
+        let decoded = decode_project_path(&encoded);
+        assert_eq!(decoded, path);
     }
 
     #[test]
