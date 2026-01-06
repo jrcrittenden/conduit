@@ -16,6 +16,9 @@ pub enum AppEvent {
     /// Agent event stream ended (process exited)
     AgentStreamEnded { tab_index: usize },
 
+    /// Agent subprocess started with given PID
+    AgentStarted { tab_index: usize, pid: u32 },
+
     /// User submitted a prompt
     PromptSubmit { tab_index: usize, prompt: String },
 
