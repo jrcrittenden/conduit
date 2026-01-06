@@ -784,6 +784,7 @@ impl App {
                         };
                         session.chat_view.push(display.to_chat_message());
                         session.stop_processing();
+                        self.state.stop_footer_spinner();
                     }
                 }
             }
@@ -3599,6 +3600,7 @@ impl App {
                     let display = MessageDisplay::Error { content: msg };
                     session.chat_view.push(display.to_chat_message());
                     session.stop_processing();
+                    self.state.stop_footer_spinner();
                 }
             }
             AppEvent::PrPreflightCompleted {
@@ -3710,11 +3712,20 @@ impl App {
             }
             AppEvent::AgentStreamEnded { tab_index } => {
                 // Agent event stream ended (process exited) - ensure processing is stopped
-                if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
-                    if session.is_processing {
-                        session.stop_processing();
-                        session.chat_view.finalize_streaming();
-                    }
+                let was_processing =
+                    if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
+                        if session.is_processing {
+                            session.stop_processing();
+                            session.chat_view.finalize_streaming();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                if was_processing {
+                    self.state.stop_footer_spinner();
                 }
             }
             AppEvent::SessionsCacheLoaded { sessions } => {
@@ -3757,145 +3768,158 @@ impl App {
                 | AgentEvent::TurnFailed(_)
         );
 
-        let Some(session) = self.state.tab_manager.session_mut(tab_index) else {
-            return Ok(());
-        };
+        // Track whether we need to stop footer spinner (done after session borrow ends)
+        let mut should_stop_footer_spinner = false;
 
-        // Mark non-active tabs as needing attention when content arrives
-        if !is_active_tab && is_content_event {
-            session.needs_attention = true;
-        }
+        {
+            let Some(session) = self.state.tab_manager.session_mut(tab_index) else {
+                return Ok(());
+            };
 
-        // Record raw event for debug view
-        let event_type = event.event_type_name();
-        let raw_json = serde_json::to_value(&event).unwrap_or_default();
-        session.record_raw_event(EventDirection::Received, event_type, raw_json);
+            // Mark non-active tabs as needing attention when content arrives
+            if !is_active_tab && is_content_event {
+                session.needs_attention = true;
+            }
 
-        match event {
-            AgentEvent::SessionInit(init) => {
-                session.agent_session_id = Some(init.session_id);
-                session.update_status();
-            }
-            AgentEvent::TurnStarted => {
-                session.is_processing = true;
-                session.update_status();
-            }
-            AgentEvent::TurnCompleted(completed) => {
-                session.add_usage(completed.usage);
-                session.stop_processing();
-                session.chat_view.finalize_streaming();
-                // Add turn summary to chat
-                let summary = session.current_turn_summary.clone();
-                session.chat_view.push(ChatMessage::turn_summary(summary));
-            }
-            AgentEvent::TurnFailed(failed) => {
-                session.stop_processing();
-                let display = MessageDisplay::Error {
-                    content: failed.error,
-                };
-                session.chat_view.push(display.to_chat_message());
-            }
-            AgentEvent::AssistantMessage(msg) => {
-                // Track streaming tokens (rough estimate: ~4 chars per token)
-                let token_estimate = (msg.text.len() / 4).max(1);
-                session.add_streaming_tokens(token_estimate);
+            // Record raw event for debug view
+            let event_type = event.event_type_name();
+            let raw_json = serde_json::to_value(&event).unwrap_or_default();
+            session.record_raw_event(EventDirection::Received, event_type, raw_json);
 
-                // Check for PR URL in the message and capture PR number
-                if session.pr_number.is_none() {
-                    if let Some(pr_num) = Self::extract_pr_number_from_text(&msg.text) {
-                        session.pr_number = Some(pr_num);
-                    }
+            match event {
+                AgentEvent::SessionInit(init) => {
+                    session.agent_session_id = Some(init.session_id);
+                    session.update_status();
                 }
-
-                if msg.is_final {
-                    let display = MessageDisplay::Assistant {
-                        content: msg.text,
-                        is_streaming: false,
+                AgentEvent::TurnStarted => {
+                    session.is_processing = true;
+                    session.update_status();
+                }
+                AgentEvent::TurnCompleted(completed) => {
+                    session.add_usage(completed.usage);
+                    session.stop_processing();
+                    should_stop_footer_spinner = true;
+                    session.chat_view.finalize_streaming();
+                    // Add turn summary to chat
+                    let summary = session.current_turn_summary.clone();
+                    session.chat_view.push(ChatMessage::turn_summary(summary));
+                }
+                AgentEvent::TurnFailed(failed) => {
+                    session.stop_processing();
+                    should_stop_footer_spinner = true;
+                    let display = MessageDisplay::Error {
+                        content: failed.error,
                     };
                     session.chat_view.push(display.to_chat_message());
-                } else {
-                    session.chat_view.stream_append(&msg.text);
                 }
-            }
-            AgentEvent::ToolStarted(tool) => {
-                // Update processing state to show tool name
-                session.set_processing_state(ProcessingState::ToolUse(tool.tool_name.clone()));
+                AgentEvent::AssistantMessage(msg) => {
+                    // Track streaming tokens (rough estimate: ~4 chars per token)
+                    let token_estimate = (msg.text.len() / 4).max(1);
+                    session.add_streaming_tokens(token_estimate);
 
-                let args_str = if tool.arguments.is_null() {
-                    String::new()
-                } else {
-                    // Compact single-line for display
-                    serde_json::to_string(&tool.arguments).unwrap_or_default()
-                };
-                let display = MessageDisplay::Tool {
-                    name: MessageDisplay::tool_display_name_owned(&tool.tool_name),
-                    args: args_str,
-                    output: "Running...".to_string(),
-                    exit_code: None,
-                };
-                session.chat_view.push(display.to_chat_message());
-            }
-            AgentEvent::ToolCompleted(tool) => {
-                // Return to thinking state
-                session.set_processing_state(ProcessingState::Thinking);
+                    // Check for PR URL in the message and capture PR number
+                    if session.pr_number.is_none() {
+                        if let Some(pr_num) = Self::extract_pr_number_from_text(&msg.text) {
+                            session.pr_number = Some(pr_num);
+                        }
+                    }
 
-                // Track file changes for write/edit tools
-                if tool.success {
-                    let tool_name_lower = tool.tool_id.to_lowercase();
-                    if tool_name_lower.contains("edit")
-                        || tool_name_lower.contains("write")
-                        || tool_name_lower.contains("multiedit")
-                    {
-                        // Try to extract filename from result or use generic name
-                        if let Some(ref result) = tool.result {
-                            // Simple heuristic: look for file paths in result
-                            if let Some(filename) = Self::extract_filename(result) {
-                                // Rough estimate of changes (can be refined)
-                                session.record_file_change(filename, 5, 2);
+                    if msg.is_final {
+                        let display = MessageDisplay::Assistant {
+                            content: msg.text,
+                            is_streaming: false,
+                        };
+                        session.chat_view.push(display.to_chat_message());
+                    } else {
+                        session.chat_view.stream_append(&msg.text);
+                    }
+                }
+                AgentEvent::ToolStarted(tool) => {
+                    // Update processing state to show tool name
+                    session.set_processing_state(ProcessingState::ToolUse(tool.tool_name.clone()));
+
+                    let args_str = if tool.arguments.is_null() {
+                        String::new()
+                    } else {
+                        // Compact single-line for display
+                        serde_json::to_string(&tool.arguments).unwrap_or_default()
+                    };
+                    let display = MessageDisplay::Tool {
+                        name: MessageDisplay::tool_display_name_owned(&tool.tool_name),
+                        args: args_str,
+                        output: "Running...".to_string(),
+                        exit_code: None,
+                    };
+                    session.chat_view.push(display.to_chat_message());
+                }
+                AgentEvent::ToolCompleted(tool) => {
+                    // Return to thinking state
+                    session.set_processing_state(ProcessingState::Thinking);
+
+                    // Track file changes for write/edit tools
+                    if tool.success {
+                        let tool_name_lower = tool.tool_id.to_lowercase();
+                        if tool_name_lower.contains("edit")
+                            || tool_name_lower.contains("write")
+                            || tool_name_lower.contains("multiedit")
+                        {
+                            // Try to extract filename from result or use generic name
+                            if let Some(ref result) = tool.result {
+                                // Simple heuristic: look for file paths in result
+                                if let Some(filename) = Self::extract_filename(result) {
+                                    // Rough estimate of changes (can be refined)
+                                    session.record_file_change(filename, 5, 2);
+                                }
                             }
                         }
                     }
-                }
 
-                let output = if tool.success {
-                    tool.result.unwrap_or_else(|| "Completed".to_string())
-                } else {
-                    format!("Error: {}", tool.error.unwrap_or_default())
-                };
-                let display = MessageDisplay::Tool {
-                    name: MessageDisplay::tool_display_name_owned(&tool.tool_id),
-                    args: String::new(),
-                    output,
-                    exit_code: None,
-                };
-                session.chat_view.push(display.to_chat_message());
-            }
-            AgentEvent::CommandOutput(cmd) => {
-                // Check for PR URL in command output (e.g., from gh pr create)
-                if session.pr_number.is_none() {
-                    if let Some(pr_num) = Self::extract_pr_number_from_text(&cmd.output) {
-                        session.pr_number = Some(pr_num);
+                    let output = if tool.success {
+                        tool.result.unwrap_or_else(|| "Completed".to_string())
+                    } else {
+                        format!("Error: {}", tool.error.unwrap_or_default())
+                    };
+                    let display = MessageDisplay::Tool {
+                        name: MessageDisplay::tool_display_name_owned(&tool.tool_id),
+                        args: String::new(),
+                        output,
+                        exit_code: None,
+                    };
+                    session.chat_view.push(display.to_chat_message());
+                }
+                AgentEvent::CommandOutput(cmd) => {
+                    // Check for PR URL in command output (e.g., from gh pr create)
+                    if session.pr_number.is_none() {
+                        if let Some(pr_num) = Self::extract_pr_number_from_text(&cmd.output) {
+                            session.pr_number = Some(pr_num);
+                        }
+                    }
+
+                    let display = MessageDisplay::Tool {
+                        name: "Bash".to_string(),
+                        args: cmd.command.clone(),
+                        output: cmd.output.clone(),
+                        exit_code: cmd.exit_code,
+                    };
+                    session.chat_view.push(display.to_chat_message());
+                }
+                AgentEvent::Error(err) => {
+                    let display = MessageDisplay::Error {
+                        content: err.message,
+                    };
+                    session.chat_view.push(display.to_chat_message());
+                    if err.is_fatal {
+                        session.stop_processing();
+                        should_stop_footer_spinner = true;
                     }
                 }
+                _ => {}
+            }
+        } // End session borrow scope
 
-                let display = MessageDisplay::Tool {
-                    name: "Bash".to_string(),
-                    args: cmd.command.clone(),
-                    output: cmd.output.clone(),
-                    exit_code: cmd.exit_code,
-                };
-                session.chat_view.push(display.to_chat_message());
-            }
-            AgentEvent::Error(err) => {
-                let display = MessageDisplay::Error {
-                    content: err.message,
-                };
-                session.chat_view.push(display.to_chat_message());
-                if err.is_fatal {
-                    session.stop_processing();
-                }
-            }
-            _ => {}
+        // Stop footer spinner after session borrow is released
+        if should_stop_footer_spinner {
+            self.state.stop_footer_spinner();
         }
 
         Ok(())
@@ -3909,44 +3933,55 @@ impl App {
     ) -> anyhow::Result<Vec<Effect>> {
         let mut effects = Vec::new();
         let tab_index = self.state.tab_manager.active_index();
-        let Some(session) = self.state.tab_manager.active_session_mut() else {
-            return Ok(effects);
+
+        // Extract session info in a limited borrow scope
+        let (agent_type, model, session_id_to_use, working_dir) = {
+            let Some(session) = self.state.tab_manager.active_session_mut() else {
+                return Ok(effects);
+            };
+
+            let agent_type = session.agent_type;
+            let model = session.model.clone();
+            // Use agent_session_id if available (set by agent after first prompt)
+            // Fall back to resume_session_id only for initial session restoration
+            let session_id_to_use = session
+                .agent_session_id
+                .clone()
+                .or_else(|| session.resume_session_id.take());
+            // Use session's working_dir if set, otherwise fall back to config
+            let working_dir = session
+                .working_dir
+                .clone()
+                .unwrap_or_else(|| self.config.working_dir.clone());
+
+            (agent_type, model, session_id_to_use, working_dir)
         };
 
         let mut prompt = prompt;
 
-        let agent_type = session.agent_type;
-        let model = session.model.clone();
-        // Use agent_session_id if available (set by agent after first prompt)
-        // Fall back to resume_session_id only for initial session restoration
-        let session_id_to_use = session
-            .agent_session_id
-            .clone()
-            .or_else(|| session.resume_session_id.take());
-        // Use session's working_dir if set, otherwise fall back to config
-        let working_dir = session
-            .working_dir
-            .clone()
-            .unwrap_or_else(|| self.config.working_dir.clone());
-
         // Validate working directory exists before showing user message
         if !working_dir.exists() {
-            let display = MessageDisplay::Error {
-                content: format!(
-                    "Working directory does not exist: {}",
-                    working_dir.display()
-                ),
-            };
-            session.chat_view.push(display.to_chat_message());
+            if let Some(session) = self.state.tab_manager.active_session_mut() {
+                let display = MessageDisplay::Error {
+                    content: format!(
+                        "Working directory does not exist: {}",
+                        working_dir.display()
+                    ),
+                };
+                session.chat_view.push(display.to_chat_message());
+            }
             return Ok(effects);
         }
 
-        // Add user message to chat (after validation passes)
-        let display = MessageDisplay::User {
-            content: prompt.clone(),
-        };
-        session.chat_view.push(display.to_chat_message());
-        session.start_processing();
+        // Add user message to chat and start processing (after validation passes)
+        if let Some(session) = self.state.tab_manager.active_session_mut() {
+            let display = MessageDisplay::User {
+                content: prompt.clone(),
+            };
+            session.chat_view.push(display.to_chat_message());
+            session.start_processing();
+        }
+        self.state.start_footer_spinner(None);
 
         // Start agent
         // Strip placeholders unconditionally for Codex (handles edge case where user
@@ -3960,11 +3995,14 @@ impl App {
         }
 
         if prompt.trim().is_empty() && images.is_empty() {
-            session.stop_processing();
-            let display = MessageDisplay::Error {
-                content: "Cannot submit: prompt is empty after processing".to_string(),
-            };
-            session.chat_view.push(display.to_chat_message());
+            if let Some(session) = self.state.tab_manager.active_session_mut() {
+                session.stop_processing();
+                let display = MessageDisplay::Error {
+                    content: "Cannot submit: prompt is empty after processing".to_string(),
+                };
+                session.chat_view.push(display.to_chat_message());
+            }
+            self.state.stop_footer_spinner();
             return Ok(effects);
         }
 
@@ -3978,7 +4016,9 @@ impl App {
                 .collect();
             debug_payload["images"] = serde_json::json!(image_paths);
         }
-        session.record_raw_event(EventDirection::Sent, "UserPrompt", debug_payload);
+        if let Some(session) = self.state.tab_manager.active_session_mut() {
+            session.record_raw_event(EventDirection::Sent, "UserPrompt", debug_payload);
+        }
 
         let mut config = AgentStartConfig::new(prompt, working_dir)
             .with_tools(self.config.claude_allowed_tools.clone())
