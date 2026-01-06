@@ -82,21 +82,20 @@ fn run_debug_keys() -> Result<()> {
 
     // Enable Kitty keyboard protocol for proper Ctrl+Shift detection
     // REPORT_ALL_KEYS_AS_ESCAPE_CODES is required for full modifier detection
-    let keyboard_enhancement_enabled = if supports_keyboard_enhancement()
-        .map_or(false, |supported| supported)
-    {
-        execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+    let keyboard_enhancement_enabled =
+        if supports_keyboard_enhancement().map_or(false, |supported| supported) {
+            execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                )
             )
-        )
-        .is_ok()
-    } else {
-        false
-    };
+            .is_ok()
+        } else {
+            false
+        };
 
     // Clear screen and show instructions
     execute!(

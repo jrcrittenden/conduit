@@ -14,6 +14,8 @@ pub use agent::{
 pub use config::Config;
 pub use data::{Database, Repository, RepositoryStore, Workspace, WorkspaceStore};
 pub use git::{WorktreeInfo, WorktreeManager};
-pub use session::{discover_all_sessions, discover_claude_sessions, discover_codex_sessions, ExternalSession};
+pub use session::{
+    discover_all_sessions, discover_claude_sessions, discover_codex_sessions, ExternalSession,
+};
 pub use ui::App;
 pub use util::{generate_branch_name, generate_workspace_name, get_git_username};

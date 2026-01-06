@@ -1,10 +1,6 @@
 //! Shared scrollbar rendering utilities.
 
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Color,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 use super::{BG_ELEVATED, BG_TERMINAL, TEXT_FAINT};
 

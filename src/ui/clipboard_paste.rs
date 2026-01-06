@@ -116,7 +116,9 @@ end try"#
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Distinguish "no image" from actual script errors for better debugging
         if stderr.is_empty() || stderr.to_lowercase().contains("no image") {
-            return Err(PasteImageError::NoImage("no image on clipboard".to_string()));
+            return Err(PasteImageError::NoImage(
+                "no image on clipboard".to_string(),
+            ));
         } else {
             return Err(PasteImageError::NoImage(format!(
                 "clipboard error: {}",

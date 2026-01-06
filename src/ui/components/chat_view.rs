@@ -238,7 +238,11 @@ impl ChatView {
         self.scroll_offset = max_scroll.saturating_sub(offset_from_top.min(max_scroll));
     }
 
-    pub fn scrollbar_metrics(&mut self, area: Rect, show_thinking_line: bool) -> Option<ScrollbarMetrics> {
+    pub fn scrollbar_metrics(
+        &mut self,
+        area: Rect,
+        show_thinking_line: bool,
+    ) -> Option<ScrollbarMetrics> {
         let content = Self::content_area(area)?;
 
         self.ensure_cache(content.width);
@@ -403,7 +407,12 @@ impl ChatView {
     }
 
     /// Format assistant messages - flowing text with markdown
-    fn format_assistant_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
+    fn format_assistant_message(
+        &self,
+        msg: &ChatMessage,
+        width: usize,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         if msg.content.is_empty() {
             return;
         }
@@ -437,10 +446,7 @@ impl ChatView {
                 })
                 .collect();
 
-            let line_text: String = content_spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let line_text: String = content_spans.iter().map(|s| s.content.as_ref()).collect();
             let trimmed = line_text.trim_start();
             let is_list_item = trimmed.starts_with("• ")
                 || trimmed.starts_with("- ")
@@ -491,7 +497,12 @@ impl ChatView {
     }
 
     /// Format system messages with info symbol
-    fn format_system_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
+    fn format_system_message(
+        &self,
+        msg: &ChatMessage,
+        width: usize,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         let content_lines: Vec<&str> = msg.content.lines().collect();
         let prefix_first = vec![Span::styled("ℹ ", Style::default().fg(Color::Blue))];
         let prefix_next = vec![Span::raw("  ")];
@@ -521,15 +532,18 @@ impl ChatView {
     }
 
     /// Format error messages with X symbol
-    fn format_error_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
+    fn format_error_message(
+        &self,
+        msg: &ChatMessage,
+        width: usize,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         let content_lines: Vec<&str> = msg.content.lines().collect();
         let prefix_first = vec![Span::styled("✗ ", Style::default().fg(Color::Red))];
         let prefix_next = vec![Span::raw("  ")];
         let prefix_first_width = UnicodeWidthStr::width("✗ ");
         let prefix_next_width = UnicodeWidthStr::width("  ");
-        let text_style = Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD);
+        let text_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
 
         for (i, line) in content_lines.iter().enumerate() {
             let content_spans = vec![Span::styled(line.to_string(), text_style)];
@@ -582,23 +596,27 @@ impl ChatView {
         let tool_args = msg.tool_args.as_deref().unwrap_or("{}");
 
         // Try to parse the todos from arguments
-        let todos: Vec<(String, String)> = match serde_json::from_str::<serde_json::Value>(tool_args) {
-            Ok(json) => {
-                if let Some(todos_array) = json.get("todos").and_then(|t| t.as_array()) {
-                    todos_array
-                        .iter()
-                        .filter_map(|todo| {
-                            let content = todo.get("content").and_then(|c| c.as_str())?;
-                            let status = todo.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
-                            Some((content.to_string(), status.to_string()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
+        let todos: Vec<(String, String)> =
+            match serde_json::from_str::<serde_json::Value>(tool_args) {
+                Ok(json) => {
+                    if let Some(todos_array) = json.get("todos").and_then(|t| t.as_array()) {
+                        todos_array
+                            .iter()
+                            .filter_map(|todo| {
+                                let content = todo.get("content").and_then(|c| c.as_str())?;
+                                let status = todo
+                                    .get("status")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("pending");
+                                Some((content.to_string(), status.to_string()))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
                 }
-            }
-            Err(_) => Vec::new(),
-        };
+                Err(_) => Vec::new(),
+            };
 
         // Calculate stats
         let total = todos.len();
@@ -750,14 +768,12 @@ impl ChatView {
 
         // Header: ┌─ 🔧 ToolName ─────────────────
         let header_text = format!("┌─ {} {} ", icon, tool_name);
-        let mut header_spans = vec![
-            Span::styled(
-                header_text,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
+        let mut header_spans = vec![Span::styled(
+            header_text,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
 
         // Add args on same line if short, otherwise on next line
         if !args_display.is_empty() && args_display.len() <= 40 {
@@ -823,7 +839,10 @@ impl ChatView {
                         .map(|s| Span::styled(s.content.into_owned(), s.style))
                         .collect(),
                     Err(_) => {
-                        vec![Span::styled(line.to_string(), Style::default().fg(Color::White))]
+                        vec![Span::styled(
+                            line.to_string(),
+                            Style::default().fg(Color::White),
+                        )]
                     }
                 };
 
@@ -873,7 +892,12 @@ impl ChatView {
     }
 
     /// Format turn summary message
-    fn format_summary_message(&self, msg: &ChatMessage, width: usize, lines: &mut Vec<Line<'static>>) {
+    fn format_summary_message(
+        &self,
+        msg: &ChatMessage,
+        width: usize,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         if let Some(ref summary) = msg.summary {
             lines.push(Line::from(Span::raw("")));
             lines.push(self.render_summary_divider(summary, width));
@@ -965,11 +989,7 @@ impl ChatView {
             if let Some(ref cached_streaming) = self.streaming_cache {
                 let range_start = start_line.max(streaming_start) - streaming_start;
                 let range_end = end_line.min(streaming_end) - streaming_start;
-                visible_lines.extend(
-                    cached_streaming[range_start..range_end]
-                        .iter()
-                        .cloned(),
-                );
+                visible_lines.extend(cached_streaming[range_start..range_end].iter().cloned());
             }
         }
 
@@ -1089,10 +1109,7 @@ fn chars_to_spans(chars: Vec<(char, Style)>) -> Vec<Span<'static>> {
     }
 
     if !buffer.is_empty() {
-        spans.push(Span::styled(
-            buffer,
-            current_style.unwrap_or_default(),
-        ));
+        spans.push(Span::styled(buffer, current_style.unwrap_or_default()));
     }
 
     spans

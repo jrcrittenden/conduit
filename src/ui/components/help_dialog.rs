@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::config::{KeybindingConfig, KeyContext};
+use crate::config::{KeyContext, KeybindingConfig};
 use crate::ui::action::Action;
 
 use super::{
@@ -472,7 +472,11 @@ impl HelpDialog {
             }
 
             // Category header
-            all_lines.push((LineType::Header, category.title().to_string(), String::new()));
+            all_lines.push((
+                LineType::Header,
+                category.title().to_string(),
+                String::new(),
+            ));
 
             // Entries
             for entry in entries {
@@ -517,7 +521,12 @@ impl HelpDialog {
                                 .add_modifier(Modifier::BOLD),
                         )
                         .render(
-                            Rect { x: area.x, y, width: area.width, height: 1 },
+                            Rect {
+                                x: area.x,
+                                y,
+                                width: area.width,
+                                height: 1,
+                            },
                             buf,
                         );
                 }
@@ -548,7 +557,12 @@ impl HelpDialog {
                         Paragraph::new(desc)
                             .style(Style::default().fg(Color::White))
                             .render(
-                                Rect { x: desc_x, y, width: desc_width, height: 1 },
+                                Rect {
+                                    x: desc_x,
+                                    y,
+                                    width: desc_width,
+                                    height: 1,
+                                },
                                 buf,
                             );
                     }

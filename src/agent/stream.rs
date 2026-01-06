@@ -10,10 +10,7 @@ pub struct JsonlStreamParser;
 
 impl JsonlStreamParser {
     /// Parse JSONL from stdout and send to channel
-    pub async fn parse_stream<T>(
-        stdout: ChildStdout,
-        tx: mpsc::Sender<T>,
-    ) -> Result<(), AgentError>
+    pub async fn parse_stream<T>(stdout: ChildStdout, tx: mpsc::Sender<T>) -> Result<(), AgentError>
     where
         T: for<'de> Deserialize<'de> + Send + 'static,
     {

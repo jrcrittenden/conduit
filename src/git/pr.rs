@@ -70,9 +70,7 @@ impl PrManager {
             return None;
         }
 
-        let branch = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if branch.is_empty() {
             None // Detached HEAD
@@ -96,9 +94,7 @@ impl PrManager {
 
         if let Ok(output) = output {
             if output.status.success() {
-                let branch = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 // Remove "origin/" prefix if present
                 return branch
                     .strip_prefix("origin/")
@@ -138,12 +134,10 @@ impl PrManager {
             .output();
 
         match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|line| !line.is_empty())
-                    .count()
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|line| !line.is_empty())
+                .count(),
             _ => 0,
         }
     }

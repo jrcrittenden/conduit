@@ -140,7 +140,10 @@ impl KeyContext {
     }
 
     /// Convert from InputMode to KeyContext
-    pub fn from_input_mode(mode: crate::ui::events::InputMode, view_mode: crate::ui::events::ViewMode) -> Self {
+    pub fn from_input_mode(
+        mode: crate::ui::events::InputMode,
+        view_mode: crate::ui::events::ViewMode,
+    ) -> Self {
         use crate::ui::events::{InputMode, ViewMode};
 
         // Modal dialogs always take precedence - they overlay everything
@@ -435,10 +438,7 @@ mod tests {
     fn test_parse_ctrl_shift_key() {
         let key = parse_key_notation("C-S-w").unwrap();
         assert_eq!(key.code, KeyCode::Char('w'));
-        assert_eq!(
-            key.modifiers,
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT
-        );
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     }
 
     #[test]
@@ -447,7 +447,10 @@ mod tests {
         assert_eq!(parse_key_notation("<Esc>").unwrap().code, KeyCode::Esc);
         assert_eq!(parse_key_notation("<Tab>").unwrap().code, KeyCode::Tab);
         assert_eq!(parse_key_notation("<BS>").unwrap().code, KeyCode::Backspace);
-        assert_eq!(parse_key_notation("<Space>").unwrap().code, KeyCode::Char(' '));
+        assert_eq!(
+            parse_key_notation("<Space>").unwrap().code,
+            KeyCode::Char(' ')
+        );
     }
 
     #[test]
@@ -476,7 +479,10 @@ mod tests {
         let key = KeyCombo::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(key.to_string(), "C-x");
 
-        let key = KeyCombo::new(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let key = KeyCombo::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         assert_eq!(key.to_string(), "C-S-w");
 
         let key = KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE);

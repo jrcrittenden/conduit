@@ -256,10 +256,7 @@ impl Widget for ErrorDialog<'_> {
         // Render instruction bar at bottom
         let instructions_y = inner.y + inner.height.saturating_sub(1);
         let instructions = if self.state.details.is_some() {
-            InstructionBar::new(vec![
-                ("Enter/Esc", "Dismiss"),
-                ("d", "Details"),
-            ])
+            InstructionBar::new(vec![("Enter/Esc", "Dismiss"), ("d", "Details")])
         } else {
             InstructionBar::new(vec![("Enter/Esc", "Dismiss")])
         };

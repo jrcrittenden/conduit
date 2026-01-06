@@ -236,10 +236,8 @@ impl ModelSelector {
 
                     // Render section header
                     let title = ModelRegistry::agent_section_title(*agent_type);
-                    let header_line = Line::from(Span::styled(
-                        title,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    let header_line =
+                        Line::from(Span::styled(title, Style::default().fg(Color::DarkGray)));
                     let header = Paragraph::new(header_line);
                     header.render(
                         Rect {
@@ -263,14 +261,13 @@ impl ModelSelector {
                     // Build the line
                     let icon = ModelRegistry::agent_icon(model.agent_type);
                     let mut spans = vec![
-                        Span::styled(
-                            format!("  {} ", icon),
-                            Style::default().fg(Color::White),
-                        ),
+                        Span::styled(format!("  {} ", icon), Style::default().fg(Color::White)),
                         Span::styled(
                             &model.display_name,
                             if is_selected {
-                                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                                Style::default()
+                                    .fg(Color::White)
+                                    .add_modifier(Modifier::BOLD)
                             } else {
                                 Style::default().fg(Color::White)
                             },
@@ -312,8 +309,7 @@ impl ModelSelector {
                     // Highlight selected row background
                     if is_selected {
                         for dx in 0..row_rect.width {
-                            buf[(row_rect.x + dx, row_rect.y)]
-                                .set_bg(Color::Rgb(50, 50, 50));
+                            buf[(row_rect.x + dx, row_rect.y)].set_bg(Color::Rgb(50, 50, 50));
                         }
                     }
 

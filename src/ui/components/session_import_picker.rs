@@ -420,8 +420,7 @@ impl SessionImportPicker {
 
         // Render separator
         let separator = "─".repeat(inner.width as usize);
-        let sep_paragraph =
-            Paragraph::new(separator).style(Style::default().fg(Color::DarkGray));
+        let sep_paragraph = Paragraph::new(separator).style(Style::default().fg(Color::DarkGray));
         sep_paragraph.render(chunks[2], buf);
 
         // Render session list
@@ -471,30 +470,32 @@ impl SessionImportPicker {
             let width = label.len() as u16;
 
             let style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(match filter {
-                        AgentFilter::All => Color::White,
-                        AgentFilter::Claude => Color::Cyan,
-                        AgentFilter::Codex => Color::Green,
-                    })
+                Style::default().fg(Color::Black).bg(match filter {
+                    AgentFilter::All => Color::White,
+                    AgentFilter::Claude => Color::Cyan,
+                    AgentFilter::Codex => Color::Green,
+                })
             } else {
                 Style::default().fg(Color::DarkGray)
             };
 
             if x + width <= area.x + area.width {
                 let tab = Paragraph::new(label).style(style);
-                tab.render(Rect { x, y: area.y, width, height: 1 }, buf);
+                tab.render(
+                    Rect {
+                        x,
+                        y: area.y,
+                        width,
+                        height: 1,
+                    },
+                    buf,
+                );
                 x += width + 1; // Gap between tabs
             }
         }
 
         // Show count
-        let count = format!(
-            "({}/{})",
-            state.list.filtered.len(),
-            state.sessions.len()
-        );
+        let count = format!("({}/{})", state.list.filtered.len(), state.sessions.len());
         let count_len = count.len() as u16;
         let count_style = Style::default().fg(Color::DarkGray);
         let count_x = area.x + area.width - count_len;
@@ -512,12 +513,7 @@ impl SessionImportPicker {
         }
     }
 
-    fn render_session_list(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &SessionImportPickerState,
-    ) {
+    fn render_session_list(&self, area: Rect, buf: &mut Buffer, state: &SessionImportPickerState) {
         let visible_count = area.height as usize;
 
         for (i, &session_idx) in state
@@ -561,7 +557,9 @@ impl SessionImportPicker {
 
             // Clear the line first
             for j in 0..area.width as usize {
-                buf[(area.x + j as u16, y)].set_char(' ').set_style(bg_style);
+                buf[(area.x + j as u16, y)]
+                    .set_char(' ')
+                    .set_style(bg_style);
             }
 
             // Render prefix
@@ -575,16 +573,21 @@ impl SessionImportPicker {
 
             // Render agent icon
             if x < area.x + area.width {
-                buf[(x, y)].set_char('[').set_style(bg_style.fg(Color::DarkGray));
+                buf[(x, y)]
+                    .set_char('[')
+                    .set_style(bg_style.fg(Color::DarkGray));
                 x += 1;
             }
             if x < area.x + area.width {
-                buf[(x, y)].set_char(agent_icon.chars().next().unwrap_or(' '))
+                buf[(x, y)]
+                    .set_char(agent_icon.chars().next().unwrap_or(' '))
                     .set_style(bg_style.fg(agent_color).add_modifier(Modifier::BOLD));
                 x += 1;
             }
             if x < area.x + area.width {
-                buf[(x, y)].set_char(']').set_style(bg_style.fg(Color::DarkGray));
+                buf[(x, y)]
+                    .set_char(']')
+                    .set_style(bg_style.fg(Color::DarkGray));
                 x += 1;
             }
             if x < area.x + area.width {
@@ -619,7 +622,9 @@ impl SessionImportPicker {
                 for (j, c) in meta.chars().enumerate() {
                     let mx = meta_x + j as u16;
                     if mx < area.x + area.width {
-                        buf[(mx, y)].set_char(c).set_style(bg_style.fg(Color::DarkGray));
+                        buf[(mx, y)]
+                            .set_char(c)
+                            .set_style(bg_style.fg(Color::DarkGray));
                     }
                 }
             }

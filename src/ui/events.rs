@@ -11,19 +11,13 @@ pub enum AppEvent {
     Input(crossterm::event::Event),
 
     /// Agent event from a session
-    Agent {
-        tab_index: usize,
-        event: AgentEvent,
-    },
+    Agent { tab_index: usize, event: AgentEvent },
 
     /// Agent event stream ended (process exited)
     AgentStreamEnded { tab_index: usize },
 
     /// User submitted a prompt
-    PromptSubmit {
-        tab_index: usize,
-        prompt: String,
-    },
+    PromptSubmit { tab_index: usize, prompt: String },
 
     /// Request to create a new tab
     NewTab(AgentType),
@@ -69,14 +63,10 @@ pub enum AppEvent {
     },
 
     /// Open PR in browser completed
-    OpenPrCompleted {
-        result: Result<(), String>,
-    },
+    OpenPrCompleted { result: Result<(), String> },
 
     /// Debug export completed
-    DebugDumped {
-        result: Result<String, String>,
-    },
+    DebugDumped { result: Result<String, String> },
 
     /// Workspace creation completed
     WorkspaceCreated {
@@ -89,9 +79,7 @@ pub enum AppEvent {
     },
 
     /// Project removal completed
-    ProjectRemoved {
-        result: RemoveProjectResult,
-    },
+    ProjectRemoved { result: RemoveProjectResult },
 
     /// Cached sessions loaded (fast path from disk cache)
     SessionsCacheLoaded {
@@ -104,9 +92,7 @@ pub enum AppEvent {
     },
 
     /// Session removed (file no longer exists)
-    SessionRemoved {
-        file_path: PathBuf,
-    },
+    SessionRemoved { file_path: PathBuf },
 
     /// Background session discovery complete
     SessionDiscoveryComplete,

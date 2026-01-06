@@ -207,11 +207,7 @@ impl BaseDirDialog {
             .render(input_inner, buf, Style::default().fg(Color::White));
 
         // Render status/error
-        let status = StatusLine::from_result(
-            state.error(),
-            state.is_valid(),
-            "Directory found",
-        );
+        let status = StatusLine::from_result(state.error(), state.is_valid(), "Directory found");
         status.render(chunks[3], buf);
 
         // Help text

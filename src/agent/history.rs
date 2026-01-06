@@ -13,9 +13,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::display::MessageDisplay;
-use crate::ui::components::{ChatMessage, TurnSummary};
 #[cfg(test)]
 use crate::ui::components::MessageRole;
+use crate::ui::components::{ChatMessage, TurnSummary};
 
 /// Info extracted from a function_call entry for later lookup
 struct FunctionCallInfo {
@@ -191,8 +191,16 @@ fn extract_claude_usage(entry: &Value) -> Option<(u64, u64)> {
 fn extract_codex_usage(entry: &Value) -> Option<(u64, u64)> {
     let usage = entry
         .get("usage")
-        .or_else(|| entry.get("info").and_then(|info| info.get("last_token_usage")))
-        .or_else(|| entry.get("info").and_then(|info| info.get("total_token_usage")))?;
+        .or_else(|| {
+            entry
+                .get("info")
+                .and_then(|info| info.get("last_token_usage"))
+        })
+        .or_else(|| {
+            entry
+                .get("info")
+                .and_then(|info| info.get("total_token_usage"))
+        })?;
     let input = usage.get("input_tokens").and_then(|v| v.as_u64())?;
     let output = usage.get("output_tokens").and_then(|v| v.as_u64())?;
     Some((input, output))
@@ -333,7 +341,9 @@ pub fn load_claude_history(session_id: &str) -> Result<Vec<ChatMessage>, History
 }
 
 /// Load Claude Code history with debug information
-pub fn load_claude_history_with_debug(session_id: &str) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+pub fn load_claude_history_with_debug(
+    session_id: &str,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
     let home = dirs::home_dir().ok_or(HistoryError::HomeNotFound)?;
     let projects_dir = home.join(".claude/projects");
 
@@ -347,7 +357,10 @@ pub fn load_claude_history_with_debug(session_id: &str) -> Result<(Vec<ChatMessa
 }
 
 /// Find Claude session file by searching project directories
-fn find_claude_session_file(projects_dir: &PathBuf, session_id: &str) -> Result<PathBuf, HistoryError> {
+fn find_claude_session_file(
+    projects_dir: &PathBuf,
+    session_id: &str,
+) -> Result<PathBuf, HistoryError> {
     let filename = format!("{}.jsonl", session_id);
 
     // Iterate through project directories
@@ -393,10 +406,13 @@ fn parse_claude_history_file(path: &PathBuf) -> Result<Vec<ChatMessage>, History
                                     block.get("name").and_then(|n| n.as_str()),
                                 ) {
                                     let input = block.get("input").cloned().unwrap_or(Value::Null);
-                                    tool_uses.insert(id.to_string(), ClaudeToolUseInfo {
-                                        name: name.to_string(),
-                                        input,
-                                    });
+                                    tool_uses.insert(
+                                        id.to_string(),
+                                        ClaudeToolUseInfo {
+                                            name: name.to_string(),
+                                            input,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -411,7 +427,9 @@ fn parse_claude_history_file(path: &PathBuf) -> Result<Vec<ChatMessage>, History
 }
 
 /// Parse a Claude history JSONL file with debug information
-fn parse_claude_history_file_with_debug(path: &PathBuf) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>), HistoryError> {
+fn parse_claude_history_file_with_debug(
+    path: &PathBuf,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>), HistoryError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
@@ -438,11 +456,15 @@ fn parse_claude_history_file_with_debug(path: &PathBuf) -> Result<(Vec<ChatMessa
                                         block.get("id").and_then(|i| i.as_str()),
                                         block.get("name").and_then(|n| n.as_str()),
                                     ) {
-                                        let input = block.get("input").cloned().unwrap_or(Value::Null);
-                                        tool_uses.insert(id.to_string(), ClaudeToolUseInfo {
-                                            name: name.to_string(),
-                                            input,
-                                        });
+                                        let input =
+                                            block.get("input").cloned().unwrap_or(Value::Null);
+                                        tool_uses.insert(
+                                            id.to_string(),
+                                            ClaudeToolUseInfo {
+                                                name: name.to_string(),
+                                                input,
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -465,7 +487,8 @@ fn parse_claude_history_file_with_debug(path: &PathBuf) -> Result<(Vec<ChatMessa
 
     // Second pass: convert entries to messages with debug info
     for (line_num, entry) in &raw_entries {
-        let entry_type = entry.get("type")
+        let entry_type = entry
+            .get("type")
             .and_then(|t| t.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -526,7 +549,10 @@ fn build_claude_messages(
 }
 
 /// Get debug info for a Claude entry conversion
-fn convert_claude_entry_debug_info(entry: &Value, converted_count: usize) -> (&'static str, String) {
+fn convert_claude_entry_debug_info(
+    entry: &Value,
+    converted_count: usize,
+) -> (&'static str, String) {
     let entry_type = match entry.get("type").and_then(|t| t.as_str()) {
         Some(t) => t,
         None => return ("SKIP", "missing type field".to_string()),
@@ -538,10 +564,19 @@ fn convert_claude_entry_debug_info(entry: &Value, converted_count: usize) -> (&'
                 if let Some(message) = entry.get("message") {
                     if let Some(content) = message.get("content") {
                         if content.is_string() {
-                            let preview = content.as_str().unwrap_or("").chars().take(50).collect::<String>();
-                            return ("INCLUDE", format!("user message: {}...", preview.replace('\n', " ")));
+                            let preview = content
+                                .as_str()
+                                .unwrap_or("")
+                                .chars()
+                                .take(50)
+                                .collect::<String>();
+                            return (
+                                "INCLUDE",
+                                format!("user message: {}...", preview.replace('\n', " ")),
+                            );
                         } else if let Some(blocks) = content.as_array() {
-                            let block_types: Vec<_> = blocks.iter()
+                            let block_types: Vec<_> = blocks
+                                .iter()
                                 .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
                                 .collect();
                             return ("INCLUDE", format!("user blocks: {:?}", block_types));
@@ -557,7 +592,8 @@ fn convert_claude_entry_debug_info(entry: &Value, converted_count: usize) -> (&'
             if converted_count > 0 {
                 if let Some(message) = entry.get("message") {
                     if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
-                        let block_types: Vec<_> = content.iter()
+                        let block_types: Vec<_> = content
+                            .iter()
                             .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
                             .collect();
                         return ("INCLUDE", format!("assistant blocks: {:?}", block_types));
@@ -667,7 +703,9 @@ fn convert_claude_entry_with_tools(
                             match block_type {
                                 Some("tool_result") => {
                                     // Tool result inside user message
-                                    if let Some(tool_use_id) = block.get("tool_use_id").and_then(|id| id.as_str()) {
+                                    if let Some(tool_use_id) =
+                                        block.get("tool_use_id").and_then(|id| id.as_str())
+                                    {
                                         if let Some(tool_info) = tool_uses.get(tool_use_id) {
                                             let result_content = block
                                                 .get("content")
@@ -679,7 +717,8 @@ fn convert_claude_entry_with_tools(
                                                 .and_then(|e| e.as_bool())
                                                 .unwrap_or(false);
 
-                                            let args = format_tool_args(&tool_info.name, &tool_info.input);
+                                            let args =
+                                                format_tool_args(&tool_info.name, &tool_info.input);
                                             let output = if is_error {
                                                 format!("Error: {}", result_content)
                                             } else {
@@ -687,7 +726,9 @@ fn convert_claude_entry_with_tools(
                                             };
 
                                             let display = MessageDisplay::Tool {
-                                                name: MessageDisplay::tool_display_name_owned(&tool_info.name),
+                                                name: MessageDisplay::tool_display_name_owned(
+                                                    &tool_info.name,
+                                                ),
                                                 args,
                                                 output,
                                                 exit_code: None,
@@ -734,7 +775,10 @@ fn convert_claude_entry_with_tools(
                             .iter()
                             .filter_map(|block| {
                                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                    block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                                    block
+                                        .get("text")
+                                        .and_then(|t| t.as_str())
+                                        .map(|s| s.to_string())
                                 } else {
                                     None
                                 }
@@ -853,7 +897,10 @@ fn format_tool_args(tool_name: &str, input: &Value) -> String {
 }
 
 /// Find Codex session file by searching recursively
-fn find_codex_session_file(sessions_dir: &PathBuf, session_id: &str) -> Result<PathBuf, HistoryError> {
+fn find_codex_session_file(
+    sessions_dir: &PathBuf,
+    session_id: &str,
+) -> Result<PathBuf, HistoryError> {
     // Walk through year/month/day directories
     for year_entry in fs::read_dir(sessions_dir)?.flatten() {
         let year_path = year_entry.path();
@@ -890,7 +937,9 @@ fn find_codex_session_file(sessions_dir: &PathBuf, session_id: &str) -> Result<P
 }
 
 /// Parse a Codex history JSONL file with debug information
-pub fn parse_codex_history_file_with_debug(path: &PathBuf) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>), HistoryError> {
+pub fn parse_codex_history_file_with_debug(
+    path: &PathBuf,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>), HistoryError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
@@ -1073,7 +1122,9 @@ fn extract_function_call_info(entry: &Value) -> Option<(String, FunctionCallInfo
 }
 
 /// Load Codex CLI history with debug information
-pub fn load_codex_history_with_debug(session_id: &str) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+pub fn load_codex_history_with_debug(
+    session_id: &str,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
     let home = dirs::home_dir().ok_or(HistoryError::HomeNotFound)?;
     let sessions_dir = home.join(".codex/sessions");
 
@@ -1190,7 +1241,13 @@ fn convert_codex_entry_with_debug(
             // Handle regular messages with role
             let role = match payload.get("role").and_then(|r| r.as_str()) {
                 Some(r) => r,
-                None => return (None, "SKIP", format!("role is null, type={:?}", payload_type)),
+                None => {
+                    return (
+                        None,
+                        "SKIP",
+                        format!("role is null, type={:?}", payload_type),
+                    )
+                }
             };
 
             // Extract text content

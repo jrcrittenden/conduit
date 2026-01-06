@@ -90,7 +90,8 @@ impl ChatView {
 
         for i in 0..self.messages.len() {
             let add_spacing = self.should_add_spacing_after(i);
-            let cached = self.render_message_to_cache(&self.messages[i], width as usize, add_spacing);
+            let cached =
+                self.render_message_to_cache(&self.messages[i], width as usize, add_spacing);
             self.line_cache.total_line_count += cached.lines.len();
             self.line_cache.entries.push(Some(cached));
         }
@@ -116,8 +117,10 @@ impl ChatView {
         if index < self.line_cache.entries.len() {
             // Subtract old line count
             if let Some(ref old) = self.line_cache.entries[index] {
-                self.line_cache.total_line_count =
-                    self.line_cache.total_line_count.saturating_sub(old.lines.len());
+                self.line_cache.total_line_count = self
+                    .line_cache
+                    .total_line_count
+                    .saturating_sub(old.lines.len());
             }
             self.line_cache.entries[index] = None;
             self.flat_cache_dirty = true;
@@ -129,8 +132,10 @@ impl ChatView {
         if index < self.messages.len() {
             // Subtract old line count if replacing an existing entry
             if let Some(Some(ref old)) = self.line_cache.entries.get(index) {
-                self.line_cache.total_line_count =
-                    self.line_cache.total_line_count.saturating_sub(old.lines.len());
+                self.line_cache.total_line_count = self
+                    .line_cache
+                    .total_line_count
+                    .saturating_sub(old.lines.len());
             }
 
             let add_spacing = self.should_add_spacing_after(index);
@@ -182,7 +187,5 @@ fn is_blank_line(line: &Line<'_>) -> bool {
     if line.spans.is_empty() {
         return true;
     }
-    line.spans
-        .iter()
-        .all(|span| span.content.trim().is_empty())
+    line.spans.iter().all(|span| span.content.trim().is_empty())
 }

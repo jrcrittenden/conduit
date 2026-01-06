@@ -45,7 +45,9 @@ impl Spinner {
     /// Create a growing spinner
     pub fn growing() -> Self {
         Self {
-            frames: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"],
+            frames: &[
+                "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+            ],
             tick: 0,
         }
     }

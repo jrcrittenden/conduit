@@ -329,11 +329,15 @@ impl WorktreeManager {
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == current_branch));
+            return Ok(stdout
+                .lines()
+                .any(|line| line.trim().trim_start_matches("* ") == current_branch));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.lines().any(|line| line.trim().trim_start_matches("* ") == current_branch))
+        Ok(stdout
+            .lines()
+            .any(|line| line.trim().trim_start_matches("* ") == current_branch))
     }
 
     /// Get the full branch status for archiving decisions
@@ -362,9 +366,16 @@ impl WorktreeManager {
         }
 
         // Get ahead/behind counts
-        let main_branch = self.get_main_branch(worktree_path).unwrap_or_else(|_| "main".to_string());
+        let main_branch = self
+            .get_main_branch(worktree_path)
+            .unwrap_or_else(|_| "main".to_string());
         let output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", &format!("HEAD...origin/{}", main_branch)])
+            .args([
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("HEAD...origin/{}", main_branch),
+            ])
             .current_dir(worktree_path)
             .output();
 
