@@ -73,6 +73,8 @@ pub const SPINNER_TRAIL_2: Color = Color::Rgb(90, 120, 185);
 pub const SPINNER_TRAIL_3: Color = Color::Rgb(70, 95, 150);
 /// Spinner trail position 4 - faint trail
 pub const SPINNER_TRAIL_4: Color = Color::Rgb(50, 70, 115);
+/// Spinner trail position 5 - very faint trail
+pub const SPINNER_TRAIL_5: Color = Color::Rgb(35, 50, 85);
 /// Spinner inactive position
 pub const SPINNER_INACTIVE: Color = TEXT_MUTED;
 

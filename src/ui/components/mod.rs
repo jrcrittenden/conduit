@@ -91,6 +91,7 @@ pub use theme::{
     SPINNER_TRAIL_2,
     SPINNER_TRAIL_3,
     SPINNER_TRAIL_4,
+    SPINNER_TRAIL_5,
     STATUS_BAR_BG,
     TAB_BAR_BG,
     TEXT_BRIGHT,

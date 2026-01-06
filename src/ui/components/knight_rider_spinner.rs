@@ -1,41 +1,44 @@
 //! Knight Rider style bidirectional scanner animation.
 //!
 //! A scanning bar animation with gradient trail that bounces back and forth.
+//! Based on opencode's spinner.ts implementation.
 
 use ratatui::{style::Color, style::Style, text::Span};
 
 use super::{
     SPINNER_ACTIVE, SPINNER_INACTIVE, SPINNER_TRAIL_1, SPINNER_TRAIL_2, SPINNER_TRAIL_3,
-    SPINNER_TRAIL_4,
+    SPINNER_TRAIL_4, SPINNER_TRAIL_5,
 };
 
-/// Which endpoint we're holding at
+/// Animation phase for the Knight Rider scanner
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HoldPosition {
-    /// Holding at left/start (with pulsation)
-    Left,
-    /// Holding at right/end (brief pause)
-    Right,
+enum Phase {
+    /// Moving forward (left to right)
+    MovingForward,
+    /// Holding at right end
+    HoldEnd,
+    /// Moving backward (right to left)
+    MovingBackward,
+    /// Holding at left start
+    HoldStart,
 }
 
 /// Knight Rider style bidirectional scanner animation
 pub struct KnightRiderSpinner {
-    /// Current active position (can be negative or beyond width to let trail exit)
-    position: isize,
-    /// Direction (true = forward/right, false = backward/left)
-    forward: bool,
+    /// Current frame index in the animation cycle
+    frame: usize,
     /// Bar width (number of characters)
     width: usize,
-    /// Hold frame counter
-    hold_counter: usize,
-    /// Currently holding at endpoint
-    holding: Option<HoldPosition>,
     /// Frames to hold at end (right side)
     hold_end_frames: usize,
-    /// Frames to hold at start (left side) - includes pulsation time
+    /// Frames to hold at start (left side)
     hold_start_frames: usize,
     /// Trail length (how many positions the trail extends)
-    trail_length: isize,
+    trail_length: usize,
+    /// Total frames in one complete cycle
+    total_frames: usize,
+    /// Minimum alpha for fading (0.0 = invisible, 1.0 = full)
+    min_alpha: f64,
 }
 
 impl KnightRiderSpinner {
@@ -46,98 +49,110 @@ impl KnightRiderSpinner {
 
     /// Create a new spinner with specified width
     pub fn with_width(width: usize) -> Self {
+        let width = width.max(3); // Minimum width of 3
+        let hold_end_frames = 9; // Match opencode defaults
+        let hold_start_frames = 30;
+        let trail_length = 6;
+        // Cycle: Forward (width) + Hold End + Backward (width-1) + Hold Start
+        let total_frames = width + hold_end_frames + (width - 1) + hold_start_frames;
+
         Self {
-            position: 0,
-            forward: true,
-            width: width.max(3), // Minimum width of 3
-            hold_counter: 0,
-            holding: None,
-            hold_end_frames: 12,   // Hold at right end (brief pause while hidden)
-            hold_start_frames: 60, // Hold at left end (longer pause with pulsation)
-            trail_length: 4,       // Trail extends 4 positions behind active
+            frame: 0,
+            width,
+            hold_end_frames,
+            hold_start_frames,
+            trail_length,
+            total_frames,
+            min_alpha: 0.0, // Can fade to nearly invisible
         }
     }
 
     /// Advance animation by one tick
     pub fn tick(&mut self) {
-        // If holding at endpoint, count down
-        if self.holding.is_some() {
-            if self.hold_counter > 0 {
-                self.hold_counter -= 1;
-                return;
-            }
-            // Done holding, continue movement
-            self.holding = None;
-        }
+        self.frame = (self.frame + 1) % self.total_frames;
+    }
 
-        // Move position - continue past visible bounds to let trail exit
-        let width = self.width as isize;
-        if self.forward {
-            // Moving right: continue until trail has fully exited right side
-            let exit_position = width - 1 + self.trail_length;
-            if self.position >= exit_position {
-                // Trail has exited, start holding then reverse
-                self.holding = Some(HoldPosition::Right);
-                self.hold_counter = self.hold_end_frames;
-                self.forward = false;
-            } else {
-                self.position += 1;
-            }
+    /// Get current animation phase and progress within that phase
+    fn get_state(&self) -> (Phase, usize, usize, usize) {
+        let forward_frames = self.width;
+        let hold_end_start = forward_frames;
+        let backward_start = hold_end_start + self.hold_end_frames;
+        let backward_frames = self.width - 1;
+        let hold_start_start = backward_start + backward_frames;
+
+        if self.frame < forward_frames {
+            // Moving forward: position goes 0 to width-1
+            let position = self.frame;
+            let progress = self.frame;
+            let total = forward_frames;
+            (Phase::MovingForward, position, progress, total)
+        } else if self.frame < backward_start {
+            // Holding at end
+            let position = self.width - 1;
+            let progress = self.frame - hold_end_start;
+            let total = self.hold_end_frames;
+            (Phase::HoldEnd, position, progress, total)
+        } else if self.frame < hold_start_start {
+            // Moving backward: position goes width-2 to 0
+            let backward_index = self.frame - backward_start;
+            let position = self.width - 2 - backward_index;
+            let progress = backward_index;
+            let total = backward_frames;
+            (Phase::MovingBackward, position, progress, total)
         } else {
-            // Moving left: continue until trail has fully exited left side
-            let exit_position = -self.trail_length;
-            if self.position <= exit_position {
-                // Trail has exited, start holding then reverse
-                self.holding = Some(HoldPosition::Left);
-                self.hold_counter = self.hold_start_frames;
-                self.forward = true;
-            } else {
-                self.position -= 1;
-            }
+            // Holding at start
+            let position = 0;
+            let progress = self.frame - hold_start_start;
+            let total = self.hold_start_frames;
+            (Phase::HoldStart, position, progress, total)
         }
     }
 
-    /// Get the color for a position based on distance from active position
-    fn color_for_distance(&self, distance: usize) -> Color {
-        match distance {
+    /// Get the base color for a trail position (0 = brightest, higher = dimmer)
+    fn color_for_trail_index(&self, index: usize) -> Color {
+        match index {
             0 => SPINNER_ACTIVE,
             1 => SPINNER_TRAIL_1,
             2 => SPINNER_TRAIL_2,
             3 => SPINNER_TRAIL_3,
             4 => SPINNER_TRAIL_4,
+            5 => SPINNER_TRAIL_5,
             _ => SPINNER_INACTIVE,
-        }
-    }
-
-    /// Calculate pulse factor (0.0 to 1.0) for left-side hold pulsation
-    /// Uses sine wave for smooth breathing effect
-    fn pulse_factor(&self) -> f64 {
-        if let Some(HoldPosition::Left) = self.holding {
-            // Progress through hold (0.0 at start, 1.0 at end)
-            let progress = 1.0 - (self.hold_counter as f64 / self.hold_start_frames.max(1) as f64);
-            // Use sine wave for smooth pulse: starts dim, brightens, dims again
-            // sin(0) = 0, sin(π/2) = 1, sin(π) = 0
-            let phase = progress * std::f64::consts::PI;
-            phase.sin()
-        } else {
-            1.0 // No pulsation, full brightness
         }
     }
 
     /// Dim a color by a factor (0.0 = black, 1.0 = original)
     fn dim_color(&self, color: Color, factor: f64) -> Color {
         match color {
-            Color::Rgb(r, g, b) => {
-                // Interpolate towards very dark (almost black)
-                let min_brightness = 0.15; // Don't go completely black
-                let adjusted_factor = min_brightness + (1.0 - min_brightness) * factor;
-                Color::Rgb(
-                    (r as f64 * adjusted_factor) as u8,
-                    (g as f64 * adjusted_factor) as u8,
-                    (b as f64 * adjusted_factor) as u8,
-                )
+            Color::Rgb(r, g, b) => Color::Rgb(
+                (r as f64 * factor) as u8,
+                (g as f64 * factor) as u8,
+                (b as f64 * factor) as u8,
+            ),
+            _ => color,
+        }
+    }
+
+    /// Calculate fade factor for the current state
+    /// During hold: fades OUT (1.0 → min_alpha)
+    /// During movement: fades IN (min_alpha → 1.0)
+    fn fade_factor(&self, phase: Phase, progress: usize, total: usize) -> f64 {
+        if total == 0 {
+            return 1.0;
+        }
+
+        let progress_ratio = (progress as f64) / (total.max(1) as f64);
+
+        match phase {
+            Phase::HoldStart | Phase::HoldEnd => {
+                // Fade out: start at 1.0, end at min_alpha
+                let fade = 1.0 - progress_ratio * (1.0 - self.min_alpha);
+                fade.max(self.min_alpha)
             }
-            _ => color, // Non-RGB colors pass through unchanged
+            Phase::MovingForward | Phase::MovingBackward => {
+                // Fade in: start at min_alpha, end at 1.0
+                self.min_alpha + progress_ratio * (1.0 - self.min_alpha)
+            }
         }
     }
 
@@ -146,42 +161,54 @@ impl KnightRiderSpinner {
         let active_char = "■";
         let inactive_char = "⬝";
 
+        let (phase, active_position, progress, total) = self.get_state();
+        let is_moving_forward = matches!(phase, Phase::MovingForward | Phase::HoldEnd);
+        let is_holding = matches!(phase, Phase::HoldStart | Phase::HoldEnd);
+        let hold_progress = if is_holding { progress } else { 0 };
+        let fade = self.fade_factor(phase, progress, total);
+
         let mut spans = Vec::with_capacity(self.width);
-        let pulse = self.pulse_factor();
 
-        for i in 0..self.width {
-            let i_signed = i as isize;
-
-            // Calculate distance from active position
-            // Trail follows behind the direction of movement
-            let distance = if i_signed == self.position {
-                0
-            } else if self.forward {
-                // Moving right: trail is to the left (positions < active)
-                if i_signed < self.position {
-                    (self.position - i_signed) as usize
-                } else {
-                    usize::MAX // No trail ahead
-                }
+        for char_index in 0..self.width {
+            // Calculate directional distance (positive = trailing behind)
+            let directional_distance = if is_moving_forward {
+                active_position as isize - char_index as isize
             } else {
-                // Moving left: trail is to the right (positions > active)
-                if i_signed > self.position {
-                    (i_signed - self.position) as usize
-                } else {
-                    usize::MAX // No trail ahead
-                }
+                char_index as isize - active_position as isize
             };
 
-            let base_color = self.color_for_distance(distance);
+            // Calculate color index for this character
+            let color_index = if is_holding {
+                // During hold: shift trail by hold progress (trail fades away)
+                directional_distance + hold_progress as isize
+            } else if directional_distance > 0
+                && (directional_distance as usize) < self.trail_length
+            {
+                // Normal movement: show gradient trail behind
+                directional_distance
+            } else if directional_distance == 0 {
+                // At active position: brightest
+                0
+            } else {
+                -1 // Inactive
+            };
 
-            // Apply pulsation during left hold (all squares are inactive, so all pulse)
-            let color = if self.holding == Some(HoldPosition::Left) {
-                self.dim_color(SPINNER_INACTIVE, pulse)
+            // Get base color
+            let base_color = if color_index >= 0 && (color_index as usize) < self.trail_length {
+                self.color_for_trail_index(color_index as usize)
+            } else {
+                SPINNER_INACTIVE
+            };
+
+            // Apply fade to inactive squares
+            let color = if color_index < 0 || (color_index as usize) >= self.trail_length {
+                self.dim_color(base_color, fade)
             } else {
                 base_color
             };
 
-            let ch = if distance <= 4 {
+            // Choose character based on whether it's part of the active trail
+            let ch = if color_index >= 0 && (color_index as usize) < self.trail_length {
                 active_char
             } else {
                 inactive_char
@@ -195,10 +222,7 @@ impl KnightRiderSpinner {
 
     /// Reset spinner to initial state
     pub fn reset(&mut self) {
-        self.position = 0;
-        self.forward = true;
-        self.hold_counter = 0;
-        self.holding = None;
+        self.frame = 0;
     }
 }
 
@@ -216,45 +240,55 @@ mod tests {
     fn test_spinner_creation() {
         let spinner = KnightRiderSpinner::new();
         assert_eq!(spinner.width, 8);
-        assert_eq!(spinner.position, 0);
-        assert!(spinner.forward);
+        assert_eq!(spinner.frame, 0);
+        // Total frames = 8 + 9 + 7 + 30 = 54
+        assert_eq!(spinner.total_frames, 54);
     }
 
     #[test]
-    fn test_spinner_movement() {
+    fn test_spinner_phases() {
         let mut spinner = KnightRiderSpinner::with_width(4);
+        // Total frames = 4 + 9 + 3 + 30 = 46
 
-        // Should start at position 0
-        assert_eq!(spinner.position, 0);
+        // Frame 0: MovingForward, position 0
+        let (phase, pos, _, _) = spinner.get_state();
+        assert_eq!(phase, Phase::MovingForward);
+        assert_eq!(pos, 0);
 
-        // Move forward through visible area
+        // Frame 3: MovingForward, position 3 (last visible position)
+        spinner.frame = 3;
+        let (phase, pos, _, _) = spinner.get_state();
+        assert_eq!(phase, Phase::MovingForward);
+        assert_eq!(pos, 3);
+
+        // Frame 4: HoldEnd starts
+        spinner.frame = 4;
+        let (phase, pos, progress, _) = spinner.get_state();
+        assert_eq!(phase, Phase::HoldEnd);
+        assert_eq!(pos, 3);
+        assert_eq!(progress, 0);
+
+        // Frame 13: MovingBackward starts (4 + 9 = 13)
+        spinner.frame = 13;
+        let (phase, pos, _, _) = spinner.get_state();
+        assert_eq!(phase, Phase::MovingBackward);
+        assert_eq!(pos, 2); // width-2 = 2
+
+        // Frame 16: HoldStart (4 + 9 + 3 = 16)
+        spinner.frame = 16;
+        let (phase, pos, progress, _) = spinner.get_state();
+        assert_eq!(phase, Phase::HoldStart);
+        assert_eq!(pos, 0);
+        assert_eq!(progress, 0);
+    }
+
+    #[test]
+    fn test_spinner_tick_wraps() {
+        let mut spinner = KnightRiderSpinner::with_width(4);
+        // Total frames = 46
+        spinner.frame = 45;
         spinner.tick();
-        assert_eq!(spinner.position, 1);
-
-        spinner.tick();
-        assert_eq!(spinner.position, 2);
-
-        spinner.tick();
-        assert_eq!(spinner.position, 3);
-
-        // Continue past visible area to let trail exit (trail_length = 4)
-        spinner.tick();
-        assert_eq!(spinner.position, 4);
-        assert!(spinner.holding.is_none()); // Not holding yet, trail still visible
-
-        spinner.tick();
-        assert_eq!(spinner.position, 5);
-
-        spinner.tick();
-        assert_eq!(spinner.position, 6);
-
-        spinner.tick();
-        assert_eq!(spinner.position, 7); // exit_position = 3 + 4 = 7
-
-        // Now should start holding at right side and reverse
-        spinner.tick();
-        assert_eq!(spinner.holding, Some(HoldPosition::Right));
-        assert!(!spinner.forward);
+        assert_eq!(spinner.frame, 0); // Should wrap around
     }
 
     #[test]
