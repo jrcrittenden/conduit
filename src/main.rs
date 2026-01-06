@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use conduit::{util, App, Config};
+use conduit::{ui::terminal_guard, util, App, Config};
 use std::fs::{self, OpenOptions};
 
 #[derive(Parser)]
@@ -35,6 +35,9 @@ async fn main() -> Result<()> {
 
 /// Run the main application
 async fn run_app() -> Result<()> {
+    // Install panic hook to restore terminal state before printing panic message
+    terminal_guard::install_panic_hook();
+
     // Initialize logging to file (~/.conduit/logs/conduit.log)
     fs::create_dir_all(util::logs_dir())?;
 

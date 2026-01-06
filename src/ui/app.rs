@@ -6,15 +6,11 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-        KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, EnableMouseCapture, Event, KeyCode, KeyModifiers, KeyboardEnhancementFlags,
+        MouseButton, MouseEventKind, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-        LeaveAlternateScreen,
-    },
+    terminal::{enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -51,6 +47,7 @@ use crate::ui::events::{
     AppEvent, InputMode, RemoveProjectResult, ViewMode, WorkspaceArchived, WorkspaceCreated,
 };
 use crate::ui::session::AgentSession;
+use crate::ui::terminal_guard::TerminalGuard;
 
 /// Main application state
 pub struct App {
@@ -427,6 +424,9 @@ impl App {
             );
         }
 
+        // Create terminal guard AFTER enabling features - Drop will clean up on any exit path
+        let mut guard = TerminalGuard::new(keyboard_enhancement_enabled);
+
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
         let backend = CrosstermBackend::new(stdout);
@@ -438,17 +438,9 @@ impl App {
         // Main event loop
         let result = self.event_loop(&mut terminal).await;
 
-        // Restore terminal
-        if keyboard_enhancement_enabled {
-            let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-        }
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
+        // Explicit cleanup with error handling (prevents double-cleanup in Drop)
         terminal.show_cursor()?;
+        guard.cleanup()?;
 
         result
     }

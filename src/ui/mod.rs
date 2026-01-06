@@ -7,6 +7,7 @@ pub mod effect;
 pub mod events;
 pub mod session;
 pub mod tab_manager;
+pub mod terminal_guard;
 
 pub use action::Action;
 pub use app::App;
