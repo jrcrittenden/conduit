@@ -65,8 +65,8 @@ impl KnightRiderSpinner {
             hold_start_frames,
             trail_length,
             total_frames,
-            min_alpha: 0.3,       // Match opencode: never fade below 30%
-            inactive_factor: 0.6, // Match opencode: inactive at 60% brightness
+            min_alpha: 0.7,       // Higher min to prevent too much fading
+            inactive_factor: 0.8, // Inactive at 80% brightness base
         }
     }
 

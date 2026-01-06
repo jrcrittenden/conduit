@@ -467,10 +467,15 @@ impl App {
             self.state.metrics.draw_time = draw_end.duration_since(draw_start);
             self.state.metrics.on_draw_end(draw_end);
 
-            // Wait for next frame (16ms target = 60 FPS)
+            // Calculate remaining sleep time to hit ~60 FPS target
+            // Account for draw time already spent this frame
+            let target_frame = Duration::from_millis(16);
+            let elapsed = frame_start.elapsed();
+            let sleep_duration = target_frame.saturating_sub(elapsed);
+
             tokio::select! {
                 // Terminal input events + tick
-                _ = tokio::time::sleep(Duration::from_millis(16)) => {
+                _ = tokio::time::sleep(sleep_duration) => {
                     // Measure event processing time (after sleep)
                     let event_start = Instant::now();
 
@@ -569,8 +574,14 @@ impl App {
     }
 
     fn handle_tick(&mut self) {
-        // Tick animations (every 6 frames = ~100ms)
         self.state.tick_count += 1;
+
+        // Tick footer Knight Rider spinner every 2 frames (~40ms at 50 FPS, matches opencode)
+        if self.state.tick_count.is_multiple_of(2) {
+            self.state.tick_footer_spinner();
+        }
+
+        // Tick other animations every 6 frames (~100ms)
         if !self.state.tick_count.is_multiple_of(6) {
             return;
         }
@@ -583,9 +594,6 @@ impl App {
 
         // Tick session import spinner (for loading state)
         self.state.session_import_state.tick();
-
-        // Tick footer Knight Rider spinner
-        self.state.tick_footer_spinner();
 
         if let Some(session) = self.state.tab_manager.active_session_mut() {
             session.tick();
