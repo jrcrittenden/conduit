@@ -824,6 +824,13 @@ impl App {
             }
             Action::ToggleMetrics => {
                 self.state.show_metrics = !self.state.show_metrics;
+                // Toggle footer spinner for testing animation smoothness
+                if self.state.show_metrics {
+                    self.state
+                        .start_footer_spinner(Some("Testing spinner...".to_string()));
+                } else {
+                    self.state.stop_footer_spinner();
+                }
             }
             Action::DumpDebugState => {
                 effects.push(Effect::DumpDebugState);

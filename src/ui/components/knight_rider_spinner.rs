@@ -11,8 +11,8 @@ use super::{
 
 /// Knight Rider style bidirectional scanner animation
 pub struct KnightRiderSpinner {
-    /// Current active position (0 to width-1)
-    position: usize,
+    /// Current active position (can be negative or beyond width to let trail exit)
+    position: isize,
     /// Direction (true = forward/right, false = backward/left)
     forward: bool,
     /// Bar width (number of characters)
@@ -25,6 +25,8 @@ pub struct KnightRiderSpinner {
     hold_end_frames: usize,
     /// Frames to hold at start (left side)
     hold_start_frames: usize,
+    /// Trail length (how many positions the trail extends)
+    trail_length: isize,
 }
 
 impl KnightRiderSpinner {
@@ -43,6 +45,7 @@ impl KnightRiderSpinner {
             holding: false,
             hold_end_frames: 9,    // Hold at right end
             hold_start_frames: 30, // Hold at left end (longer pause)
+            trail_length: 4,       // Trail extends 4 positions behind active
         }
     }
 
@@ -58,10 +61,13 @@ impl KnightRiderSpinner {
             self.holding = false;
         }
 
-        // Move position
+        // Move position - continue past visible bounds to let trail exit
+        let width = self.width as isize;
         if self.forward {
-            if self.position >= self.width - 1 {
-                // Reached right end, start holding then reverse
+            // Moving right: continue until trail has fully exited right side
+            let exit_position = width - 1 + self.trail_length;
+            if self.position >= exit_position {
+                // Trail has exited, start holding then reverse
                 self.holding = true;
                 self.hold_counter = self.hold_end_frames;
                 self.forward = false;
@@ -69,8 +75,10 @@ impl KnightRiderSpinner {
                 self.position += 1;
             }
         } else {
-            if self.position == 0 {
-                // Reached left end, start holding then reverse
+            // Moving left: continue until trail has fully exited left side
+            let exit_position = -self.trail_length;
+            if self.position <= exit_position {
+                // Trail has exited, start holding then reverse
                 self.holding = true;
                 self.hold_counter = self.hold_start_frames;
                 self.forward = true;
@@ -100,21 +108,23 @@ impl KnightRiderSpinner {
         let mut spans = Vec::with_capacity(self.width);
 
         for i in 0..self.width {
+            let i_signed = i as isize;
+
             // Calculate distance from active position
             // Trail follows behind the direction of movement
-            let distance = if i == self.position {
+            let distance = if i_signed == self.position {
                 0
             } else if self.forward {
                 // Moving right: trail is to the left (positions < active)
-                if i < self.position {
-                    self.position - i
+                if i_signed < self.position {
+                    (self.position - i_signed) as usize
                 } else {
                     usize::MAX // No trail ahead
                 }
             } else {
                 // Moving left: trail is to the right (positions > active)
-                if i > self.position {
-                    i - self.position
+                if i_signed > self.position {
+                    (i_signed - self.position) as usize
                 } else {
                     usize::MAX // No trail ahead
                 }
@@ -167,7 +177,7 @@ mod tests {
         // Should start at position 0
         assert_eq!(spinner.position, 0);
 
-        // Move forward
+        // Move forward through visible area
         spinner.tick();
         assert_eq!(spinner.position, 1);
 
@@ -177,7 +187,21 @@ mod tests {
         spinner.tick();
         assert_eq!(spinner.position, 3);
 
-        // At end, should start holding
+        // Continue past visible area to let trail exit (trail_length = 4)
+        spinner.tick();
+        assert_eq!(spinner.position, 4);
+        assert!(!spinner.holding); // Not holding yet, trail still visible
+
+        spinner.tick();
+        assert_eq!(spinner.position, 5);
+
+        spinner.tick();
+        assert_eq!(spinner.position, 6);
+
+        spinner.tick();
+        assert_eq!(spinner.position, 7); // exit_position = 3 + 4 = 7
+
+        // Now should start holding and reverse
         spinner.tick();
         assert!(spinner.holding);
         assert!(!spinner.forward);
