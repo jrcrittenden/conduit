@@ -3528,18 +3528,29 @@ impl App {
     fn handle_tab_bar_click(&mut self, x: u16, _y: u16, tab_bar_area: Rect) {
         let relative_x = x.saturating_sub(tab_bar_area.x) as usize;
 
-        // Calculate tab positions
+        // Calculate tab positions (must match rendering in tab_bar.rs)
         let mut current_x: usize = 0;
-        let tab_names = self.state.tab_manager.tab_names();
         let active_index = self.state.tab_manager.active_index();
+        let sessions = self.state.tab_manager.sessions();
 
-        for (i, name) in tab_names.iter().enumerate() {
-            // Format: " ▶ [N] Name " for active, "  [N] Name " for inactive
-            let tab_width = if i == active_index {
-                4 + 3 + name.len() + 1 // " ▶ " + "[N]" + " Name" + " "
-            } else {
-                2 + 3 + name.len() + 1 // "  " + "[N]" + " Name" + " "
-            };
+        for (i, session) in sessions.iter().enumerate() {
+            let name = session.tab_name();
+            let is_active = i == active_index;
+
+            // Base: indicator(3) + "[N] name"(4 + name.len) + trailing(2)
+            let mut tab_width = 3 + 4 + name.len() + 2;
+
+            // Spinner or attention indicator (+2)
+            if session.is_processing || session.needs_attention {
+                tab_width += 2;
+            }
+
+            // PR badge on active tab: " PR #N " + trailing space
+            if is_active {
+                if let Some(pr) = session.pr_number {
+                    tab_width += format!(" PR #{} ", pr).len() + 1;
+                }
+            }
 
             if relative_x < current_x + tab_width {
                 // Clicked on this tab
