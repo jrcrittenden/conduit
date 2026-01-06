@@ -201,15 +201,15 @@ mod tests {
         // 3 children: 1 action node + 2 workspace nodes
         assert_eq!(data.nodes[0].children.len(), 3);
 
-        // Initially only repository is visible
-        let visible = data.visible_nodes();
-        assert_eq!(visible.len(), 1);
-
-        // Toggle expand
-        data.toggle_at(0);
-
-        // Now all 4 nodes are visible (1 repo + 1 action + 2 workspaces)
+        // Nodes are expanded by default, so all 4 are visible (1 repo + 1 action + 2 workspaces)
         let visible = data.visible_nodes();
         assert_eq!(visible.len(), 4);
+
+        // Toggle to collapse
+        data.toggle_at(0);
+
+        // Now only repository is visible
+        let visible = data.visible_nodes();
+        assert_eq!(visible.len(), 1);
     }
 }
