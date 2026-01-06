@@ -22,7 +22,7 @@ impl AgentType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "codex" => AgentType::Codex,
             _ => AgentType::Claude,

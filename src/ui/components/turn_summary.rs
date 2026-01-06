@@ -72,29 +72,24 @@ impl TurnSummary {
 
     /// Render the turn summary as a Line
     pub fn render(&self, max_width: usize) -> Line<'static> {
-        let mut spans = Vec::new();
-
         // Duration: ⏱ 2m 34s
-        spans.push(Span::styled("⏱ ", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            self.format_duration(),
-            Style::default().fg(Color::Gray),
-        ));
-
         // Separator
-        spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-
         // Tokens: ⬇1.2k ⬆856
-        spans.push(Span::styled("↓", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(
-            Self::format_tokens(self.input_tokens),
-            Style::default().fg(Color::Cyan),
-        ));
-        spans.push(Span::styled(" ↑", Style::default().fg(Color::Magenta)));
-        spans.push(Span::styled(
-            Self::format_tokens(self.output_tokens),
-            Style::default().fg(Color::Magenta),
-        ));
+        let mut spans = vec![
+            Span::styled("⏱ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(self.format_duration(), Style::default().fg(Color::Gray)),
+            Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+            Span::styled("↓", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                Self::format_tokens(self.input_tokens),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(" ↑", Style::default().fg(Color::Magenta)),
+            Span::styled(
+                Self::format_tokens(self.output_tokens),
+                Style::default().fg(Color::Magenta),
+            ),
+        ];
 
         // Files changed (show up to 3, then overflow)
         if !self.files_changed.is_empty() {

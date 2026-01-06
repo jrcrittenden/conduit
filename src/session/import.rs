@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -225,7 +225,7 @@ fn scan_session_files() -> Vec<(PathBuf, u64)> {
 }
 
 /// Scan Claude session files from projects directory
-fn scan_claude_session_files(claude_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
+fn scan_claude_session_files(claude_dir: &Path) -> Vec<(PathBuf, u64)> {
     let mut files = Vec::new();
     let projects_dir = claude_dir.join("projects");
 
@@ -358,7 +358,7 @@ fn read_claude_session(path: &PathBuf) -> Option<ExternalSession> {
     let timestamp = path
         .metadata()
         .and_then(|m| m.modified())
-        .map(|t| DateTime::<Utc>::from(t))
+        .map(DateTime::<Utc>::from)
         .unwrap_or_else(|_| Utc::now());
 
     Some(ExternalSession {
@@ -404,8 +404,8 @@ pub fn discover_claude_sessions() -> Vec<ExternalSession> {
 
 /// Discover Claude sessions using the history.jsonl index
 fn discover_claude_from_history(
-    history_file: &PathBuf,
-    claude_dir: &PathBuf,
+    history_file: &Path,
+    claude_dir: &Path,
 ) -> Result<Vec<ExternalSession>, std::io::Error> {
     let file = File::open(history_file)?;
     let reader = BufReader::new(file);
@@ -505,7 +505,7 @@ fn discover_claude_from_history(
 }
 
 /// Discover Claude sessions by scanning project directories
-fn discover_claude_from_projects(claude_dir: &PathBuf) -> Vec<ExternalSession> {
+fn discover_claude_from_projects(claude_dir: &Path) -> Vec<ExternalSession> {
     let projects_dir = claude_dir.join("projects");
     if !projects_dir.exists() {
         return Vec::new();
@@ -544,7 +544,7 @@ fn discover_claude_from_projects(claude_dir: &PathBuf) -> Vec<ExternalSession> {
                     let timestamp = session_path
                         .metadata()
                         .and_then(|m| m.modified())
-                        .map(|t| DateTime::<Utc>::from(t))
+                        .map(DateTime::<Utc>::from)
                         .unwrap_or_else(|_| Utc::now());
 
                     let (message_count, first_message) = peek_session_file(&session_path);
@@ -623,13 +623,11 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
         }
 
         // Extract project from thread.started event
-        if project.is_none() {
-            if entry.get("type").and_then(|t| t.as_str()) == Some("event_msg") {
-                if let Some(payload) = entry.get("payload") {
-                    if payload.get("type").and_then(|t| t.as_str()) == Some("thread.started") {
-                        if let Some(cwd) = payload.get("cwd").and_then(|c| c.as_str()) {
-                            project = Some(cwd.to_string());
-                        }
+        if project.is_none() && entry.get("type").and_then(|t| t.as_str()) == Some("event_msg") {
+            if let Some(payload) = entry.get("payload") {
+                if payload.get("type").and_then(|t| t.as_str()) == Some("thread.started") {
+                    if let Some(cwd) = payload.get("cwd").and_then(|c| c.as_str()) {
+                        project = Some(cwd.to_string());
                     }
                 }
             }
@@ -677,7 +675,7 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
         .unwrap_or("unknown");
     let session_id = filename
         .strip_prefix("rollout-")
-        .and_then(|s| s.split('-').last())
+        .and_then(|s| s.split('-').next_back())
         .unwrap_or(filename)
         .to_string();
 
@@ -685,7 +683,7 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
     let timestamp = timestamp.unwrap_or_else(|| {
         path.metadata()
             .and_then(|m| m.modified())
-            .map(|t| DateTime::<Utc>::from(t))
+            .map(DateTime::<Utc>::from)
             .unwrap_or_else(|_| Utc::now())
     });
 

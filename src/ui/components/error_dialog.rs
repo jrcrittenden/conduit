@@ -96,7 +96,7 @@ impl<'a> ErrorDialog<'a> {
             return 1;
         }
         let msg_len = self.state.message.len();
-        ((msg_len + available_width - 1) / available_width).max(1) as u16
+        msg_len.div_ceil(available_width).max(1) as u16
     }
 
     /// Calculate details height if expanded
@@ -113,7 +113,7 @@ impl<'a> ErrorDialog<'a> {
             let mut total_lines = 0u16;
             for line in details.lines() {
                 let line_len = line.len();
-                let wrapped_lines = ((line_len + available_width - 1) / available_width).max(1);
+                let wrapped_lines = line_len.div_ceil(available_width).max(1);
                 total_lines += wrapped_lines as u16;
             }
             total_lines.max(1)

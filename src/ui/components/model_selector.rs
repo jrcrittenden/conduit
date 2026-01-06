@@ -182,7 +182,6 @@ impl ModelSelector {
 
         // Ensure dialog stays within screen bounds
         let dialog_x = dialog_x.min(area.width.saturating_sub(dialog_width));
-        let dialog_y = dialog_y.max(0);
 
         let dialog_area = Rect {
             x: dialog_x,

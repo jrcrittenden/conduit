@@ -72,12 +72,10 @@ struct PickerLayout {
 /// Calculate dialog layout for consistent positioning
 fn calculate_picker_layout(area: Rect) -> Option<PickerLayout> {
     let dialog_width = (area.width * DIALOG_WIDTH_PERCENT / 100)
-        .min(DIALOG_MAX_WIDTH)
-        .max(DIALOG_MIN_WIDTH)
+        .clamp(DIALOG_MIN_WIDTH, DIALOG_MAX_WIDTH)
         .min(area.width.saturating_sub(4));
     let dialog_height = (area.height * DIALOG_HEIGHT_PERCENT / 100)
-        .min(DIALOG_MAX_HEIGHT)
-        .max(DIALOG_MIN_HEIGHT)
+        .clamp(DIALOG_MIN_HEIGHT, DIALOG_MAX_HEIGHT)
         .min(area.height.saturating_sub(2));
 
     let dialog_x = area.width.saturating_sub(dialog_width) / 2;
@@ -370,12 +368,10 @@ impl SessionImportPicker {
         }
 
         // Calculate dialog dimensions based on screen size (percentage-based)
-        let dialog_width = (area.width * DIALOG_WIDTH_PERCENT / 100)
-            .min(DIALOG_MAX_WIDTH)
-            .max(DIALOG_MIN_WIDTH);
-        let dialog_height = (area.height * DIALOG_HEIGHT_PERCENT / 100)
-            .min(DIALOG_MAX_HEIGHT)
-            .max(DIALOG_MIN_HEIGHT);
+        let dialog_width =
+            (area.width * DIALOG_WIDTH_PERCENT / 100).clamp(DIALOG_MIN_WIDTH, DIALOG_MAX_WIDTH);
+        let dialog_height =
+            (area.height * DIALOG_HEIGHT_PERCENT / 100).clamp(DIALOG_MIN_HEIGHT, DIALOG_MAX_HEIGHT);
 
         // Render dialog frame
         let frame = DialogFrame::new("Import Session", dialog_width, dialog_height);

@@ -209,7 +209,7 @@ impl<'a> ConfirmationDialog<'a> {
             return 1;
         }
         let msg_len = self.state.message.len();
-        ((msg_len + available_width - 1) / available_width).max(1) as u16
+        msg_len.div_ceil(available_width).max(1) as u16
     }
 
     /// Calculate the required dialog height based on content

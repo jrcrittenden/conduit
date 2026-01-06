@@ -403,7 +403,7 @@ impl App {
         // This MUST be done before EnterAlternateScreen for proper detection
         // Supported terminals: kitty, foot, WezTerm, alacritty, Ghostty
         let keyboard_enhancement_enabled =
-            if supports_keyboard_enhancement().map_or(false, |supported| supported) {
+            if supports_keyboard_enhancement().is_ok_and(|supported| supported) {
                 execute!(
                     stdout,
                     PushKeyboardEnhancementFlags(
@@ -571,7 +571,7 @@ impl App {
     fn handle_tick(&mut self) {
         // Tick animations (every 6 frames = ~100ms)
         self.state.tick_count += 1;
-        if self.state.tick_count % 6 != 0 {
+        if !self.state.tick_count.is_multiple_of(6) {
             return;
         }
 
@@ -756,7 +756,7 @@ impl App {
                 if let Some(base_dir_str) = base_dir {
                     let base_path = if base_dir_str.starts_with('~') {
                         dirs::home_dir()
-                            .map(|h| h.join(&base_dir_str[1..].trim_start_matches('/')))
+                            .map(|h| h.join(base_dir_str[1..].trim_start_matches('/')))
                             .unwrap_or_else(|| PathBuf::from(&base_dir_str))
                     } else {
                         PathBuf::from(&base_dir_str)
@@ -1039,19 +1039,16 @@ impl App {
             }
             Action::MoveCursorUp => {
                 if let Some(session) = self.state.tab_manager.active_session_mut() {
-                    if !session.input_box.move_up() {
-                        if session.input_box.is_cursor_on_first_line() {
-                            session.input_box.history_prev();
-                        }
+                    if !session.input_box.move_up() && session.input_box.is_cursor_on_first_line() {
+                        session.input_box.history_prev();
                     }
                 }
             }
             Action::MoveCursorDown => {
                 if let Some(session) = self.state.tab_manager.active_session_mut() {
-                    if !session.input_box.move_down() {
-                        if session.input_box.is_cursor_on_last_line() {
-                            session.input_box.history_next();
-                        }
+                    if !session.input_box.move_down() && session.input_box.is_cursor_on_last_line()
+                    {
+                        session.input_box.history_next();
                     }
                 }
             }
@@ -1936,7 +1933,7 @@ impl App {
                 }
                 Effect::ImportSession(session) => {
                     // Create a new tab with the session's agent type and working directory
-                    let agent_type = session.agent_type.clone();
+                    let agent_type = session.agent_type;
                     let working_dir = session
                         .project
                         .clone()
@@ -2684,7 +2681,7 @@ impl App {
             .to_string();
 
         // Create a new session with working directory
-        let mut session = AgentSession::with_working_dir(agent_type.clone(), working_dir);
+        let mut session = AgentSession::with_working_dir(agent_type, working_dir);
         // Set both resume and agent session IDs so the session can be restored after restart
         let session_id = SessionId::from_string(&session_id_str);
         session.resume_session_id = Some(session_id.clone());
@@ -3242,13 +3239,10 @@ impl App {
 
         let visual_row = (y - tree_start_y) as usize;
         let scroll_offset = self.state.sidebar_state.tree_state.offset;
-        let Some(clicked_index) = self
+        let clicked_index = self
             .state
             .sidebar_data
-            .index_from_visual_row(visual_row, scroll_offset)
-        else {
-            return None;
-        };
+            .index_from_visual_row(visual_row, scroll_offset)?;
 
         // Detect double-click (same index within 500ms)
         let now = Instant::now();
@@ -3611,26 +3605,25 @@ impl App {
             } => {
                 effects.extend(self.handle_pr_preflight_result(tab_index, working_dir, result));
             }
-            AppEvent::OpenPrCompleted { result } => {
-                if let Err(err) = result {
-                    self.state.error_dialog_state.show(
-                        "Failed to Open PR",
-                        &format!("Could not open PR in browser: {}", err),
-                    );
-                    self.state.input_mode = InputMode::ShowingError;
-                }
+            AppEvent::OpenPrCompleted { result: Err(err) } => {
+                self.state.error_dialog_state.show(
+                    "Failed to Open PR",
+                    format!("Could not open PR in browser: {}", err),
+                );
+                self.state.input_mode = InputMode::ShowingError;
             }
+            AppEvent::OpenPrCompleted { result: Ok(_) } => {}
             AppEvent::DebugDumped { result } => match result {
                 Ok(path) => {
                     self.state.error_dialog_state.show_with_details(
                         "Debug Export Complete",
                         "Session debug info has been exported.",
-                        &format!("File saved to:\n{}", path),
+                        format!("File saved to:\n{}", path),
                     );
                     self.state.input_mode = InputMode::ShowingError;
                 }
                 Err(err) => {
-                    self.state.error_dialog_state.show("Export Failed", &err);
+                    self.state.error_dialog_state.show("Export Failed", err);
                     self.state.input_mode = InputMode::ShowingError;
                 }
             },
@@ -4041,10 +4034,7 @@ impl App {
     /// Handle Ctrl+P: Open existing PR or create new one
     fn handle_pr_action(&mut self) -> Option<Effect> {
         let tab_index = self.state.tab_manager.active_index();
-        let session = match self.state.tab_manager.active_session() {
-            Some(s) => s,
-            None => return None, // No active tab
-        };
+        let session = self.state.tab_manager.active_session()?;
 
         let working_dir = match &session.working_dir {
             Some(d) => d.clone(),
@@ -4098,7 +4088,7 @@ impl App {
             self.state.confirmation_dialog_state.hide();
             self.state.error_dialog_state.show(
                 "Cannot Create PR",
-                &format!(
+                format!(
                     "You're on the '{}' branch. Create a feature branch first.",
                     preflight.branch_name
                 ),

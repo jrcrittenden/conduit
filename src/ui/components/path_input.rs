@@ -81,9 +81,9 @@ impl PathInputState {
     /// Get the expanded path (handles ~).
     pub fn expanded_path(&self) -> PathBuf {
         let input = self.text.value();
-        if input.starts_with('~') {
+        if let Some(rest) = input.strip_prefix('~') {
             if let Some(home) = dirs::home_dir() {
-                return home.join(input[1..].trim_start_matches('/'));
+                return home.join(rest.trim_start_matches('/'));
             }
         }
         PathBuf::from(input)

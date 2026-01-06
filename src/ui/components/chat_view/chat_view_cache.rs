@@ -163,18 +163,16 @@ impl ChatView {
 
         self.flat_cache.clear();
         self.flat_cache.reserve(self.line_cache.total_line_count);
-        for entry in &self.line_cache.entries {
-            if let Some(cached) = entry {
-                for line in &cached.lines {
-                    // Skip consecutive blank lines to avoid excessive spacing
-                    let is_blank = is_blank_line(line);
-                    let last_is_blank = self.flat_cache.last().map(is_blank_line).unwrap_or(false);
+        for cached in self.line_cache.entries.iter().flatten() {
+            for line in &cached.lines {
+                // Skip consecutive blank lines to avoid excessive spacing
+                let is_blank = is_blank_line(line);
+                let last_is_blank = self.flat_cache.last().map(is_blank_line).unwrap_or(false);
 
-                    if is_blank && last_is_blank {
-                        continue;
-                    }
-                    self.flat_cache.push(line.clone());
+                if is_blank && last_is_blank {
+                    continue;
                 }
+                self.flat_cache.push(line.clone());
             }
         }
         self.flat_cache_width = self.cache_width;

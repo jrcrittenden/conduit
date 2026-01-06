@@ -3,7 +3,7 @@
 use super::models::Workspace;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result as SqliteResult};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -82,7 +82,7 @@ impl WorkspaceStore {
         )?;
 
         let workspaces = stmt
-            .query_map([], |row| Self::row_to_workspace(row))?
+            .query_map([], Self::row_to_workspace)?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -128,7 +128,7 @@ impl WorkspaceStore {
     }
 
     /// Check if a workspace exists by path
-    pub fn exists_by_path(&self, path: &PathBuf) -> SqliteResult<bool> {
+    pub fn exists_by_path(&self, path: &Path) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();
         let path_str = path.to_string_lossy().to_string();
         let count: i64 = conn.query_row(

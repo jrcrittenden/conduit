@@ -141,10 +141,11 @@ impl CodexCliRunner {
     fn parse_args(payload: &Value) -> Option<Value> {
         if let Some(args_str) = payload.get("arguments").and_then(|a| a.as_str()) {
             serde_json::from_str::<Value>(args_str).ok()
-        } else if let Some(args_obj) = payload.get("arguments").and_then(|a| a.as_object()) {
-            Some(Value::Object(args_obj.clone()))
         } else {
-            None
+            payload
+                .get("arguments")
+                .and_then(|a| a.as_object())
+                .map(|args_obj| Value::Object(args_obj.clone()))
         }
     }
 
@@ -355,9 +356,7 @@ impl CodexCliRunner {
             "response_item" => raw
                 .get("payload")
                 .and_then(|payload| Self::convert_response_item(payload, function_calls)),
-            "event_msg" => raw
-                .get("payload")
-                .and_then(|payload| Self::convert_event_msg(payload)),
+            "event_msg" => raw.get("payload").and_then(Self::convert_event_msg),
             "message" => Self::convert_message(raw),
             "thread.started" | "turn.started" | "turn.completed" | "turn.failed"
             | "item.updated" | "item.completed" | "error" => Self::convert_thread_event(raw),

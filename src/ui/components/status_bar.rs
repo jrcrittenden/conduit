@@ -94,6 +94,7 @@ impl StatusBar {
     }
 
     /// Set performance metrics for display
+    #[allow(clippy::too_many_arguments)]
     pub fn set_metrics(
         &mut self,
         show: bool,

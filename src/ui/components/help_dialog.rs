@@ -118,8 +118,8 @@ impl HelpDialogState {
             return None;
         }
 
-        let dialog_width = (area.width * 70 / 100).min(80).max(50);
-        let dialog_height = (area.height * 80 / 100).min(35).max(15);
+        let dialog_width = (area.width * 70 / 100).clamp(50, 80);
+        let dialog_height = (area.height * 80 / 100).clamp(15, 35);
 
         let dialog_width = dialog_width.min(area.width.saturating_sub(4));
         let dialog_height = dialog_height.min(area.height.saturating_sub(2));
@@ -360,8 +360,8 @@ impl HelpDialog {
         }
 
         // Centered dialog (70% width, 80% height, max 80x35)
-        let dialog_width = (area.width * 70 / 100).min(80).max(50);
-        let dialog_height = (area.height * 80 / 100).min(35).max(15);
+        let dialog_width = (area.width * 70 / 100).clamp(50, 80);
+        let dialog_height = (area.height * 80 / 100).clamp(15, 35);
 
         let frame = DialogFrame::new("Help - Keybindings", dialog_width, dialog_height)
             .border_color(Color::Cyan);

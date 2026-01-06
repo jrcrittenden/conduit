@@ -48,7 +48,7 @@ impl SessionTabStore {
         )?;
 
         let tabs = stmt
-            .query_map([], |row| Self::row_to_session_tab(row))?
+            .query_map([], Self::row_to_session_tab)?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -142,7 +142,7 @@ impl SessionTabStore {
             id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
             tab_index: row.get(1)?,
             workspace_id: workspace_id_str.and_then(|s| Uuid::parse_str(&s).ok()),
-            agent_type: AgentType::from_str(&agent_type_str),
+            agent_type: AgentType::parse(&agent_type_str),
             agent_session_id: row.get(4)?,
             model: row.get(5)?,
             pr_number: row.get(6)?,

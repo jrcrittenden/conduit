@@ -759,7 +759,7 @@ impl InputBox {
             return;
         }
 
-        let relative_x = (click_x - content_x) as u16;
+        let relative_x = click_x - content_x;
         let relative_y = (click_y - content_y) as usize;
 
         let visual_lines = if show_scrollbar {

@@ -381,7 +381,7 @@ impl MarkdownRenderer {
         result.push(left);
 
         for (i, &width) in widths.iter().enumerate() {
-            result.extend(std::iter::repeat(fill).take(width + 2)); // +2 for padding
+            result.extend(std::iter::repeat_n(fill, width + 2)); // +2 for padding
             if i < widths.len() - 1 {
                 result.push(mid);
             }

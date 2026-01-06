@@ -3,7 +3,7 @@
 use super::models::Repository;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result as SqliteResult};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -64,7 +64,7 @@ impl RepositoryStore {
         )?;
 
         let repos = stmt
-            .query_map([], |row| Self::row_to_repository(row))?
+            .query_map([], Self::row_to_repository)?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -99,7 +99,7 @@ impl RepositoryStore {
     }
 
     /// Check if a repository exists by base path
-    pub fn exists_by_path(&self, path: &PathBuf) -> SqliteResult<bool> {
+    pub fn exists_by_path(&self, path: &Path) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();
         let path_str = path.to_string_lossy().to_string();
         let count: i64 = conn.query_row(
@@ -111,7 +111,7 @@ impl RepositoryStore {
     }
 
     /// Get a repository by base path
-    pub fn get_by_path(&self, path: &PathBuf) -> SqliteResult<Option<Repository>> {
+    pub fn get_by_path(&self, path: &Path) -> SqliteResult<Option<Repository>> {
         let conn = self.conn.lock().unwrap();
         let path_str = path.to_string_lossy().to_string();
         let mut stmt = conn.prepare(

@@ -684,7 +684,7 @@ impl ChatView {
                 };
 
                 // Truncate long content (use display width for proper UTF-8 handling)
-                let display_content = truncate_to_width(&content, 70);
+                let display_content = truncate_to_width(content, 70);
 
                 lines.push(Line::from(vec![
                     Span::styled("│  ", Style::default().fg(Color::Cyan)),
