@@ -56,7 +56,11 @@ impl ChatMessage {
         }
     }
 
-    pub fn tool(name: impl Into<String>, args: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn tool(
+        name: impl Into<String>,
+        args: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             role: MessageRole::Tool,
             content: content.into(),

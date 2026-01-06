@@ -386,15 +386,9 @@ impl Widget for ConfirmationDialog<'_> {
             };
 
             let buttons_line = Line::from(vec![
-                Span::styled(
-                    format!(" {} ", self.state.cancel_text),
-                    cancel_style,
-                ),
+                Span::styled(format!(" {} ", self.state.cancel_text), cancel_style),
                 Span::raw("    "),
-                Span::styled(
-                    format!(" {} ", self.state.confirm_text),
-                    confirm_style,
-                ),
+                Span::styled(format!(" {} ", self.state.confirm_text), confirm_style),
             ]);
 
             let buttons = Paragraph::new(buttons_line).alignment(Alignment::Center);

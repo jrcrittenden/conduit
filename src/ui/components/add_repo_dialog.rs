@@ -180,8 +180,8 @@ impl AddRepoDialog {
         .split(inner);
 
         // Render label
-        let label = Paragraph::new("Enter local repository path:")
-            .style(Style::default().fg(Color::White));
+        let label =
+            Paragraph::new("Enter local repository path:").style(Style::default().fg(Color::White));
         label.render(chunks[0], buf);
 
         // Render input field

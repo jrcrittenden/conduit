@@ -58,12 +58,8 @@ impl MessageDisplay {
     /// Map raw tool names to display names
     pub fn tool_display_name(raw_name: &str) -> &'static str {
         match raw_name {
-            "exec_command"
-            | "shell"
-            | "shell_command"
-            | "local_shell_call"
-            | "command_execution"
-            | "Bash" => "Bash",
+            "exec_command" | "shell" | "shell_command" | "local_shell_call"
+            | "command_execution" | "Bash" => "Bash",
             "read_file" | "Read" => "Read",
             "write_file" | "Write" => "Write",
             "list_directory" | "LS" => "LS",
@@ -79,12 +75,8 @@ impl MessageDisplay {
     /// Map raw tool names to display names, returning owned String for unknown names
     pub fn tool_display_name_owned(raw_name: &str) -> String {
         match raw_name {
-            "exec_command"
-            | "shell"
-            | "shell_command"
-            | "local_shell_call"
-            | "command_execution"
-            | "Bash" => "Bash".to_string(),
+            "exec_command" | "shell" | "shell_command" | "local_shell_call"
+            | "command_execution" | "Bash" => "Bash".to_string(),
             "read_file" | "Read" => "Read".to_string(),
             "write_file" | "Write" => "Write".to_string(),
             "list_directory" | "LS" => "LS".to_string(),
@@ -147,7 +139,10 @@ mod tests {
     fn test_tool_display_name() {
         assert_eq!(MessageDisplay::tool_display_name("exec_command"), "Bash");
         assert_eq!(MessageDisplay::tool_display_name("shell"), "Bash");
-        assert_eq!(MessageDisplay::tool_display_name("local_shell_call"), "Bash");
+        assert_eq!(
+            MessageDisplay::tool_display_name("local_shell_call"),
+            "Bash"
+        );
         assert_eq!(MessageDisplay::tool_display_name("read_file"), "Read");
         assert_eq!(MessageDisplay::tool_display_name("write_file"), "Write");
         assert_eq!(MessageDisplay::tool_display_name("unknown_tool"), "Tool");

@@ -121,10 +121,7 @@ impl Database {
             .unwrap_or(false);
 
         if !has_archived_at {
-            conn.execute(
-                "ALTER TABLE workspaces ADD COLUMN archived_at TEXT",
-                [],
-            )?;
+            conn.execute("ALTER TABLE workspaces ADD COLUMN archived_at TEXT", [])?;
         }
 
         // Migration 2: Add pr_number column to session_tabs table
@@ -137,10 +134,7 @@ impl Database {
             .unwrap_or(false);
 
         if !has_pr_number {
-            conn.execute(
-                "ALTER TABLE session_tabs ADD COLUMN pr_number INTEGER",
-                [],
-            )?;
+            conn.execute("ALTER TABLE session_tabs ADD COLUMN pr_number INTEGER", [])?;
         }
 
         Ok(())

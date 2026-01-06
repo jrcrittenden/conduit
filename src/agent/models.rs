@@ -20,7 +20,13 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    pub fn new(agent_type: AgentType, id: &str, display_name: &str, alias: &str, description: &str) -> Self {
+    pub fn new(
+        agent_type: AgentType,
+        id: &str,
+        display_name: &str,
+        alias: &str,
+        description: &str,
+    ) -> Self {
         Self {
             id: id.to_string(),
             display_name: display_name.to_string(),

@@ -447,7 +447,8 @@ fn discover_claude_from_history(
                         for file_entry in entries.flatten() {
                             let path = file_entry.path();
                             if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                                let file_name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                                let file_name =
+                                    path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
 
                                 // Skip if already seen
                                 if seen_sessions.contains(file_name) {
@@ -455,7 +456,9 @@ fn discover_claude_from_history(
                                 }
 
                                 // Check if this matches the session_id or is a recent file
-                                let matches_session = entry.session_id.as_ref()
+                                let matches_session = entry
+                                    .session_id
+                                    .as_ref()
                                     .map(|id| file_name.contains(id))
                                     .unwrap_or(false);
 
@@ -469,7 +472,8 @@ fn discover_claude_from_history(
                                         entry.display.clone()
                                     };
 
-                                    let timestamp = Utc.timestamp_millis_opt(entry.timestamp)
+                                    let timestamp = Utc
+                                        .timestamp_millis_opt(entry.timestamp)
                                         .single()
                                         .unwrap_or_else(Utc::now);
 
@@ -517,7 +521,10 @@ fn discover_claude_from_projects(claude_dir: &PathBuf) -> Vec<ExternalSession> {
             }
 
             let project_name = decode_project_path(
-                project_path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+                project_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(""),
             );
 
             if let Ok(session_entries) = fs::read_dir(&project_path) {
@@ -592,7 +599,8 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
     let mut project: Option<String> = None;
     let mut timestamp: Option<DateTime<Utc>> = None;
 
-    for line in reader.lines().take(100) { // Only read first 100 lines for efficiency
+    for line in reader.lines().take(100) {
+        // Only read first 100 lines for efficiency
         let line = match line {
             Ok(l) => l,
             Err(_) => continue,
@@ -663,7 +671,10 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
     }
 
     // Extract session ID from filename (rollout-timestamp-uuid.jsonl)
-    let filename = path.file_stem().and_then(|n| n.to_str()).unwrap_or("unknown");
+    let filename = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
     let session_id = filename
         .strip_prefix("rollout-")
         .and_then(|s| s.split('-').last())
@@ -704,7 +715,8 @@ fn peek_session_file(path: &PathBuf) -> (usize, String) {
     let mut message_count = 0;
     let mut first_user_message = String::new();
 
-    for line in reader.lines().take(50) { // Only peek first 50 lines
+    for line in reader.lines().take(50) {
+        // Only peek first 50 lines
         let line = match line {
             Ok(l) => l,
             Err(_) => continue,
@@ -819,7 +831,10 @@ mod tests {
     #[test]
     fn test_encode_project_path() {
         assert_eq!(encode_project_path("/Users/foo/bar"), "-Users-foo-bar");
-        assert_eq!(encode_project_path("/home/user/project"), "-home-user-project");
+        assert_eq!(
+            encode_project_path("/home/user/project"),
+            "-home-user-project"
+        );
         assert_eq!(
             encode_project_path("/Users/john-doe/projects/app"),
             "-Users-john%2Ddoe-projects-app"
@@ -829,7 +844,10 @@ mod tests {
     #[test]
     fn test_decode_project_path() {
         assert_eq!(decode_project_path("-Users-foo-bar"), "/Users/foo/bar");
-        assert_eq!(decode_project_path("-home-user-project"), "/home/user/project");
+        assert_eq!(
+            decode_project_path("-home-user-project"),
+            "/home/user/project"
+        );
         assert_eq!(
             decode_project_path("-Users-john%2Ddoe-projects-app"),
             "/Users/john-doe/projects/app"

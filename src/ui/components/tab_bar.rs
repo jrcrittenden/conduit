@@ -93,10 +93,7 @@ impl TabBar {
 
             // Tab indicator - subtle marker for active tab
             if is_active && self.focused {
-                spans.push(Span::styled(
-                    " ▸ ",
-                    active_bg_style.fg(ACCENT_PRIMARY),
-                ));
+                spans.push(Span::styled(" ▸ ", active_bg_style.fg(ACCENT_PRIMARY)));
                 _total_width += 3;
             } else if is_active {
                 // Active but unfocused - just padding with background
@@ -117,10 +114,7 @@ impl TabBar {
             }
             // Attention indicator (dot) - only if not processing
             else if needs_attention {
-                spans.push(Span::styled(
-                    "● ",
-                    active_bg_style.fg(ACCENT_SUCCESS),
-                ));
+                spans.push(Span::styled("● ", active_bg_style.fg(ACCENT_SUCCESS)));
                 _total_width += 2;
             }
 
@@ -169,10 +163,7 @@ impl TabBar {
 
         // Add new tab button - muted until hovered
         if self.can_add {
-            spans.push(Span::styled(
-                " [+] New ",
-                Style::default().fg(TEXT_MUTED),
-            ));
+            spans.push(Span::styled(" [+] New ", Style::default().fg(TEXT_MUTED)));
         }
 
         // Render the tab line on the first row
@@ -183,9 +174,7 @@ impl TabBar {
             height: 1,
         };
         let line = Line::from(spans);
-        let paragraph = Paragraph::new(line)
-            .style(Style::default().bg(TAB_BAR_BG));
+        let paragraph = Paragraph::new(line).style(Style::default().bg(TAB_BAR_BG));
         paragraph.render(tab_area, buf);
-
     }
 }

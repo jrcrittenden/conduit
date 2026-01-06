@@ -286,8 +286,7 @@ impl StatefulWidget for TreeView<'_> {
             .iter()
             .map(|n| n.visual_height())
             .sum();
-        let selected_visual_end =
-            selected_visual_start + visible[state.selected].visual_height();
+        let selected_visual_end = selected_visual_start + visible[state.selected].visual_height();
 
         // Calculate visual row position of current offset
         let offset_visual_start: usize = visible[..state.offset]

@@ -9,7 +9,7 @@ use crate::ui::action::Action;
 use crate::util::paths::config_path;
 
 use super::default_keys::default_keybindings;
-use super::keys::{parse_key_notation, KeybindingConfig, KeyContext};
+use super::keys::{parse_key_notation, KeyContext, KeybindingConfig};
 
 /// Example configuration file contents (bundled with the binary)
 pub const EXAMPLE_CONFIG: &str = include_str!("config.toml.example");
@@ -126,7 +126,8 @@ impl TomlKeybindings {
                 continue;
             }
 
-            if let (Ok(combo), Some(action)) = (parse_key_notation(key_str), parse_action(action_name))
+            if let (Ok(combo), Some(action)) =
+                (parse_key_notation(key_str), parse_action(action_name))
             {
                 config.global.insert(combo, action);
             }
@@ -173,7 +174,8 @@ fn parse_context_bindings(
 ) {
     let context_map = config.context.entry(context).or_default();
     for (action_name, key_str) in bindings {
-        if let (Ok(combo), Some(action)) = (parse_key_notation(key_str), parse_action(action_name)) {
+        if let (Ok(combo), Some(action)) = (parse_key_notation(key_str), parse_action(action_name))
+        {
             context_map.insert(combo, action);
         }
     }
@@ -413,7 +415,8 @@ impl Config {
     /// Calculate cost for given token usage
     pub fn calculate_cost(&self, input_tokens: i64, output_tokens: i64) -> f64 {
         let input_cost = (input_tokens as f64 / 1_000_000.0) * self.claude_input_cost_per_million;
-        let output_cost = (output_tokens as f64 / 1_000_000.0) * self.claude_output_cost_per_million;
+        let output_cost =
+            (output_tokens as f64 / 1_000_000.0) * self.claude_output_cost_per_million;
         input_cost + output_cost
     }
 }

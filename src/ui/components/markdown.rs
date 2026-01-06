@@ -55,8 +55,13 @@ impl MarkdownRenderer {
                         style_stack.push(style);
                     }
                     Tag::BlockQuote(_) => {
-                        current_spans.push(Span::styled("│ ", Style::default().fg(Color::DarkGray)));
-                        style_stack.push(Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC));
+                        current_spans
+                            .push(Span::styled("│ ", Style::default().fg(Color::DarkGray)));
+                        style_stack.push(
+                            Style::default()
+                                .fg(Color::Gray)
+                                .add_modifier(Modifier::ITALIC),
+                        );
                     }
                     Tag::CodeBlock(_) => {
                         in_code_block = true;
@@ -99,7 +104,11 @@ impl MarkdownRenderer {
                         style_stack.push(current.add_modifier(Modifier::CROSSED_OUT));
                     }
                     Tag::Link { .. } => {
-                        style_stack.push(Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED));
+                        style_stack.push(
+                            Style::default()
+                                .fg(Color::Blue)
+                                .add_modifier(Modifier::UNDERLINED),
+                        );
                     }
                     Tag::Table(alignments) => {
                         in_table = true;
@@ -140,18 +149,23 @@ impl MarkdownRenderer {
                     TagEnd::CodeBlock => {
                         in_code_block = false;
                         // Render code block with background
-                        let code_style = Style::default()
-                            .fg(Color::Green)
-                            .bg(Color::Rgb(30, 30, 30));
+                        let code_style =
+                            Style::default().fg(Color::Green).bg(Color::Rgb(30, 30, 30));
 
-                        lines.push(Line::from(Span::styled("```", Style::default().fg(Color::DarkGray))));
+                        lines.push(Line::from(Span::styled(
+                            "```",
+                            Style::default().fg(Color::DarkGray),
+                        )));
                         for code_line in code_block_content.lines() {
                             lines.push(Line::from(Span::styled(
                                 format!(" {} ", code_line),
                                 code_style,
                             )));
                         }
-                        lines.push(Line::from(Span::styled("```", Style::default().fg(Color::DarkGray))));
+                        lines.push(Line::from(Span::styled(
+                            "```",
+                            Style::default().fg(Color::DarkGray),
+                        )));
                         lines.push(Line::from(""));
                     }
                     TagEnd::List(_) => {
@@ -209,7 +223,9 @@ impl MarkdownRenderer {
                     } else {
                         current_spans.push(Span::styled(
                             format!("`{}`", code),
-                            Style::default().fg(Color::Yellow).bg(Color::Rgb(40, 40, 40)),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .bg(Color::Rgb(40, 40, 40)),
                         ));
                     }
                 }
@@ -298,7 +314,9 @@ impl MarkdownRenderer {
         }
 
         let border_style = Style::default().fg(Color::DarkGray);
-        let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let header_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
         let cell_style = Style::default().fg(Color::White);
 
         // Top border
@@ -311,10 +329,17 @@ impl MarkdownRenderer {
 
             for (col_idx, cell) in row.iter().enumerate() {
                 let width = col_widths.get(col_idx).copied().unwrap_or(3);
-                let alignment = alignments.get(col_idx).copied().unwrap_or(pulldown_cmark::Alignment::None);
+                let alignment = alignments
+                    .get(col_idx)
+                    .copied()
+                    .unwrap_or(pulldown_cmark::Alignment::None);
 
                 let padded = self.align_text(cell, width, alignment);
-                let style = if row_idx == 0 { header_style } else { cell_style };
+                let style = if row_idx == 0 {
+                    header_style
+                } else {
+                    cell_style
+                };
 
                 spans.push(Span::styled(format!(" {} ", padded), style));
                 spans.push(Span::styled("│", border_style));
@@ -323,7 +348,10 @@ impl MarkdownRenderer {
             // Pad missing columns
             for col_idx in row.len()..num_cols {
                 let width = col_widths.get(col_idx).copied().unwrap_or(3);
-                spans.push(Span::styled(format!(" {:width$} ", "", width = width), cell_style));
+                spans.push(Span::styled(
+                    format!(" {:width$} ", "", width = width),
+                    cell_style,
+                ));
                 spans.push(Span::styled("│", border_style));
             }
 
@@ -341,7 +369,14 @@ impl MarkdownRenderer {
         lines.push(Line::from(Span::styled(bottom_border, border_style)));
     }
 
-    fn table_border(&self, widths: &[usize], left: char, mid: char, right: char, fill: char) -> String {
+    fn table_border(
+        &self,
+        widths: &[usize],
+        left: char,
+        mid: char,
+        right: char,
+        fill: char,
+    ) -> String {
         let mut result = String::new();
         result.push(left);
 

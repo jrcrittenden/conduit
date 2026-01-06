@@ -119,7 +119,8 @@ impl AgentSession {
     pub fn update_status(&mut self) {
         self.status_bar.set_agent_type(self.agent_type);
         self.status_bar.set_model(self.model.clone());
-        self.status_bar.set_session_id(self.agent_session_id.clone());
+        self.status_bar
+            .set_session_id(self.agent_session_id.clone());
         self.status_bar.set_token_usage(self.total_usage.clone());
         self.status_bar.set_processing(self.is_processing);
         let session_id = self
@@ -163,8 +164,14 @@ impl AgentSession {
     }
 
     /// Record a file change for the current turn
-    pub fn record_file_change(&mut self, filename: impl Into<String>, additions: usize, deletions: usize) {
-        self.current_turn_summary.add_file(filename, additions, deletions);
+    pub fn record_file_change(
+        &mut self,
+        filename: impl Into<String>,
+        additions: usize,
+        deletions: usize,
+    ) {
+        self.current_turn_summary
+            .add_file(filename, additions, deletions);
     }
 
     /// Add tokens to the thinking indicator

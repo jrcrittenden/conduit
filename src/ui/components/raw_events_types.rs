@@ -68,7 +68,11 @@ impl EventDetailState {
 
     /// Scroll down by a page
     pub fn page_down(&mut self, visible_height: usize, content_height: usize) {
-        self.scroll_down(visible_height.saturating_sub(2), content_height, visible_height);
+        self.scroll_down(
+            visible_height.saturating_sub(2),
+            content_height,
+            visible_height,
+        );
     }
 
     /// Jump to top
@@ -156,19 +160,14 @@ impl RawEventEntry {
 
         Line::from(vec![
             Span::styled(prefix.to_string(), Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("[{}] ", timestamp),
-                style.fg(Color::DarkGray),
-            ),
+            Span::styled(format!("[{}] ", timestamp), style.fg(Color::DarkGray)),
             Span::styled(
                 format!("{} ", self.direction.symbol()),
                 style.fg(self.direction.color()),
             ),
             Span::styled(
                 format!("{}: ", self.event_type),
-                style
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
             Span::styled(summary, style.fg(Color::White)),
         ])

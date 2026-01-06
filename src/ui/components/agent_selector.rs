@@ -121,8 +121,7 @@ impl AgentSelector {
         .split(inner);
 
         // Render header
-        let header = Paragraph::new("Choose an agent:")
-            .style(Style::default().fg(Color::White));
+        let header = Paragraph::new("Choose an agent:").style(Style::default().fg(Color::White));
         header.render(chunks[0], buf);
 
         // Render agent options
@@ -167,8 +166,7 @@ impl AgentSelector {
                     let row_y = chunks[chunk_idx].y + dy;
                     if row_y < chunks[chunk_idx].y + chunks[chunk_idx].height {
                         for dx in 0..chunks[chunk_idx].width {
-                            buf[(chunks[chunk_idx].x + dx, row_y)]
-                                .set_bg(SELECTED_BG);
+                            buf[(chunks[chunk_idx].x + dx, row_y)].set_bg(SELECTED_BG);
                         }
                     }
                 }

@@ -513,7 +513,12 @@ impl RawEventsView {
 
         // Ensure selected item is visible unless the user scrolled away
         if self.follow_selection {
-            self.ensure_selection_visible(selected_start, selected_end, visible_height, total_lines);
+            self.ensure_selection_visible(
+                selected_start,
+                selected_end,
+                visible_height,
+                total_lines,
+            );
         }
 
         // Calculate which lines to show

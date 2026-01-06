@@ -131,7 +131,11 @@ impl ClaudeCodeRunner {
                 vec![AgentEvent::ToolCompleted(ToolCompletedEvent {
                     tool_id,
                     success: !is_error,
-                    result: if !is_error { result.content.clone() } else { None },
+                    result: if !is_error {
+                        result.content.clone()
+                    } else {
+                        None
+                    },
                     error: if is_error { result.content } else { None },
                 })]
             }

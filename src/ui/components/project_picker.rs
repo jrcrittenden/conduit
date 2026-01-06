@@ -307,8 +307,7 @@ impl ProjectPicker {
 
         // Render separator
         let separator = "─".repeat(inner.width as usize);
-        let sep_paragraph =
-            Paragraph::new(separator).style(Style::default().fg(Color::DarkGray));
+        let sep_paragraph = Paragraph::new(separator).style(Style::default().fg(Color::DarkGray));
         sep_paragraph.render(chunks[2], buf);
 
         // Render project list
@@ -347,10 +346,13 @@ impl ProjectPicker {
                 let name = &project.name;
 
                 // Calculate path display (shortened)
-                let path_str = project
-                    .path
-                    .to_string_lossy()
-                    .replace(dirs::home_dir().unwrap_or_default().to_string_lossy().as_ref(), "~");
+                let path_str = project.path.to_string_lossy().replace(
+                    dirs::home_dir()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_ref(),
+                    "~",
+                );
 
                 let available_width = list_area.width as usize;
                 let name_width = 20.min(available_width / 2);
@@ -371,9 +373,7 @@ impl ProjectPicker {
                 let line_text = format!("{}{} {}", prefix, name_display, path_display);
 
                 let style = if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .bg(SELECTED_BG)
+                    Style::default().fg(Color::White).bg(SELECTED_BG)
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -381,7 +381,9 @@ impl ProjectPicker {
                 // Render the line
                 for (j, c) in line_text.chars().enumerate() {
                     if j < list_area.width as usize {
-                        buf[(list_area.x + j as u16, y)].set_char(c).set_style(style);
+                        buf[(list_area.x + j as u16, y)]
+                            .set_char(c)
+                            .set_style(style);
                     }
                 }
                 // Fill rest of line with style for selected item

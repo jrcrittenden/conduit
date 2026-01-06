@@ -122,10 +122,7 @@ impl TurnSummary {
                 let filename = Self::shorten_filename(&file.filename, 15);
 
                 spans.push(Span::styled("◉ ", Style::default().fg(Color::Yellow)));
-                spans.push(Span::styled(
-                    filename,
-                    Style::default().fg(Color::White),
-                ));
+                spans.push(Span::styled(filename, Style::default().fg(Color::White)));
                 spans.push(Span::styled(
                     format!(" +{}", file.additions),
                     Style::default().fg(Color::Green),
@@ -163,10 +160,7 @@ impl TurnSummary {
     /// Shorten filename to fit within max_len
     fn shorten_filename(filename: &str, max_len: usize) -> String {
         // Just get the file name, not the full path
-        let name = filename
-            .rsplit('/')
-            .next()
-            .unwrap_or(filename);
+        let name = filename.rsplit('/').next().unwrap_or(filename);
 
         if name.len() <= max_len {
             name.to_string()
