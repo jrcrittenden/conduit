@@ -486,6 +486,8 @@ impl App {
 
     /// Run the application main loop
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        self.spawn_shutdown_listeners();
+
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -532,11 +534,55 @@ impl App {
         // Main event loop
         let result = self.event_loop(&mut terminal).await;
 
+        // Best-effort persistence on any exit path.
+        self.persist_session_state_on_exit();
+
         // Explicit cleanup with error handling (prevents double-cleanup in Drop)
         terminal.show_cursor()?;
         guard.cleanup()?;
 
         result
+    }
+
+    fn spawn_shutdown_listeners(&self) {
+        let tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = tx.send(AppEvent::Quit);
+            }
+        });
+
+        #[cfg(unix)]
+        {
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(mut sigterm) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                {
+                    sigterm.recv().await;
+                    let _ = tx.send(AppEvent::Quit);
+                }
+            });
+
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(mut sighup) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                {
+                    sighup.recv().await;
+                    let _ = tx.send(AppEvent::Quit);
+                }
+            });
+        }
+    }
+
+    fn persist_session_state_on_exit(&self) {
+        let snapshot = self.snapshot_session_state();
+        Self::persist_session_state(
+            snapshot,
+            self.session_tab_dao.clone(),
+            self.app_state_dao.clone(),
+        );
     }
 
     async fn event_loop(
