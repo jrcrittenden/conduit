@@ -426,3 +426,35 @@ impl Default for ProjectPicker {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_project_picker_delete_char() {
+        let mut state = ProjectPickerState::new();
+
+        // Type "abc"
+        state.insert_char('a');
+        state.insert_char('b');
+        state.insert_char('c');
+        assert_eq!(state.list.search.input, "abc");
+
+        // Backspace should delete 'c'
+        state.delete_char();
+        assert_eq!(state.list.search.input, "ab");
+
+        // Backspace should delete 'b'
+        state.delete_char();
+        assert_eq!(state.list.search.input, "a");
+
+        // Backspace should delete 'a'
+        state.delete_char();
+        assert_eq!(state.list.search.input, "");
+
+        // Backspace on empty should do nothing
+        state.delete_char();
+        assert_eq!(state.list.search.input, "");
+    }
+}

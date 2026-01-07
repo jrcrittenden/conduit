@@ -1191,6 +1191,9 @@ impl App {
                     InputMode::ImportingSession => {
                         self.state.session_import_state.delete_char();
                     }
+                    InputMode::PickingProject => {
+                        self.state.project_picker_state.delete_char();
+                    }
                     _ => {
                         if let Some(session) = self.state.tab_manager.active_session_mut() {
                             session.input_box.backspace();

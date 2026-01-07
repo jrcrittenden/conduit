@@ -282,6 +282,10 @@ pub fn default_keybindings() -> KeybindingConfig {
     let picker = config.context.entry(KeyContext::ProjectPicker).or_default();
 
     picker.insert(
+        KeyCombo::new(KeyCode::Backspace, KeyModifiers::NONE),
+        Action::Backspace,
+    );
+    picker.insert(
         KeyCombo::new(KeyCode::Up, KeyModifiers::NONE),
         Action::SelectPrev,
     );
