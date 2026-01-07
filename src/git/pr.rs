@@ -77,10 +77,10 @@ impl CheckStatus {
                 // CheckRun: uses status/conclusion fields
                 match check.status.to_uppercase().as_str() {
                     "COMPLETED" => match check.conclusion.to_uppercase().as_str() {
-                        "SUCCESS" => passed += 1,
-                        "FAILURE" => failed += 1,
+                        "SUCCESS" | "NEUTRAL" => passed += 1,
+                        "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" => failed += 1,
                         "SKIPPED" => skipped += 1,
-                        _ => pending += 1,
+                        _ => skipped += 1, // Unknown conclusions treated as skipped
                     },
                     _ => pending += 1,
                 }
