@@ -430,6 +430,8 @@ impl PrManager {
                 merge_readiness,
             })
         } else {
+            // JSON parse failed - gh succeeded but returned unexpected format
+            tracing::warn!("Failed to parse gh pr view JSON: {}", json_str);
             Some(PrStatus {
                 exists: false,
                 number: None,

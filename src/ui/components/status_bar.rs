@@ -8,8 +8,7 @@ use ratatui::{
 };
 
 use crate::agent::{
-    events::{ContextWarningLevel, ContextWindowState},
-    AgentMode, AgentType, ModelRegistry, SessionId, TokenUsage,
+    events::ContextWindowState, AgentMode, AgentType, ModelRegistry, SessionId, TokenUsage,
 };
 use crate::git::{CheckState, GitDiffStats, MergeReadiness, MergeableStatus, PrState, PrStatus};
 use crate::ui::components::{
@@ -226,34 +225,34 @@ impl StatusBar {
             Style::default().fg(TEXT_MUTED),
         ));
 
-        // Context usage indicator
-        if let Some(ref ctx) = self.context_state {
-            let pct = ctx.usage_percent();
-            // Only show if we have meaningful context usage (> 0%)
-            if pct > 0.0 || ctx.max_tokens > 0 {
-                let color = match ctx.warning_level() {
-                    ContextWarningLevel::Critical => ACCENT_ERROR,
-                    ContextWarningLevel::High => ACCENT_WARNING,
-                    ContextWarningLevel::Medium => ACCENT_WARNING,
-                    ContextWarningLevel::Normal => TEXT_MUTED,
-                };
-
-                spans.push(Span::styled(" │ ", Style::default().fg(TEXT_FAINT)));
-                spans.push(Span::styled("ctx:", Style::default().fg(TEXT_FAINT)));
-                spans.push(Span::styled(
-                    format!("{:.0}%", pct * 100.0),
-                    Style::default().fg(color),
-                ));
-
-                // Show compaction count if any
-                if ctx.compaction_count > 0 {
-                    spans.push(Span::styled(
-                        format!(" ({}×)", ctx.compaction_count),
-                        Style::default().fg(TEXT_FAINT),
-                    ));
-                }
-            }
-        }
+        // Context usage indicator - hidden for now until we decide on presentation
+        // if let Some(ref ctx) = self.context_state {
+        //     let pct = ctx.usage_percent();
+        //     // Only show if we have meaningful context usage (> 0%)
+        //     if pct > 0.0 || ctx.max_tokens > 0 {
+        //         let color = match ctx.warning_level() {
+        //             ContextWarningLevel::Critical => ACCENT_ERROR,
+        //             ContextWarningLevel::High => ACCENT_WARNING,
+        //             ContextWarningLevel::Medium => ACCENT_WARNING,
+        //             ContextWarningLevel::Normal => TEXT_MUTED,
+        //         };
+        //
+        //         spans.push(Span::styled(" │ ", Style::default().fg(TEXT_FAINT)));
+        //         spans.push(Span::styled("ctx:", Style::default().fg(TEXT_FAINT)));
+        //         spans.push(Span::styled(
+        //             format!("{:.0}%", pct * 100.0),
+        //             Style::default().fg(color),
+        //         ));
+        //
+        //         // Show compaction count if any
+        //         if ctx.compaction_count > 0 {
+        //             spans.push(Span::styled(
+        //                 format!(" ({}×)", ctx.compaction_count),
+        //                 Style::default().fg(TEXT_FAINT),
+        //             ));
+        //         }
+        //     }
+        // }
 
         // Note: Old processing spinner removed - now using Knight Rider spinner in footer
 

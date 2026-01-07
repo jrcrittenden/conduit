@@ -34,7 +34,7 @@ impl GitDiffStats {
             _ => GitDiffStats::default(),
         };
 
-        // If no staged changes, also check unstaged
+        // Fallback: if HEAD comparison fails (e.g., no commits yet), try unstaged-only diff
         if stats == GitDiffStats::default() {
             let unstaged = Command::new("git")
                 .args(["diff", "--shortstat"])
