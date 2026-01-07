@@ -73,6 +73,22 @@ impl WorkspaceStore {
         Ok(workspaces)
     }
 
+    /// Get ALL workspace names for a repository (including archived)
+    ///
+    /// Used for uniqueness checks to prevent resurrection of old workspace names.
+    /// Unlike `get_by_repository`, this includes archived workspaces.
+    pub fn get_all_names_by_repository(&self, repository_id: Uuid) -> SqliteResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name FROM workspaces WHERE repository_id = ?1")?;
+
+        let names = stmt
+            .query_map(params![repository_id.to_string()], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(names)
+    }
+
     /// Get all active (non-archived) workspaces
     pub fn get_all(&self) -> SqliteResult<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();

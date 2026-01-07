@@ -105,8 +105,11 @@ impl App {
                 }
             };
 
-        // Initialize worktree manager with managed directory (~/.conduit/worktrees)
-        let worktree_manager = WorktreeManager::with_managed_dir(crate::util::worktrees_dir());
+        // Migrate old worktrees folder to workspaces (one-time migration)
+        crate::util::migrate_worktrees_to_workspaces();
+
+        // Initialize worktree manager with managed directory (~/.conduit/workspaces)
+        let worktree_manager = WorktreeManager::with_managed_dir(crate::util::workspaces_dir());
 
         // Initialize git tracker
         let (git_update_tx, mut git_update_rx) = mpsc::unbounded_channel();
@@ -1987,12 +1990,11 @@ impl App {
                                 .clone()
                                 .ok_or_else(|| "Repository has no base path".to_string())?;
 
+                            // Get ALL workspace names (including archived) to prevent resurrection
+                            // of old workspace names when creating new ones
                             let existing_names: Vec<String> = workspace_dao
-                                .get_by_repository(repo_id)
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|w| w.name.clone())
-                                .collect();
+                                .get_all_names_by_repository(repo_id)
+                                .unwrap_or_default();
 
                             let workspace_name =
                                 crate::util::generate_workspace_name(&existing_names);
@@ -2160,10 +2162,10 @@ impl App {
                             }
                         }
 
-                        let worktrees_dir = crate::util::worktrees_dir();
-                        let project_worktrees_path = worktrees_dir.join(&repo_name);
-                        if project_worktrees_path.exists() {
-                            if let Err(e) = std::fs::remove_dir_all(&project_worktrees_path) {
+                        let workspaces_dir = crate::util::workspaces_dir();
+                        let project_workspaces_path = workspaces_dir.join(&repo_name);
+                        if project_workspaces_path.exists() {
+                            if let Err(e) = std::fs::remove_dir_all(&project_workspaces_path) {
                                 errors.push(format!("Failed to remove project folder: {}", e));
                             }
                         }
@@ -4249,6 +4251,7 @@ impl App {
                     workspace_id = %workspace_id,
                     pr_exists = status.as_ref().map(|s| s.exists),
                     pr_number = status.as_ref().and_then(|s| s.number),
+                    pr_state = ?status.as_ref().map(|s| s.state),
                     check_state = ?status.as_ref().map(|s| s.checks.state()),
                     merge_readiness = ?status.as_ref().map(|s| s.merge_readiness),
                     "Received PR status update"
@@ -4256,6 +4259,26 @@ impl App {
                 // Update all sessions with this workspace
                 for session in self.state.tab_manager.sessions_mut() {
                     if session.workspace_id == Some(workspace_id) {
+                        // CRITICAL: Stale PR Prevention
+                        // If session has no PR yet, don't auto-associate merged/closed PRs.
+                        // This prevents "ghost" PRs from reused branch names from being resurrected.
+                        let is_new_association = session.pr_number.is_none();
+                        let is_stale_pr = status.as_ref().is_some_and(|s| {
+                            matches!(
+                                s.state,
+                                crate::git::PrState::Merged | crate::git::PrState::Closed
+                            )
+                        });
+
+                        if is_new_association && is_stale_pr {
+                            tracing::debug!(
+                                workspace_id = %workspace_id,
+                                pr_number = status.as_ref().and_then(|s| s.number),
+                                "Ignoring stale (merged/closed) PR for new session"
+                            );
+                            continue;
+                        }
+
                         session.pr_number = status.as_ref().and_then(|s| s.number);
                         session.status_bar.set_pr_status(status.clone());
                     }

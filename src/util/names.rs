@@ -1,74 +1,47 @@
-//! Workspace name generation using gemstone names
+//! Workspace name generation using adjective-noun combinations
 
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 
-/// Pool of gemstone names for workspace generation
-const GEMSTONE_NAMES: &[&str] = &[
-    "amber",
-    "jade",
-    "onyx",
-    "ruby",
-    "opal",
-    "pearl",
-    "coral",
-    "topaz",
-    "jasper",
-    "quartz",
-    "garnet",
-    "peridot",
-    "citrine",
-    "agate",
-    "beryl",
-    "zircon",
-    "sapphire",
-    "emerald",
-    "lapis",
-    "malachite",
-    "turquoise",
-    "obsidian",
-    "moonstone",
-    "sunstone",
-    "jet",
-    "pyrite",
-    "hematite",
-    "aquamarine",
-    "tanzanite",
-    "alexandrite",
+/// Short adjectives (max 4 chars) for workspace names
+const ADJECTIVES: &[&str] = &[
+    "bold", "calm", "cool", "dark", "deep", "fair", "fast", "free", "glad", "gold", "keen", "kind",
+    "live", "lone", "lost", "loud", "mild", "near", "neat", "new", "nice", "old", "pale", "pure",
+    "rare", "raw", "red", "rich", "safe", "shy", "slim", "slow", "soft", "tall", "tame", "thin",
+    "tiny", "trim", "true", "vast", "warm", "weak", "wide", "wild", "wise",
+];
+
+/// Short nouns (max 4 chars) for workspace names
+const NOUNS: &[&str] = &[
+    "dune", "fern", "fox", "hawk", "hill", "iris", "jade", "lake", "lark", "leaf", "lynx", "mesa",
+    "mist", "moon", "moss", "oak", "owl", "peak", "pine", "pond", "rain", "reef", "rock", "sage",
+    "seal", "snow", "star", "sun", "swan", "tide", "vale", "wave", "wind", "wolf", "wren",
 ];
 
 /// Generate a unique workspace name not in the existing list
 ///
-/// If all base names are used, appends a number suffix (e.g., "amber-2")
+/// Uses adjective-noun combinations (e.g., "bold-fox", "calm-owl").
+/// With 45 adjectives and 35 nouns, there are 1,575 unique combinations.
+/// If all combinations are exhausted, falls back to UUID suffix.
 pub fn generate_workspace_name(existing: &[String]) -> String {
     let mut rng = rand::rng();
 
-    // Try to find an unused name
-    let mut available: Vec<&str> = GEMSTONE_NAMES
-        .iter()
-        .copied()
-        .filter(|name| !existing.iter().any(|e| e == *name))
-        .collect();
+    // Try random combinations until we find an unused one
+    // With 1,575 combinations, 100 attempts should be plenty
+    for _ in 0..100 {
+        let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"bold");
+        let noun = NOUNS.choose(&mut rng).unwrap_or(&"fox");
+        let candidate = format!("{}-{}", adj, noun);
 
-    if !available.is_empty() {
-        available.shuffle(&mut rng);
-        return available[0].to_string();
-    }
-
-    // All names used, find lowest available suffix
-    let mut shuffled_names: Vec<&str> = GEMSTONE_NAMES.to_vec();
-    shuffled_names.shuffle(&mut rng);
-
-    for base_name in shuffled_names {
-        for suffix in 2..=100 {
-            let candidate = format!("{}-{}", base_name, suffix);
-            if !existing.contains(&candidate) {
-                return candidate;
-            }
+        if !existing.contains(&candidate) {
+            return candidate;
         }
     }
 
-    // Fallback (extremely unlikely)
-    format!("workspace-{}", uuid::Uuid::new_v4().as_simple())
+    // Fallback: add short UUID suffix (extremely unlikely to reach this)
+    let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"bold");
+    let noun = NOUNS.choose(&mut rng).unwrap_or(&"fox");
+    let uuid_suffix = &uuid::Uuid::new_v4().as_simple().to_string()[..4];
+    format!("{}-{}-{}", adj, noun, uuid_suffix)
 }
 
 /// Generate a branch name from username and workspace name
@@ -141,37 +114,41 @@ mod tests {
     #[test]
     fn test_generate_workspace_name_empty_existing() {
         let name = generate_workspace_name(&[]);
-        assert!(GEMSTONE_NAMES.contains(&name.as_str()));
+        // Should be adjective-noun format
+        let parts: Vec<&str> = name.split('-').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(ADJECTIVES.contains(&parts[0]));
+        assert!(NOUNS.contains(&parts[1]));
     }
 
     #[test]
     fn test_generate_workspace_name_avoids_existing() {
-        let existing = vec!["amber".to_string(), "jade".to_string()];
+        let existing = vec!["bold-fox".to_string(), "calm-owl".to_string()];
         let name = generate_workspace_name(&existing);
         assert!(!existing.contains(&name));
     }
 
     #[test]
-    fn test_generate_workspace_name_with_suffix() {
-        let existing: Vec<String> = GEMSTONE_NAMES.iter().map(|s| s.to_string()).collect();
-        let name = generate_workspace_name(&existing);
+    fn test_generate_workspace_name_format() {
+        let name = generate_workspace_name(&[]);
+        // Verify format is adjective-noun
         assert!(name.contains('-'));
-        // Should be something like "amber-2"
         let parts: Vec<&str> = name.split('-').collect();
-        assert_eq!(parts.len(), 2);
-        assert!(GEMSTONE_NAMES.contains(&parts[0]));
+        assert!(parts.len() >= 2);
+        // First part should be an adjective
+        assert!(ADJECTIVES.contains(&parts[0]));
     }
 
     #[test]
     fn test_generate_branch_name() {
-        let branch = generate_branch_name("fcoury", "amber");
-        assert_eq!(branch, "fcoury/amber");
+        let branch = generate_branch_name("fcoury", "bold-fox");
+        assert_eq!(branch, "fcoury/bold-fox");
     }
 
     #[test]
     fn test_generate_branch_name_sanitizes() {
-        let branch = generate_branch_name("Felipe Coury", "jade");
-        assert_eq!(branch, "felipe-coury/jade");
+        let branch = generate_branch_name("Felipe Coury", "calm-owl");
+        assert_eq!(branch, "felipe-coury/calm-owl");
     }
 
     #[test]
@@ -180,5 +157,16 @@ mod tests {
         assert_eq!(sanitize_git_ref("user_name"), "user-name");
         assert_eq!(sanitize_git_ref("John.Doe"), "john.doe");
         assert_eq!(sanitize_git_ref("--test--"), "test");
+    }
+
+    #[test]
+    fn test_total_combinations() {
+        // Verify we have enough combinations (should be 1,575)
+        let total = ADJECTIVES.len() * NOUNS.len();
+        assert_eq!(total, 45 * 35);
+        assert!(
+            total > 1500,
+            "Should have at least 1500 unique combinations"
+        );
     }
 }

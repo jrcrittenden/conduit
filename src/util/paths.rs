@@ -24,9 +24,39 @@ pub fn log_file_path() -> PathBuf {
     logs_dir().join("conduit.log")
 }
 
-/// Get the worktrees directory (~/.conduit/worktrees)
-pub fn worktrees_dir() -> PathBuf {
-    data_dir().join("worktrees")
+/// Get the workspaces directory (~/.conduit/workspaces)
+pub fn workspaces_dir() -> PathBuf {
+    data_dir().join("workspaces")
+}
+
+/// Migrate old worktrees folder to workspaces folder if needed
+///
+/// This is a one-time migration for users upgrading from older versions.
+/// If ~/.conduit/worktrees exists and ~/.conduit/workspaces doesn't,
+/// we rename the folder.
+pub fn migrate_worktrees_to_workspaces() {
+    let old_path = data_dir().join("worktrees");
+    let new_path = data_dir().join("workspaces");
+
+    if old_path.exists() && !new_path.exists() {
+        match std::fs::rename(&old_path, &new_path) {
+            Ok(()) => {
+                tracing::info!(
+                    old = %old_path.display(),
+                    new = %new_path.display(),
+                    "Migrated worktrees folder to workspaces"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    old = %old_path.display(),
+                    new = %new_path.display(),
+                    error = %e,
+                    "Failed to migrate worktrees folder to workspaces"
+                );
+            }
+        }
+    }
 }
 
 /// Get the config file path (~/.conduit/config.toml)
