@@ -154,6 +154,7 @@ impl App {
 
     /// Restore session state from database
     fn restore_session_state(&mut self) {
+        tracing::info!("Restoring session state");
         // Check repository count first
         let repo_count = self
             .repo_dao
@@ -165,6 +166,7 @@ impl App {
         // If no repos, show first-time splash
         if repo_count == 0 {
             self.state.show_first_time_splash = true;
+            tracing::info!("No repositories found; skipping session restore");
             return;
         }
 
@@ -173,21 +175,29 @@ impl App {
 
         // Try to restore saved tabs
         let Some(session_tab_dao) = &self.session_tab_dao else {
+            tracing::warn!("Session tab DAO unavailable; skipping session restore");
             return;
         };
         let Some(app_state_dao) = &self.app_state_dao else {
+            tracing::warn!("App state DAO unavailable; skipping session restore");
             return;
         };
 
         let saved_tabs = match session_tab_dao.get_all() {
             Ok(tabs) => tabs,
-            Err(_) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load saved tabs");
+                return;
+            }
         };
 
         if saved_tabs.is_empty() {
             // Has repos but no saved tabs - show main UI without tabs
+            tracing::info!("No saved tabs found; skipping session restore");
             return;
         }
+
+        tracing::info!(tab_count = saved_tabs.len(), "Restoring saved tabs");
 
         // Restore each tab
         for tab in saved_tabs {
@@ -327,6 +337,8 @@ impl App {
                     index.min(visible_count.saturating_sub(1));
             }
         }
+
+        tracing::info!("Session state restoration complete");
     }
 
     /// Refresh sidebar data from database
@@ -408,20 +420,30 @@ impl App {
         app_state_dao: Option<AppStateStore>,
     ) {
         let Some(session_tab_dao) = session_tab_dao else {
+            tracing::warn!("Session tab DAO unavailable; skipping session persistence");
             return;
         };
         let Some(app_state_dao) = app_state_dao else {
+            tracing::warn!("App state DAO unavailable; skipping session persistence");
             return;
         };
 
+        tracing::info!(
+            tab_count = snapshot.tabs.len(),
+            active_tab_index = snapshot.active_tab_index,
+            "Persisting session state"
+        );
+
         if let Err(e) = session_tab_dao.clear_all() {
             eprintln!("Warning: Failed to clear session tabs: {}", e);
+            tracing::warn!(error = %e, "Failed to clear saved session tabs");
             return;
         }
 
         for tab in &snapshot.tabs {
             if let Err(e) = session_tab_dao.create(tab) {
                 eprintln!("Warning: Failed to save session tab: {}", e);
+                tracing::warn!(error = %e, tab_index = tab.tab_index, "Failed to save session tab");
             }
         }
 
@@ -456,7 +478,10 @@ impl App {
             .collect();
         if let Err(e) = app_state_dao.set("tree_collapsed_repos", &collapsed_ids.join(",")) {
             eprintln!("Warning: Failed to save collapsed repos: {}", e);
+            tracing::warn!(error = %e, "Failed to save collapsed repos");
         }
+
+        tracing::info!("Session state persistence complete");
     }
 
     /// Run the application main loop
@@ -734,7 +759,8 @@ impl App {
     }
 
     /// Handle Ctrl+C press with double-press detection
-    fn handle_ctrl_c_press(&mut self) -> bool {
+    fn handle_ctrl_c_press(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
         let now = Instant::now();
         let is_double = self
             .state
@@ -761,6 +787,7 @@ impl App {
                 tracing::debug!("Ctrl+C: second press while processing, interrupting and quitting");
                 self.interrupt_agent();
                 self.state.should_quit = true;
+                effects.push(Effect::SaveSessionState);
             } else {
                 // First press: show warning
                 tracing::debug!("Ctrl+C: first press while processing, showing warning");
@@ -771,6 +798,7 @@ impl App {
             // Second press while idle: quit
             tracing::debug!("Ctrl+C: second press while idle, quitting");
             self.state.should_quit = true;
+            effects.push(Effect::SaveSessionState);
         } else {
             // First press while idle: clear input + show warning
             tracing::debug!("Ctrl+C: first press while idle, clearing input and showing warning");
@@ -781,7 +809,7 @@ impl App {
             self.state.last_ctrl_c_press = Some(now);
         }
         tracing::debug!("footer_message after: {:?}", self.state.footer_message);
-        true
+        effects
     }
 
     /// Handle Esc press with double-press detection (only when no dialog is active)
@@ -849,8 +877,8 @@ impl App {
         // Handle Ctrl+C with double-press detection (global)
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             tracing::debug!("Ctrl+C detected, calling handle_ctrl_c_press");
-            self.handle_ctrl_c_press();
-            return Ok(Vec::new());
+            let effects = self.handle_ctrl_c_press();
+            return Ok(effects);
         }
 
         // Handle Esc with double-press detection (only when no dialog active and in normal mode)
@@ -1897,6 +1925,7 @@ impl App {
         for effect in effects {
             match effect {
                 Effect::SaveSessionState => {
+                    tracing::debug!("SaveSessionState effect triggered");
                     let snapshot = self.snapshot_session_state();
                     let session_tab_dao = self.session_tab_dao.clone();
                     let app_state_dao = self.app_state_dao.clone();
@@ -4288,6 +4317,14 @@ impl App {
                 workspace_id,
                 stats,
             } => {
+                tracing::info!(
+                    workspace_id = %workspace_id,
+                    additions = stats.additions,
+                    deletions = stats.deletions,
+                    files_changed = stats.files_changed,
+                    "Received GitStatsChanged event"
+                );
+
                 // Update all sessions with this workspace
                 for session in self.state.tab_manager.sessions_mut() {
                     if session.workspace_id == Some(workspace_id) {
