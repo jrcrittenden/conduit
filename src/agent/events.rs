@@ -162,3 +162,105 @@ pub struct ErrorEvent {
     pub message: String,
     pub is_fatal: bool,
 }
+
+/// Warning levels for context window usage
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContextWarningLevel {
+    /// Under 80% - normal operation
+    #[default]
+    Normal,
+    /// 80-89% - approaching limit
+    Medium,
+    /// 90-94% - high usage, compaction likely soon
+    High,
+    /// 95%+ - critical, compaction imminent
+    Critical,
+}
+
+/// Context window state for tracking usage against limits
+#[derive(Debug, Clone, Default)]
+pub struct ContextWindowState {
+    /// Current context usage (total tokens in context)
+    pub current_tokens: i64,
+    /// Maximum context window size for this model
+    pub max_tokens: i64,
+    /// Whether context has been compacted in this session
+    pub has_compacted: bool,
+    /// Number of compactions in this session
+    pub compaction_count: u32,
+    /// Last compaction event details (if any)
+    pub last_compaction: Option<ContextCompactionEvent>,
+}
+
+impl ContextWindowState {
+    /// Create new state with a given max context
+    pub fn new(max_tokens: i64) -> Self {
+        Self {
+            current_tokens: 0,
+            max_tokens,
+            has_compacted: false,
+            compaction_count: 0,
+            last_compaction: None,
+        }
+    }
+
+    /// Calculate usage percentage (0.0 to 1.0+)
+    pub fn usage_percent(&self) -> f32 {
+        if self.max_tokens <= 0 {
+            return 0.0;
+        }
+        self.current_tokens as f32 / self.max_tokens as f32
+    }
+
+    /// Get warning level based on usage
+    pub fn warning_level(&self) -> ContextWarningLevel {
+        let pct = self.usage_percent();
+        if pct >= 0.95 {
+            ContextWarningLevel::Critical
+        } else if pct >= 0.90 {
+            ContextWarningLevel::High
+        } else if pct >= 0.80 {
+            ContextWarningLevel::Medium
+        } else {
+            ContextWarningLevel::Normal
+        }
+    }
+
+    /// Update from TokenUsageEvent
+    pub fn update_from_usage(&mut self, event: &TokenUsageEvent) {
+        // Use total_tokens from usage as current context size
+        self.current_tokens = event.usage.total_tokens;
+
+        // Override max if provided by agent
+        if let Some(window) = event.context_window {
+            self.max_tokens = window;
+        }
+
+        // Update usage percent if provided and we can derive context window
+        if let (Some(pct), 0) = (event.usage_percent, self.max_tokens) {
+            // If we have percent but no max, try to derive max from current and percent
+            if pct > 0.0 {
+                self.max_tokens = (self.current_tokens as f32 / pct) as i64;
+            }
+        }
+    }
+
+    /// Record a compaction event
+    pub fn record_compaction(&mut self, event: ContextCompactionEvent) {
+        self.current_tokens = event.tokens_after;
+        self.has_compacted = true;
+        self.compaction_count += 1;
+        self.last_compaction = Some(event);
+    }
+
+    /// Format tokens for display (e.g., "150k", "1.2M")
+    pub fn format_tokens(tokens: i64) -> String {
+        if tokens >= 1_000_000 {
+            format!("{:.1}M", tokens as f64 / 1_000_000.0)
+        } else if tokens >= 1_000 {
+            format!("{:.0}k", tokens as f64 / 1_000.0)
+        } else {
+            format!("{}", tokens)
+        }
+    }
+}

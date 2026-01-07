@@ -17,6 +17,8 @@ pub struct ModelInfo {
     pub is_new: bool,
     /// Agent type this model belongs to
     pub agent_type: AgentType,
+    /// Maximum context window in tokens
+    pub context_window: i64,
 }
 
 impl ModelInfo {
@@ -26,6 +28,7 @@ impl ModelInfo {
         display_name: &str,
         alias: &str,
         description: &str,
+        context_window: i64,
     ) -> Self {
         Self {
             id: id.to_string(),
@@ -34,6 +37,7 @@ impl ModelInfo {
             description: description.to_string(),
             is_new: false,
             agent_type,
+            context_window,
         }
     }
 
@@ -48,6 +52,12 @@ impl ModelInfo {
 pub struct ModelRegistry;
 
 impl ModelRegistry {
+    /// Default context window for Claude models (200K tokens)
+    pub const CLAUDE_CONTEXT_WINDOW: i64 = 200_000;
+
+    /// Default context window for Codex models (272K tokens)
+    pub const CODEX_CONTEXT_WINDOW: i64 = 272_000;
+
     /// Get available models for Claude Code
     pub fn claude_models() -> Vec<ModelInfo> {
         vec![
@@ -57,6 +67,7 @@ impl ModelRegistry {
                 "Opus 4.5",
                 "opus",
                 "Most powerful, best for complex reasoning",
+                Self::CLAUDE_CONTEXT_WINDOW,
             ),
             ModelInfo::new(
                 AgentType::Claude,
@@ -64,6 +75,7 @@ impl ModelRegistry {
                 "Sonnet 4.5",
                 "sonnet",
                 "Fast and capable, best for most tasks",
+                Self::CLAUDE_CONTEXT_WINDOW,
             ),
             ModelInfo::new(
                 AgentType::Claude,
@@ -71,6 +83,7 @@ impl ModelRegistry {
                 "Haiku 4.5",
                 "haiku",
                 "Fastest, great for simple tasks",
+                Self::CLAUDE_CONTEXT_WINDOW,
             ),
         ]
     }
@@ -84,6 +97,7 @@ impl ModelRegistry {
                 "GPT-5.2-Codex",
                 "gpt-5.2-codex",
                 "Latest Codex model",
+                Self::CODEX_CONTEXT_WINDOW,
             )
             .with_new_badge(),
             ModelInfo::new(
@@ -92,6 +106,7 @@ impl ModelRegistry {
                 "GPT-5.2",
                 "gpt-5.2",
                 "Fast and efficient",
+                Self::CODEX_CONTEXT_WINDOW,
             ),
             ModelInfo::new(
                 AgentType::Codex,
@@ -99,6 +114,7 @@ impl ModelRegistry {
                 "GPT-5.1-Codex-Max",
                 "gpt-5.1-codex-max",
                 "Maximum capability",
+                Self::CODEX_CONTEXT_WINDOW,
             ),
         ]
     }
@@ -146,6 +162,21 @@ impl ModelRegistry {
         match agent_type {
             AgentType::Claude => "Claude Code",
             AgentType::Codex => "Codex",
+        }
+    }
+
+    /// Get context window limit for a specific model
+    pub fn context_window(agent_type: AgentType, model_id: &str) -> i64 {
+        Self::find_model(agent_type, model_id)
+            .map(|m| m.context_window)
+            .unwrap_or_else(|| Self::default_context_window(agent_type))
+    }
+
+    /// Default context window when model not found
+    pub fn default_context_window(agent_type: AgentType) -> i64 {
+        match agent_type {
+            AgentType::Claude => Self::CLAUDE_CONTEXT_WINDOW,
+            AgentType::Codex => Self::CODEX_CONTEXT_WINDOW,
         }
     }
 }
