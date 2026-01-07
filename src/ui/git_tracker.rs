@@ -15,7 +15,7 @@ use crate::git::{GitDiffStats, PrManager, PrStatus};
 pub struct GitTrackerConfig {
     /// How often to poll for git status (default: 2 seconds)
     pub git_status_poll_interval: Duration,
-    /// How often to poll for PR updates (default: 60 seconds)
+    /// How often to poll for PR updates (default: 20 seconds)
     pub pr_poll_interval: Duration,
 }
 
@@ -23,7 +23,7 @@ impl Default for GitTrackerConfig {
     fn default() -> Self {
         Self {
             git_status_poll_interval: Duration::from_secs(2),
-            pr_poll_interval: Duration::from_secs(60),
+            pr_poll_interval: Duration::from_secs(20),
         }
     }
 }
