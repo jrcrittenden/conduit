@@ -4172,6 +4172,46 @@ impl App {
                         should_stop_footer_spinner = true;
                     }
                 }
+                AgentEvent::TokenUsage(usage_event) => {
+                    session.update_context_usage(&usage_event);
+
+                    // Check if we need to show a warning notification
+                    if let Some(warning) = session.pending_context_warning.take() {
+                        use crate::agent::events::ContextWarningLevel;
+                        let display = match warning.level {
+                            ContextWarningLevel::Critical => MessageDisplay::Error {
+                                content: warning.message,
+                            },
+                            ContextWarningLevel::High | ContextWarningLevel::Medium => {
+                                MessageDisplay::System {
+                                    content: format!("⚠️ {}", warning.message),
+                                }
+                            }
+                            ContextWarningLevel::Normal => MessageDisplay::System {
+                                content: format!("ℹ️ {}", warning.message),
+                            },
+                        };
+                        session.chat_view.push(display.to_chat_message());
+                    }
+                }
+                AgentEvent::ContextCompaction(compaction_event) => {
+                    use crate::agent::events::ContextWindowState;
+                    session.handle_compaction(compaction_event.clone());
+
+                    // Always show compaction notification in chat
+                    let display = MessageDisplay::System {
+                        content: format!(
+                            "🔄 Context compacted: {} → {} tokens (reason: {})",
+                            ContextWindowState::format_tokens(compaction_event.tokens_before),
+                            ContextWindowState::format_tokens(compaction_event.tokens_after),
+                            compaction_event.reason
+                        ),
+                    };
+                    session.chat_view.push(display.to_chat_message());
+
+                    // Clear any pending warning since we just compacted
+                    session.pending_context_warning = None;
+                }
                 _ => {}
             }
         } // End session borrow scope

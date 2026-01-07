@@ -7,7 +7,10 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::agent::{AgentType, ModelRegistry, SessionId, TokenUsage};
+use crate::agent::{
+    events::{ContextWarningLevel, ContextWindowState},
+    AgentType, ModelRegistry, SessionId, TokenUsage,
+};
 use crate::ui::components::{
     ACCENT_ERROR, ACCENT_PRIMARY, ACCENT_SUCCESS, ACCENT_WARNING, STATUS_BAR_BG, TEXT_BRIGHT,
     TEXT_FAINT, TEXT_MUTED,
@@ -44,6 +47,8 @@ pub struct StatusBar {
     scroll_events_per_sec: f64,
     /// Whether scroll activity happened recently
     scroll_active: bool,
+    /// Context window state for display
+    context_state: Option<ContextWindowState>,
 }
 
 impl StatusBar {
@@ -66,6 +71,7 @@ impl StatusBar {
             scroll_lines_per_sec: 0.0,
             scroll_events_per_sec: 0.0,
             scroll_active: false,
+            context_state: None,
         }
     }
 
@@ -84,6 +90,10 @@ impl StatusBar {
     pub fn set_token_usage(&mut self, usage: TokenUsage) {
         self.token_usage = usage;
         self.update_cost();
+    }
+
+    pub fn set_context_state(&mut self, state: ContextWindowState) {
+        self.context_state = Some(state);
     }
 
     /// Set project info for right side of status bar
@@ -166,6 +176,35 @@ impl StatusBar {
             format!(" {}", self.agent_type.display_name()),
             Style::default().fg(TEXT_MUTED),
         ));
+
+        // Context usage indicator
+        if let Some(ref ctx) = self.context_state {
+            let pct = ctx.usage_percent();
+            // Only show if we have meaningful context usage (> 0%)
+            if pct > 0.0 || ctx.max_tokens > 0 {
+                let color = match ctx.warning_level() {
+                    ContextWarningLevel::Critical => ACCENT_ERROR,
+                    ContextWarningLevel::High => ACCENT_WARNING,
+                    ContextWarningLevel::Medium => ACCENT_WARNING,
+                    ContextWarningLevel::Normal => TEXT_MUTED,
+                };
+
+                spans.push(Span::styled(" │ ", Style::default().fg(TEXT_FAINT)));
+                spans.push(Span::styled("ctx:", Style::default().fg(TEXT_FAINT)));
+                spans.push(Span::styled(
+                    format!("{:.0}%", pct * 100.0),
+                    Style::default().fg(color),
+                ));
+
+                // Show compaction count if any
+                if ctx.compaction_count > 0 {
+                    spans.push(Span::styled(
+                        format!(" ({}×)", ctx.compaction_count),
+                        Style::default().fg(TEXT_FAINT),
+                    ));
+                }
+            }
+        }
 
         // Note: Old processing spinner removed - now using Knight Rider spinner in footer
 

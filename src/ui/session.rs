@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::{AgentHandle, AgentType, SessionId, TokenUsage};
+use crate::agent::{
+    events::{ContextCompactionEvent, ContextWarningLevel, ContextWindowState, TokenUsageEvent},
+    models::ModelRegistry,
+    AgentHandle, AgentType, SessionId, TokenUsage,
+};
 use crate::git::PrManager;
 use crate::ui::components::{
     ChatView, EventDirection, InputBox, ProcessingState, RawEventsView, StatusBar,
@@ -58,10 +62,22 @@ pub struct AgentSession {
     pub agent_pid: Option<u32>,
     /// Pending user message that hasn't been confirmed by agent yet
     pub pending_user_message: Option<String>,
+    /// Context window tracking state
+    pub context_state: ContextWindowState,
+    /// Pending context warning to display (cleared after display)
+    pub pending_context_warning: Option<ContextWarning>,
+}
+
+/// Context warning notification
+#[derive(Debug, Clone)]
+pub struct ContextWarning {
+    pub level: ContextWarningLevel,
+    pub message: String,
 }
 
 impl AgentSession {
     pub fn new(agent_type: AgentType) -> Self {
+        let default_context = ModelRegistry::default_context_window(agent_type);
         Self {
             id: Uuid::new_v4(),
             agent_type,
@@ -86,6 +102,8 @@ impl AgentSession {
             needs_attention: false,
             agent_pid: None,
             pending_user_message: None,
+            context_state: ContextWindowState::new(default_context),
+            pending_context_warning: None,
         }
     }
 
@@ -129,6 +147,8 @@ impl AgentSession {
         self.status_bar
             .set_session_id(self.agent_session_id.clone());
         self.status_bar.set_token_usage(self.total_usage.clone());
+        self.status_bar
+            .set_context_state(self.context_state.clone());
 
         // Update project info for right side of status bar
         if let Some(working_dir) = &self.working_dir {
@@ -219,5 +239,64 @@ impl AgentSession {
     ) {
         self.raw_events_view
             .push_event(direction, event_type, raw_json);
+    }
+
+    /// Initialize context state based on selected model
+    pub fn init_context_for_model(&mut self) {
+        let default_model = ModelRegistry::default_model(self.agent_type);
+        let model_id = self.model.as_deref().unwrap_or(&default_model);
+        let max_tokens = ModelRegistry::context_window(self.agent_type, model_id);
+        self.context_state = ContextWindowState::new(max_tokens);
+    }
+
+    /// Update context state from token usage event
+    pub fn update_context_usage(&mut self, event: &TokenUsageEvent) {
+        let prev_level = self.context_state.warning_level();
+        self.context_state.update_from_usage(event);
+        let new_level = self.context_state.warning_level();
+
+        // Generate warning on level escalation
+        if new_level != prev_level && new_level != ContextWarningLevel::Normal {
+            let pct = self.context_state.usage_percent();
+            self.pending_context_warning = Some(ContextWarning {
+                level: new_level,
+                message: Self::warning_message(new_level, pct),
+            });
+        }
+
+        self.update_status();
+    }
+
+    /// Handle context compaction event
+    pub fn handle_compaction(&mut self, event: ContextCompactionEvent) {
+        let tokens_freed = event.tokens_before - event.tokens_after;
+        self.context_state.record_compaction(event.clone());
+
+        // Create notification for user
+        self.pending_context_warning = Some(ContextWarning {
+            level: ContextWarningLevel::Normal, // Compaction is informational
+            message: format!(
+                "Context compacted: {} tokens freed ({})",
+                ContextWindowState::format_tokens(tokens_freed),
+                event.reason
+            ),
+        });
+
+        self.update_status();
+    }
+
+    fn warning_message(level: ContextWarningLevel, pct: f32) -> String {
+        match level {
+            ContextWarningLevel::Critical => {
+                format!("Context {:.0}% full - compaction imminent", pct * 100.0)
+            }
+            ContextWarningLevel::High => {
+                format!("Context {:.0}% full - approaching limit", pct * 100.0)
+            }
+            ContextWarningLevel::Medium => {
+                format!("Context {:.0}% used", pct * 100.0)
+            }
+            ContextWarningLevel::Normal => String::new(),
+        }
     }
 }
