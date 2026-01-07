@@ -3264,6 +3264,8 @@ impl App {
                 && self.state.project_picker_state.is_visible())
             && !(self.state.input_mode == InputMode::ImportingSession
                 && self.state.session_import_state.is_visible())
+            && !(self.state.input_mode == InputMode::CommandPalette
+                && self.state.command_palette_state.is_visible())
     }
 
     fn raw_events_list_visible_height(&self) -> usize {
