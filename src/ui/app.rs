@@ -1199,6 +1199,10 @@ impl App {
 
             // ========== Tab Management ==========
             Action::CloseTab => {
+                // Save session state BEFORE closing so the tab info is preserved
+                // This needs to be synchronous because the effect runs after tab removal
+                self.persist_session_state_on_exit();
+
                 let active = self.state.tab_manager.active_index();
                 self.state.tab_manager.close_tab(active);
                 if self.state.tab_manager.is_empty() {
