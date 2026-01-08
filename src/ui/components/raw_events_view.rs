@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use super::raw_events_types::{
     EventDetailState, EventDirection, RawEventEntry, DETAIL_PANEL_BREAKPOINT,
 };
-use super::{render_minimal_scrollbar, ScrollbarMetrics};
+use super::{render_minimal_scrollbar, ScrollbarMetrics, ACCENT_PRIMARY};
 
 pub enum RawEventsClick {
     SessionId,
@@ -39,6 +39,8 @@ pub struct RawEventsView {
     pub event_detail: EventDetailState,
     /// Agent session ID (for display/copy)
     session_id: Option<String>,
+    /// Whether mouse is hovering over the session ID
+    session_id_hovered: bool,
 }
 
 pub struct RawEventsScrollbarMetrics {
@@ -57,6 +59,7 @@ impl RawEventsView {
             session_start: Instant::now(),
             event_detail: EventDetailState::new(),
             session_id: None,
+            session_id_hovered: false,
         }
     }
 
@@ -66,6 +69,33 @@ impl RawEventsView {
 
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    /// Check if session ID is currently hovered
+    pub fn is_session_id_hovered(&self) -> bool {
+        self.session_id_hovered
+    }
+
+    /// Update hover state based on mouse position
+    /// Returns true if the hover state changed
+    pub fn update_session_id_hover(&mut self, x: u16, y: u16, area: Rect) -> bool {
+        let was_hovered = self.session_id_hovered;
+
+        // Check if mouse is on the title row (top border)
+        if y == area.y {
+            if let Some((_, start, width)) =
+                self.title_right_span(area.width.saturating_sub(2) as usize)
+            {
+                let title_x = area.x.saturating_add(1 + start);
+                self.session_id_hovered = x >= title_x && x < title_x.saturating_add(width);
+            } else {
+                self.session_id_hovered = false;
+            }
+        } else {
+            self.session_id_hovered = false;
+        }
+
+        was_hovered != self.session_id_hovered
     }
 
     /// Add a new event and select it
@@ -412,23 +442,71 @@ impl RawEventsView {
         Some((right, (left_width + spacer) as u16, right_width as u16))
     }
 
+    /// Returns (prefix, session_id_value, suffix) parts for separate styling
+    fn session_id_parts(&self, max_width: usize) -> Option<(String, String, String)> {
+        let session_id = self.session_id.as_ref()?;
+        if max_width == 0 {
+            return None;
+        }
+
+        let prefix = " Session ID: ";
+        let suffix = " ";
+        let full_width =
+            UnicodeWidthStr::width(prefix) + UnicodeWidthStr::width(session_id.as_str()) + 1;
+
+        if full_width <= max_width {
+            Some((prefix.to_string(), session_id.clone(), suffix.to_string()))
+        } else {
+            // Need to truncate: " Session ID: " + shortened + "... "
+            let available = max_width
+                .saturating_sub(UnicodeWidthStr::width(prefix) + UnicodeWidthStr::width("... "));
+            if available == 0 {
+                return None;
+            }
+            let shortened: String = session_id.chars().take(available).collect();
+            Some((
+                prefix.to_string(),
+                format!("{}...", shortened),
+                suffix.to_string(),
+            ))
+        }
+    }
+
     fn build_title_line(&self, max_width: usize) -> Line<'static> {
         let left = format!(" Raw Events ({}) ", self.events.len());
         let left_width = UnicodeWidthStr::width(left.as_str());
+        let default_style = Style::default().fg(Color::DarkGray);
 
-        if let Some(right) = self.session_id_label(max_width.saturating_sub(left_width)) {
-            let right_width = UnicodeWidthStr::width(right.as_str());
+        if let Some((prefix, session_id_value, suffix)) =
+            self.session_id_parts(max_width.saturating_sub(left_width))
+        {
+            let right_width = UnicodeWidthStr::width(prefix.as_str())
+                + UnicodeWidthStr::width(session_id_value.as_str())
+                + UnicodeWidthStr::width(suffix.as_str());
+
             if left_width + right_width <= max_width {
                 let spacer = max_width.saturating_sub(left_width + right_width);
+
+                // Only the session ID value changes on hover
+                let session_id_style = if self.session_id_hovered {
+                    Style::default()
+                        .fg(ACCENT_PRIMARY)
+                        .add_modifier(Modifier::UNDERLINED)
+                } else {
+                    default_style
+                };
+
                 return Line::from(vec![
-                    Span::styled(left, Style::default().fg(Color::DarkGray)),
-                    Span::styled("─".repeat(spacer), Style::default().fg(Color::DarkGray)),
-                    Span::styled(right, Style::default().fg(Color::DarkGray)),
+                    Span::styled(left, default_style),
+                    Span::styled("─".repeat(spacer), default_style),
+                    Span::styled(prefix, default_style),
+                    Span::styled(session_id_value, session_id_style),
+                    Span::styled(suffix, default_style),
                 ]);
             }
         }
 
-        Line::from(Span::styled(left, Style::default().fg(Color::DarkGray)))
+        Line::from(Span::styled(left, default_style))
     }
 
     /// Render the raw events view with optional detail panel

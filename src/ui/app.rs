@@ -3467,6 +3467,34 @@ impl App {
                 self.state.scroll_drag = None;
                 Ok(Vec::new())
             }
+            MouseEventKind::Moved => {
+                // Update hover state for raw events session ID
+                if self.state.view_mode == ViewMode::RawEvents {
+                    if let Some(raw_events_area) = self.state.raw_events_area {
+                        if let Some(session) = self.state.tab_manager.active_session_mut() {
+                            let hover_changed = session.raw_events_view.update_session_id_hover(
+                                x,
+                                y,
+                                raw_events_area,
+                            );
+
+                            if hover_changed {
+                                // Check if now hovering (need to re-check since we mutated)
+                                let is_hovered = session.raw_events_view.is_session_id_hovered();
+                                if is_hovered {
+                                    self.state.set_footer_message(Some(
+                                        "Click session ID to copy".to_string(),
+                                    ));
+                                } else {
+                                    // Clear the hint message when no longer hovering
+                                    self.state.set_footer_message(None);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Vec::new())
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -3721,8 +3749,12 @@ impl App {
                             match click {
                                 RawEventsClick::SessionId => {
                                     if let Some(session_id) = session.raw_events_view.session_id() {
-                                        effects
-                                            .push(Effect::CopyToClipboard(session_id.to_string()));
+                                        let id_str = session_id.to_string();
+                                        effects.push(Effect::CopyToClipboard(id_str.clone()));
+                                        self.state.set_timed_footer_message(
+                                            format!("Copied session ID: {}", id_str),
+                                            Duration::from_secs(3),
+                                        );
                                     }
                                     self.state.last_raw_events_click = None;
                                 }
