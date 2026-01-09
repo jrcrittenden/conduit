@@ -40,6 +40,10 @@ impl ClaudeCodeRunner {
         // Core headless mode flags
         cmd.arg("-p").arg(&config.prompt);
         cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose"); // verbose is now required
+                              // Claude process failed (exit status: 1): Error: When
+                              // using --print,--output-format=stream-json requires
+                              // --verbose
 
         // Permission mode (Build vs Plan)
         cmd.arg("--permission-mode")
