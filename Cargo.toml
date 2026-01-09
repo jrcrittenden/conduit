@@ -1,6 +1,6 @@
 [package]
 name = "conduit"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Multi-agent TUI for Claude Code and Codex CLI"
 authors = ["Felipe Coury"]
