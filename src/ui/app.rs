@@ -1557,6 +1557,7 @@ impl App {
                 if self.state.input_mode == InputMode::QueueEditing {
                     if let Some(session) = self.state.tab_manager.active_session_mut() {
                         session.move_queue_up();
+                        Self::clamp_queue_selection(session);
                     }
                 }
             }
@@ -1564,6 +1565,7 @@ impl App {
                 if self.state.input_mode == InputMode::QueueEditing {
                     if let Some(session) = self.state.tab_manager.active_session_mut() {
                         session.move_queue_down();
+                        Self::clamp_queue_selection(session);
                     }
                 }
             }
@@ -1572,6 +1574,7 @@ impl App {
                     let mut message = None;
                     if let Some(session) = self.state.tab_manager.active_session_mut() {
                         message = session.dequeue_selected();
+                        Self::clamp_queue_selection(session);
                     }
                     if let Some(msg) = message {
                         self.close_queue_editor();
@@ -1588,6 +1591,7 @@ impl App {
                         if let Some(idx) = session.queue_selection {
                             session.remove_queue_at(idx);
                         }
+                        Self::clamp_queue_selection(session);
                         if session.queued_messages.is_empty() {
                             should_close = true;
                         }
@@ -1840,9 +1844,10 @@ impl App {
                         }
                     }
                     // Cancel selected - use same context-aware logic
+                    let context = self.state.confirmation_dialog_state.context.clone();
                     self.state.confirmation_dialog_state.hide();
                     if matches!(
-                        self.state.confirmation_dialog_state.context,
+                        context,
                         Some(ConfirmationContext::CreatePullRequest { .. })
                             | Some(ConfirmationContext::OpenExistingPr { .. })
                             | Some(ConfirmationContext::SteerFallback { .. })
@@ -1924,9 +1929,10 @@ impl App {
                     self.state.input_mode = InputMode::Normal;
                 }
                 InputMode::Confirming => {
+                    let context = self.state.confirmation_dialog_state.context.clone();
                     self.state.confirmation_dialog_state.hide();
                     if matches!(
-                        self.state.confirmation_dialog_state.context,
+                        context,
                         Some(ConfirmationContext::CreatePullRequest { .. })
                             | Some(ConfirmationContext::OpenExistingPr { .. })
                             | Some(ConfirmationContext::SteerFallback { .. })
@@ -2191,11 +2197,9 @@ impl App {
             }
             Action::ConfirmNo => {
                 if self.state.input_mode == InputMode::Confirming {
+                    let context = self.state.confirmation_dialog_state.context.clone();
                     self.state.confirmation_dialog_state.hide();
-                    if matches!(
-                        self.state.confirmation_dialog_state.context,
-                        Some(ConfirmationContext::SteerFallback { .. })
-                    ) {
+                    if matches!(context, Some(ConfirmationContext::SteerFallback { .. })) {
                         self.state.input_mode = InputMode::Normal;
                     } else {
                         self.state.input_mode = InputMode::SidebarNavigation;
@@ -4191,9 +4195,11 @@ impl App {
             ScrollDragTarget::Chat => {
                 let area = self.state.chat_area?;
                 let session = self.state.tab_manager.active_session_mut()?;
-                session
-                    .chat_view
-                    .scrollbar_metrics(area, session.is_processing)
+                session.chat_view.scrollbar_metrics(
+                    area,
+                    session.is_processing,
+                    session.queued_messages.len(),
+                )
             }
             ScrollDragTarget::Input => {
                 let area = self.state.input_area?;
@@ -4226,9 +4232,10 @@ impl App {
         if self.state.input_mode == InputMode::Confirming
             && self.state.confirmation_dialog_state.visible
         {
+            let context = self.state.confirmation_dialog_state.context.clone();
             self.state.confirmation_dialog_state.hide();
             if matches!(
-                self.state.confirmation_dialog_state.context,
+                context,
                 Some(ConfirmationContext::CreatePullRequest { .. })
                     | Some(ConfirmationContext::OpenExistingPr { .. })
                     | Some(ConfirmationContext::SteerFallback { .. })
@@ -4587,8 +4594,10 @@ impl App {
             if relative_x >= mode_start && relative_x < mode_end {
                 // Click on mode area - toggle mode
                 if let Some(session) = self.state.tab_manager.active_session_mut() {
-                    session.agent_mode = session.agent_mode.toggle();
-                    session.update_status();
+                    if session.capabilities.supports_plan_mode {
+                        session.agent_mode = session.agent_mode.toggle();
+                        session.update_status();
+                    }
                 }
             } else if relative_x >= model_start && relative_x < model_end {
                 // Click on model/agent area - open model selector
@@ -5061,8 +5070,11 @@ impl App {
                     self.state.stop_footer_spinner();
                 }
 
-                if let Ok(mut queued_effects) = self.drain_queue_for_tab(tab_index) {
-                    effects.append(&mut queued_effects);
+                match self.drain_queue_for_tab(tab_index) {
+                    Ok(mut queued_effects) => effects.append(&mut queued_effects),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "Failed to drain queued messages");
+                    }
                 }
             }
             AppEvent::SessionsCacheLoaded { sessions } => {
@@ -5461,7 +5473,7 @@ impl App {
 
         // Validate working directory exists before showing user message
         if !working_dir.exists() {
-            if let Some(session) = self.state.tab_manager.active_session_mut() {
+            if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                 let display = MessageDisplay::Error {
                     content: format!(
                         "Working directory does not exist: {}",
@@ -5499,14 +5511,16 @@ impl App {
         }
 
         if prompt.trim().is_empty() && images.is_empty() {
-            if let Some(session) = self.state.tab_manager.active_session_mut() {
+            if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                 session.stop_processing();
                 let display = MessageDisplay::Error {
                     content: "Cannot submit: prompt is empty after processing".to_string(),
                 };
                 session.chat_view.push(display.to_chat_message());
             }
-            self.state.stop_footer_spinner();
+            if self.state.tab_manager.active_index() == tab_index {
+                self.state.stop_footer_spinner();
+            }
             return Ok(effects);
         }
 
@@ -5901,6 +5915,19 @@ impl App {
         }
     }
 
+    fn clamp_queue_selection(session: &mut AgentSession) {
+        if session.queued_messages.is_empty() {
+            session.queue_selection = None;
+            return;
+        }
+        if let Some(idx) = session.queue_selection {
+            let max = session.queued_messages.len().saturating_sub(1);
+            if idx > max {
+                session.queue_selection = Some(max);
+            }
+        }
+    }
+
     fn open_queue_editor(&mut self) {
         let has_queue = {
             let Some(session) = self.state.tab_manager.active_session_mut() else {
@@ -5991,46 +6018,34 @@ impl App {
                 return Ok(effects);
             }
 
-            let mut indices = Vec::new();
+            let mut remaining = Vec::new();
             match queue_mode {
                 crate::config::QueueMode::OneAtATime => {
-                    if let Some(idx) = session
+                    let idx = session
                         .queued_messages
                         .iter()
                         .position(|msg| msg.mode == QueuedMessageMode::Steer)
-                    {
-                        indices.push(idx);
-                    } else {
-                        indices.push(0);
+                        .unwrap_or(0);
+                    for (pos, msg) in session.queued_messages.drain(..).enumerate() {
+                        if pos == idx {
+                            queued.push(msg);
+                        } else {
+                            remaining.push(msg);
+                        }
                     }
                 }
                 crate::config::QueueMode::All => {
-                    for (idx, msg) in session.queued_messages.iter().enumerate() {
+                    let mut steers = Vec::new();
+                    let mut followups = Vec::new();
+                    for msg in session.queued_messages.drain(..) {
                         if msg.mode == QueuedMessageMode::Steer {
-                            indices.push(idx);
+                            steers.push(msg);
+                        } else {
+                            followups.push(msg);
                         }
                     }
-                    for (idx, msg) in session.queued_messages.iter().enumerate() {
-                        if msg.mode == QueuedMessageMode::FollowUp {
-                            indices.push(idx);
-                        }
-                    }
-                }
-            }
-
-            let mut selected = vec![false; session.queued_messages.len()];
-            for idx in indices {
-                if idx < selected.len() {
-                    selected[idx] = true;
-                }
-            }
-
-            let mut remaining = Vec::new();
-            for (idx, msg) in session.queued_messages.drain(..).enumerate() {
-                if selected.get(idx).copied().unwrap_or(false) {
-                    queued.push(msg);
-                } else {
-                    remaining.push(msg);
+                    queued.extend(steers);
+                    queued.extend(followups);
                 }
             }
 
@@ -6934,7 +6949,7 @@ fn truncate_queue_line(text: &str, max_width: usize) -> String {
     let mut width = 0;
     let mut result = String::new();
     for c in text.chars() {
-        let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
         if width + char_width > target {
             break;
         }
