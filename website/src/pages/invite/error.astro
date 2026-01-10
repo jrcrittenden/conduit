@@ -3,6 +3,8 @@ import Layout from '../../layouts/Layout.astro'
 
 const url = Astro.url
 const reason = url.searchParams.get('reason') || 'unknown'
+const status = url.searchParams.get('status') || ''
+const detail = url.searchParams.get('detail') || ''
 
 const errorMessages: Record<string, { title: string; message: string }> = {
   github_auth_failed: {
@@ -97,7 +99,13 @@ const error = errorMessages[reason] || errorMessages.unknown
 
         <p class="text-[var(--color-text-muted)] text-xs mt-6">
           Error code: {reason}
+          {status && <span> | Status: {status}</span>}
         </p>
+        {detail && (
+          <p class="text-[var(--color-text-muted)] text-xs mt-2 break-all">
+            {decodeURIComponent(detail)}
+          </p>
+        )}
       </div>
     </div>
   </main>

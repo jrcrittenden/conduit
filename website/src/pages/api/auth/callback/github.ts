@@ -170,12 +170,13 @@ export const GET: APIRoute = async ({ url, cookies, redirect }) => {
           repoResponse.status,
           errorText
         )
-        return redirect('/invite/error?reason=repo_access_failed')
+        return redirect(`/invite/error?reason=repo_access_failed&status=${repoResponse.status}&detail=${encodeURIComponent(errorText.slice(0, 200))}`)
       }
 
       console.log(`Added ${githubUsername} as collaborator to conduit-cli/conduit`)
     } else {
       console.warn('GITHUB_PAT not configured, skipping repo access')
+      return redirect('/invite/error?reason=repo_access_failed&status=0&detail=GITHUB_PAT_not_configured')
     }
 
     // Mark invite as used

@@ -1,24 +1,25 @@
 # Pending
 
+- [ ] BUG: don't allow the user to send messages while streaming
+
+- [ ] Handle claude ExitPlanMode and AskQuestion tools properly
+
+- [ ] Ctrl+C once should clear the prompt, twice to quit.
+
 - [ ] Validate number of tokens being shown by Codex when conversation ends:
       ─ ⏱ 22m 50s │ ↓33041.4k ↑141.1k ─────────────────
 
-- [ ] Map Tab key map to switching between Plan and Build modes and change current Tab and Shift+Tab behavior to Alt+Tab and Alt+Shift+Tab for switching between open workspaces
-
 - [ ] When the PR is running checks, we display `PR #16 ⋯`. Instead of using just the ellipsis, we should display a spinner to indicate that checks are running. (See spinners-rs :-) )
 
-- [ ] Investigate why sometimes the git status are not showing on the sidebar:
-      ![Sidebar showing vast-snow with no git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_J7Q6Kciems/CleanShot/%202026-01-07/%20at/%2015.00.09@2x.png)
-      ![Prompt shows the git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_U6MdBjM1Vi/CleanShot/%202026-01-07/%20at/%2015.00.53@2x.png)
 - [ ] What do we do if we run the app on an environment where we don't have the required tools: git, codex and claude? We need to check it on startup and show a message dialog explaining the issue and how to fix it.
-
-- [-] Implement selection: for both the conversation and prompt input areas.
 
 - [ ] Have a key (Ctrl+R) to refresh PR status, etc.?
 
 - [ ] Have a way to move between user inputs on the history
 
 - [ ] Redesign model picker: no longer a good place to display it, make it similar to the new project dialog with search.
+
+- [ ] Allow Ctrl+Z
 
 - [ ] Allow editing the prompt with external editor
 
@@ -39,12 +40,17 @@
 - [ ] Auto name branch based on initial conversation
 - [ ] Support slash commands
 - [ ] Make imported sessions read-only by default
+- [ ] Continue teaser video from session f7264a2d-a078-4c61-87a9-83754a7561b4
 
 ## In Progress
 
 - [-] New command palette (Ctrl+P) to search for commands and actions
 
 ## Done
+
+- [x] Map Tab key map to switching between Plan and Build modes and change current Tab and Shift+Tab behavior to Alt+Tab and Alt+Shift+Tab for switching between open workspaces
+
+- [x] Implement selection: for both the conversation and prompt input areas.
 
 - [x] Improve tool calling sections for Claude Code
 
@@ -77,3 +83,7 @@
 - [x] BUG: typing Ctrl+J while on the sidebar adds lines to the prompt input
 - [x] When we have no workspaces under a project, it shows collapsed. It has to be shown expanded.
 - [x] Dialogs are not showing when there's no workspace open. I tried Alt+I to import a session. Then when you open a tab the dialog is visible. Can you help me by compiling a list of all the keys that open dialogs so we can check which ones should be valid in this initial state?
+
+- [ ] Investigate why sometimes the git status are not showing on the sidebar:
+      ![Sidebar showing vast-snow with no git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_J7Q6Kciems/CleanShot/%202026-01-07/%20at/%2015.00.09@2x.png)
+      ![Prompt shows the git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_U6MdBjM1Vi/CleanShot/%202026-01-07/%20at/%2015.00.53@2x.png)
