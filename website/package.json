@@ -7,7 +7,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "invite": "tsx scripts/invite.ts"
+    "invite": "tsx scripts/invite.ts",
+    "tail-invites": "tsx scripts/tail-invites.ts"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",
