@@ -9,7 +9,9 @@
     "preview": "astro preview",
     "astro": "astro",
     "invite": "tsx scripts/invite.ts",
-    "tail-invites": "tsx scripts/tail-invites.ts"
+    "tail-invites": "tsx scripts/tail-invites.ts",
+    "test-welcome-email": "tsx scripts/test-welcome-email.ts",
+    "reset-invite": "tsx scripts/reset-invite.ts"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",
