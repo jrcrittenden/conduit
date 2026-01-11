@@ -6,6 +6,8 @@
  *   pnpm invite --count 5           # Invite next 5 users
  *   pnpm invite --count 5 --dry-run # Preview without sending
  *   pnpm invite --start 5           # Start from position 5 (skip first 4)
+ *   pnpm invite --email user@example.com  # Invite specific user by email
+ *   pnpm invite --twitter handle          # Invite specific user by Twitter handle
  */
 
 import 'dotenv/config'
@@ -28,6 +30,8 @@ const hasFlag = (name: string): boolean => args.includes(`--${name}`)
 const count = parseInt(getArg('count') || '1', 10)
 const start = parseInt(getArg('start') || '1', 10)
 const dryRun = hasFlag('dry-run')
+const targetEmail = getArg('email')
+const targetTwitter = getArg('twitter')?.replace(/^@/, '') // Strip leading @ if present
 
 // Load environment variables
 const supabaseUrl = process.env.PUBLIC_SUPABASE_URL
@@ -104,40 +108,84 @@ function buildInviteEmailHtml(inviteUrl: string): string {
 
 async function main() {
   console.log('\n🚀 Conduit Invite Script\n')
-  console.log(`Settings:`)
-  console.log(`  Count: ${count}`)
-  console.log(`  Start position: ${start}`)
-  console.log(`  Dry run: ${dryRun ? 'Yes' : 'No'}\n`)
 
-  // Fetch waitlist entries that haven't been invited
-  const { data: entries, error } = await supabase
-    .from('waitlist')
-    .select('id, email, twitter_handle, created_at')
-    .is('invited_at', null)
-    .order('created_at', { ascending: true })
-    .range(start - 1, start - 1 + count - 1) // Offset by start, limit to count
+  let entries: { id: string; email: string; twitter_handle: string | null; created_at: string }[] = []
 
-  if (error) {
-    console.error('Error fetching waitlist:', error.message)
-    process.exit(1)
+  // Mode: specific user by email or twitter
+  if (targetEmail || targetTwitter) {
+    const searchField = targetEmail ? 'email' : 'twitter_handle'
+    const searchValue = targetEmail || targetTwitter
+
+    console.log(`Searching for user by ${targetEmail ? 'email' : 'Twitter'}: ${searchValue}\n`)
+
+    const { data, error } = await supabase
+      .from('waitlist')
+      .select('id, email, twitter_handle, created_at, invited_at')
+      .ilike(searchField, searchValue!)
+      .limit(1)
+      .single()
+
+    if (error || !data) {
+      console.error(`User not found with ${searchField} = ${searchValue}`)
+      process.exit(1)
+    }
+
+    if (data.invited_at) {
+      console.log(`⚠️  User already invited on ${new Date(data.invited_at).toLocaleString()}`)
+      console.log(`   Email: ${data.email}`)
+      console.log(`   Twitter: ${data.twitter_handle || '-'}`)
+      console.log(`\nUse 'pnpm reset-invite --email ${data.email} --send' to resend.`)
+      process.exit(0)
+    }
+
+    entries = [data]
+  } else {
+    // Mode: batch invite
+    console.log(`Settings:`)
+    console.log(`  Count: ${count}`)
+    console.log(`  Start position: ${start}`)
+    console.log(`  Dry run: ${dryRun ? 'Yes' : 'No'}\n`)
+
+    const { data, error } = await supabase
+      .from('waitlist')
+      .select('id, email, twitter_handle, created_at')
+      .is('invited_at', null)
+      .order('created_at', { ascending: true })
+      .range(start - 1, start - 1 + count - 1)
+
+    if (error) {
+      console.error('Error fetching waitlist:', error.message)
+      process.exit(1)
+    }
+
+    entries = data || []
   }
 
-  if (!entries || entries.length === 0) {
-    console.log('No uninvited users found in the specified range.')
+  if (entries.length === 0) {
+    console.log('No uninvited users found.')
     process.exit(0)
   }
 
   // Show preview
   console.log(`Found ${entries.length} user(s) to invite:\n`)
-  console.log('┌───────────────────────────────────────────────────────────┐')
-  console.log('│ #   │ Email                          │ Twitter            │')
-  console.log('├───────────────────────────────────────────────────────────┤')
-  entries.forEach((entry, i) => {
-    const email = entry.email.padEnd(30).slice(0, 30)
-    const twitter = (entry.twitter_handle || '-').padEnd(18).slice(0, 18)
-    console.log(`│ ${String(start + i).padStart(3)} │ ${email} │ ${twitter} │`)
-  })
-  console.log('└───────────────────────────────────────────────────────────┘\n')
+  if (targetEmail || targetTwitter) {
+    // Simple display for single user
+    const entry = entries[0]
+    console.log(`  Email:   ${entry.email}`)
+    console.log(`  Twitter: ${entry.twitter_handle || '-'}`)
+    console.log()
+  } else {
+    // Table display for batch
+    console.log('┌───────────────────────────────────────────────────────────┐')
+    console.log('│ #   │ Email                          │ Twitter            │')
+    console.log('├───────────────────────────────────────────────────────────┤')
+    entries.forEach((entry, i) => {
+      const email = entry.email.padEnd(30).slice(0, 30)
+      const twitter = (entry.twitter_handle || '-').padEnd(18).slice(0, 18)
+      console.log(`│ ${String(start + i).padStart(3)} │ ${email} │ ${twitter} │`)
+    })
+    console.log('└───────────────────────────────────────────────────────────┘\n')
+  }
 
   if (dryRun) {
     console.log('Dry run mode - no invites will be sent.')
