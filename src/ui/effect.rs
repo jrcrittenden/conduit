@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub enum Effect {
     SaveSessionState,
     StartAgent {
-        tab_index: usize,
+        session_id: Uuid,
         agent_type: AgentType,
         config: AgentStartConfig,
     },

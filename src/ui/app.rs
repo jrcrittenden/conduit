@@ -2322,7 +2322,7 @@ impl App {
                     }
                 }
                 Effect::StartAgent {
-                    tab_index,
+                    session_id,
                     agent_type,
                     config,
                 } => {
@@ -2340,29 +2340,29 @@ impl App {
                                 let pid = handle.pid;
                                 send_app_event(
                                     &event_tx,
-                                    AppEvent::AgentStarted { tab_index, pid },
+                                    AppEvent::AgentStarted { session_id, pid },
                                     "agent_started",
                                 );
 
                                 while let Some(event) = handle.events.recv().await {
                                     if !send_app_event(
                                         &event_tx,
-                                        AppEvent::Agent { tab_index, event },
+                                        AppEvent::Agent { session_id, event },
                                         "agent_stream",
                                     ) {
                                         tracing::debug!(
-                                            tab_index,
+                                            session_id = %session_id,
                                             "Failed to send AppEvent for agent stream"
                                         );
                                         if let Err(stop_err) = runner.stop(&handle).await {
                                             tracing::debug!(
-                                                tab_index,
+                                                session_id = %session_id,
                                                 error = %stop_err,
                                                 "Failed to stop agent after event channel closed"
                                             );
                                             if let Err(kill_err) = runner.kill(&handle).await {
                                                 tracing::debug!(
-                                                    tab_index,
+                                                    session_id = %session_id,
                                                     error = %kill_err,
                                                     "Failed to kill agent after event channel closed"
                                                 );
@@ -2373,7 +2373,7 @@ impl App {
                                 }
                                 send_app_event(
                                     &event_tx,
-                                    AppEvent::AgentStreamEnded { tab_index },
+                                    AppEvent::AgentStreamEnded { session_id },
                                     "agent_stream_ended",
                                 );
                             }
@@ -2385,7 +2385,7 @@ impl App {
                                 );
                                 send_app_event(
                                     &event_tx,
-                                    AppEvent::AgentStreamEnded { tab_index },
+                                    AppEvent::AgentStreamEnded { session_id },
                                     "agent_stream_ended",
                                 );
                             }
@@ -5493,8 +5493,8 @@ Acknowledge that you have received this context by replying ONLY with the single
     async fn handle_app_event(&mut self, event: AppEvent) -> anyhow::Result<Vec<Effect>> {
         let mut effects = Vec::new();
         match event {
-            AppEvent::Agent { tab_index, event } => {
-                self.handle_agent_event(tab_index, event).await?;
+            AppEvent::Agent { session_id, event } => {
+                self.handle_agent_event(session_id, event).await?;
             }
             AppEvent::Quit => {
                 self.state.should_quit = true;
@@ -5670,11 +5670,23 @@ Acknowledge that you have received this context by replying ONLY with the single
                     self.state.input_mode = InputMode::Normal;
                 }
             }
-            AppEvent::AgentStarted { tab_index, pid } => {
+            AppEvent::AgentStarted { session_id, pid } => {
                 // Store the PID for interrupt support
+                let Some(tab_index) = self.state.tab_manager.session_index_by_id(session_id) else {
+                    tracing::debug!(
+                        %session_id,
+                        "AgentStarted for unknown session; ignoring"
+                    );
+                    return Ok(effects);
+                };
                 if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                     session.agent_pid = Some(pid);
-                    tracing::debug!("Agent started with PID {} for tab {}", pid, tab_index);
+                    tracing::debug!(
+                        session_id = %session_id,
+                        "Agent started with PID {} for tab {}",
+                        pid,
+                        tab_index
+                    );
 
                     // Display fork success message once when agent has started successfully
                     if session.fork_seed_id.is_some() && !session.fork_welcome_shown {
@@ -5688,7 +5700,14 @@ Acknowledge that you have received this context by replying ONLY with the single
                     }
                 }
             }
-            AppEvent::AgentStreamEnded { tab_index } => {
+            AppEvent::AgentStreamEnded { session_id } => {
+                let Some(tab_index) = self.state.tab_manager.session_index_by_id(session_id) else {
+                    tracing::debug!(
+                        %session_id,
+                        "AgentStreamEnded for unknown session; ignoring"
+                    );
+                    return Ok(effects);
+                };
                 // Agent event stream ended (process exited) - ensure processing is stopped
                 let is_active_tab = self.state.tab_manager.active_index() == tab_index;
                 let was_processing =
@@ -5907,9 +5926,16 @@ Acknowledge that you have received this context by replying ONLY with the single
 
     async fn handle_agent_event(
         &mut self,
-        tab_index: usize,
+        session_id: uuid::Uuid,
         event: AgentEvent,
     ) -> anyhow::Result<()> {
+        let Some(tab_index) = self.state.tab_manager.session_index_by_id(session_id) else {
+            tracing::debug!(
+                %session_id,
+                "Agent event for unknown session; ignoring"
+            );
+            return Ok(());
+        };
         // Check if this is a non-active tab receiving content - mark as needing attention
         let is_active_tab = self.state.tab_manager.active_index() == tab_index;
         let is_content_event = matches!(
@@ -6198,6 +6224,7 @@ Acknowledge that you have received this context by replying ONLY with the single
             session_id_to_use,
             working_dir,
             is_new_session_for_title,
+            session_id,
         ) = {
             let Some(session) = self.state.tab_manager.session_mut(tab_index) else {
                 return Ok(effects);
@@ -6226,6 +6253,7 @@ Acknowledge that you have received this context by replying ONLY with the single
                 .working_dir
                 .clone()
                 .unwrap_or_else(|| self.config.working_dir.clone());
+            let session_id = session.id;
 
             (
                 agent_type,
@@ -6234,6 +6262,7 @@ Acknowledge that you have received this context by replying ONLY with the single
                 session_id_to_use,
                 working_dir,
                 !has_visible_user_message,
+                session_id,
             )
         };
 
@@ -6346,7 +6375,7 @@ Acknowledge that you have received this context by replying ONLY with the single
         }
 
         effects.push(Effect::StartAgent {
-            tab_index,
+            session_id,
             agent_type,
             config,
         });
@@ -8605,6 +8634,44 @@ fn sanitize_title(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::events::AssistantMessageEvent;
+    use crate::agent::AgentType;
+    use crate::config::Config;
+    use crate::ui::session::AgentSession;
+    use crate::util::ToolAvailability;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    fn build_test_app_with_sessions(session_ids: &[Uuid]) -> App {
+        let config = Config::default();
+        let tools = ToolAvailability::default();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::new(10);
+
+        for session_id in session_ids {
+            let mut session = AgentSession::new(AgentType::Codex);
+            session.id = *session_id;
+            state.tab_manager.add_session(session);
+        }
+
+        App {
+            config,
+            tools,
+            state,
+            claude_runner: Arc::new(ClaudeCodeRunner::new()),
+            codex_runner: Arc::new(CodexCliRunner::new()),
+            event_tx,
+            event_rx,
+            repo_dao: None,
+            workspace_dao: None,
+            app_state_dao: None,
+            session_tab_dao: None,
+            fork_seed_dao: None,
+            worktree_manager: WorktreeManager::new(),
+            git_tracker: None,
+        }
+    }
 
     /// Helper to check if a colon keypress should trigger command mode.
     /// This mirrors the logic in handle_key_event (lines 572-601).
@@ -8733,5 +8800,53 @@ mod tests {
         assert!(prompt.contains("[role=summary]"));
         assert!(prompt.contains("tokens_in=100"));
         assert!(prompt.contains("tokens_out=200"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_event_routes_by_session_id_after_tab_close() {
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let session_c = Uuid::new_v4();
+
+        let mut app = build_test_app_with_sessions(&[session_a, session_b, session_c]);
+
+        // Close the first tab so indices shift: B -> 0, C -> 1
+        assert!(app.state.tab_manager.close_tab(0));
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_b),
+            Some(0)
+        );
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_c),
+            Some(1)
+        );
+
+        let event = AgentEvent::AssistantMessage(AssistantMessageEvent {
+            text: "message for B".to_string(),
+            is_final: true,
+        });
+
+        app.handle_agent_event(session_b, event).await.unwrap();
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_b)
+                .expect("session B missing");
+            assert_eq!(
+                session.pending_final_assistant_message.as_deref(),
+                Some("message for B")
+            );
+        }
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_c)
+                .expect("session C missing");
+            assert!(session.pending_final_assistant_message.is_none());
+        }
     }
 }

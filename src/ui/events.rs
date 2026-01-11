@@ -11,14 +11,14 @@ pub enum AppEvent {
     /// Terminal input event
     Input(crossterm::event::Event),
 
-    /// Agent event from a session
-    Agent { tab_index: usize, event: AgentEvent },
+    /// Agent event from a session (identified by stable session ID)
+    Agent { session_id: Uuid, event: AgentEvent },
 
     /// Agent event stream ended (process exited)
-    AgentStreamEnded { tab_index: usize },
+    AgentStreamEnded { session_id: Uuid },
 
     /// Agent subprocess started with given PID
-    AgentStarted { tab_index: usize, pid: u32 },
+    AgentStarted { session_id: Uuid, pid: u32 },
 
     /// User submitted a prompt
     PromptSubmit { tab_index: usize, prompt: String },
