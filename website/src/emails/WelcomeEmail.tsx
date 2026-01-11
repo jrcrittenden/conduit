@@ -75,7 +75,7 @@ export default function WelcomeEmail({ githubUsername }: WelcomeEmailProps) {
                 Join other early adopters, get help, and share feedback
               </Text>
               <Button
-                href="https://discord.gg/conduit"
+                href="https://discord.gg/F9pfRd642H"
                 style={styles.button}
               >
                 Join Discord
