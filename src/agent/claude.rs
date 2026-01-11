@@ -356,8 +356,9 @@ impl AgentRunner for ClaudeCodeRunner {
     async fn stop(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         #[cfg(unix)]
         {
-            unsafe {
-                libc::kill(handle.pid as i32, libc::SIGTERM);
+            let result = unsafe { libc::kill(handle.pid as i32, libc::SIGTERM) };
+            if result == -1 {
+                return Err(AgentError::Io(std::io::Error::last_os_error()));
             }
         }
         #[cfg(not(unix))]
@@ -373,8 +374,9 @@ impl AgentRunner for ClaudeCodeRunner {
     async fn kill(&self, handle: &AgentHandle) -> Result<(), AgentError> {
         #[cfg(unix)]
         {
-            unsafe {
-                libc::kill(handle.pid as i32, libc::SIGKILL);
+            let result = unsafe { libc::kill(handle.pid as i32, libc::SIGKILL) };
+            if result == -1 {
+                return Err(AgentError::Io(std::io::Error::last_os_error()));
             }
         }
         #[cfg(not(unix))]

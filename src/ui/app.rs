@@ -856,48 +856,90 @@ impl App {
 
     /// Interrupt the current agent processing
     fn interrupt_agent(&mut self) {
+        let mut pid = None;
+        let mut was_processing = false;
+
         if let Some(session) = self.state.tab_manager.active_session_mut() {
             if session.is_processing {
-                // Kill the subprocess if we have a PID
-                if let Some(pid) = session.agent_pid.take() {
-                    tracing::debug!("Sending SIGTERM to agent PID {}", pid);
-                    #[cfg(unix)]
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGTERM);
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        // Windows: would need different approach
-                        tracing::warn!("Process termination not implemented on this platform");
-                    }
-                }
+                was_processing = true;
+                pid = session.agent_pid.take();
+                session.stop_processing();
+                session.chat_view.finalize_streaming();
+            }
+        }
 
+        if let Some(pid) = pid {
+            if !self.terminate_agent_pid(pid, "interrupt_agent") {
+                self.state.set_timed_footer_message(
+                    "Failed to terminate agent; process may still be running".to_string(),
+                    Duration::from_secs(5),
+                );
+            }
+        }
+
+        if was_processing {
+            if let Some(session) = self.state.tab_manager.active_session_mut() {
                 let display = MessageDisplay::System {
                     content: "Interrupted".to_string(),
                 };
                 session.chat_view.push(display.to_chat_message());
-                session.stop_processing();
-                self.state.stop_footer_spinner();
             }
+            self.state.stop_footer_spinner();
+        }
+    }
+
+    fn terminate_agent_pid(&self, pid: u32, context: &str) -> bool {
+        #[cfg(unix)]
+        {
+            let term_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            if term_result == -1 {
+                let err = std::io::Error::last_os_error();
+                tracing::warn!(
+                    error = %err,
+                    pid,
+                    context,
+                    "Failed to send SIGTERM to agent"
+                );
+                let kill_result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                if kill_result == -1 {
+                    let kill_err = std::io::Error::last_os_error();
+                    tracing::warn!(
+                        error = %kill_err,
+                        pid,
+                        context,
+                        "Failed to send SIGKILL to agent"
+                    );
+                    return false;
+                }
+            }
+            true
+        }
+        #[cfg(not(unix))]
+        {
+            tracing::warn!(
+                pid,
+                context,
+                "Process termination not implemented on this platform"
+            );
+            false
         }
     }
 
     fn stop_agent_for_tab(&mut self, tab_index: usize) {
-        if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
-            if let Some(pid) = session.agent_pid.take() {
-                tracing::debug!("Sending SIGTERM to agent PID {} for tab {}", pid, tab_index);
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-                #[cfg(not(unix))]
-                {
-                    tracing::warn!("Process termination not implemented on this platform");
+        let mut pid = None;
+        {
+            if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
+                pid = session.agent_pid.take();
+                if session.is_processing {
+                    session.stop_processing();
+                    session.chat_view.finalize_streaming();
                 }
             }
-            if session.is_processing {
-                session.stop_processing();
-                session.chat_view.finalize_streaming();
+        }
+
+        if let Some(pid) = pid {
+            if !self.terminate_agent_pid(pid, "stop_agent_for_tab") {
+                tracing::warn!(pid, tab_index, "Agent termination failed during tab close");
             }
         }
     }
@@ -5948,6 +5990,8 @@ Acknowledge that you have received this context by replying ONLY with the single
     }
 
     fn flush_pending_agent_output(session: &mut crate::ui::session::AgentSession) {
+        // Safety: ensure no partial streaming buffer remains before pushing buffered messages.
+        session.chat_view.finalize_streaming();
         if let Some(summary) = session.pending_turn_summary.take() {
             session.chat_view.push(ChatMessage::turn_summary(summary));
         }
@@ -6070,6 +6114,8 @@ Acknowledge that you have received this context by replying ONLY with the single
                 AgentEvent::ToolStarted(tool) => {
                     // Update processing state to show tool name
                     session.set_processing_state(ProcessingState::ToolUse(tool.tool_name.clone()));
+                    // ToolStarted pairs with ToolCompleted for non-shell tools or CommandOutput
+                    // for shell tools; these events are mutually exclusive in agent runners.
                     session.tools_in_flight = session.tools_in_flight.saturating_add(1);
 
                     let args_str = if tool.arguments.is_null() {
@@ -8498,17 +8544,29 @@ async fn generate_title_and_branch_impl(
         let resolved_branch = {
             let wd = working_dir.clone();
             let wm = worktree_manager.clone();
-            let fresh_branch =
-                match tokio::task::spawn_blocking(move || wm.get_current_branch(&wd).ok()).await {
-                    Ok(result) => result.unwrap_or_default(),
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            "spawn_blocking failed while fetching current branch"
-                        );
-                        String::new()
-                    }
-                };
+            let wd_for_log = wd.clone();
+            let fresh_branch = match tokio::task::spawn_blocking(move || {
+                wm.get_current_branch(&wd).map_err(|e| e.to_string())
+            })
+            .await
+            {
+                Ok(Ok(branch)) => branch,
+                Ok(Err(err)) => {
+                    tracing::warn!(
+                        error = %err,
+                        working_dir = %wd_for_log.display(),
+                        "Failed to fetch current branch from worktree"
+                    );
+                    String::new()
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "spawn_blocking failed while fetching current branch"
+                    );
+                    String::new()
+                }
+            };
             if fresh_branch.is_empty() {
                 current_branch.clone()
             } else {
