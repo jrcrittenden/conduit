@@ -929,6 +929,7 @@ impl App {
         if was_processing {
             if let Some(session_id) = session_id {
                 if let Some(session) = self.state.tab_manager.session_by_id_mut(session_id) {
+                    Self::flush_pending_agent_output(session);
                     let display = MessageDisplay::System {
                         content: "Interrupted".to_string(),
                     };
@@ -6428,6 +6429,9 @@ Acknowledge that you have received this context by replying ONLY with the single
                         }
                         let summary = session.current_turn_summary.clone();
                         session.pending_turn_summary = Some(summary);
+                        if session.chat_view.streaming_buffer().is_none() {
+                            Self::flush_pending_agent_output(session);
+                        }
                     }
                 }
                 AgentEvent::TurnFailed(failed) => {
