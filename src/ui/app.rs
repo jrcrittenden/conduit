@@ -2957,7 +2957,16 @@ impl App {
                         )
                         .await;
 
-                        let _ = event_tx.send(AppEvent::TitleGenerated { session_id, result });
+                        if !send_app_event(
+                            &event_tx,
+                            AppEvent::TitleGenerated { session_id, result },
+                            "title_generated",
+                        ) {
+                            tracing::debug!(
+                                %session_id,
+                                "Failed to send TitleGenerated event"
+                            );
+                        }
                     });
                 }
             }
@@ -8468,11 +8477,17 @@ async fn generate_title_and_branch_impl(
         let resolved_branch = {
             let wd = working_dir.clone();
             let wm = worktree_manager.clone();
-            let fresh_branch = tokio::task::spawn_blocking(move || wm.get_current_branch(&wd).ok())
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+            let fresh_branch =
+                match tokio::task::spawn_blocking(move || wm.get_current_branch(&wd).ok()).await {
+                    Ok(result) => result.unwrap_or_default(),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "spawn_blocking failed while fetching current branch"
+                        );
+                        String::new()
+                    }
+                };
             if fresh_branch.is_empty() {
                 current_branch.clone()
             } else {

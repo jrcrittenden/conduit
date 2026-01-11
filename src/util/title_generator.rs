@@ -22,7 +22,7 @@ pub struct GeneratedMetadata {
     pub title: String,
     /// Short branch name suffix (kebab-case, no slashes)
     pub branch_suffix: String,
-    /// Tool used to generate the metadata (set by generate_title_and_branch)
+    /// Tool used to generate the metadata (set by generate_title_and_branch for GeneratedMetadata::tool_used)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_used: Option<String>,
     /// Whether the result came from a fallback tool
