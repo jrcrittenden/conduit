@@ -882,6 +882,26 @@ impl App {
         }
     }
 
+    fn stop_agent_for_tab(&mut self, tab_index: usize) {
+        if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
+            if let Some(pid) = session.agent_pid.take() {
+                tracing::debug!("Sending SIGTERM to agent PID {} for tab {}", pid, tab_index);
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                #[cfg(not(unix))]
+                {
+                    tracing::warn!("Process termination not implemented on this platform");
+                }
+            }
+            if session.is_processing {
+                session.stop_processing();
+                session.chat_view.finalize_streaming();
+            }
+        }
+    }
+
     /// Handle Ctrl+C press with double-press detection
     fn handle_ctrl_c_press(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
@@ -1306,11 +1326,11 @@ impl App {
 
             // ========== Tab Management ==========
             Action::CloseTab => {
+                let active = self.state.tab_manager.active_index();
+                self.stop_agent_for_tab(active);
                 // Save session state BEFORE closing so the tab info is preserved
                 // This needs to be synchronous because the effect runs after tab removal
                 self.persist_session_state_on_exit();
-
-                let active = self.state.tab_manager.active_index();
                 self.state.tab_manager.close_tab(active);
                 if self.state.tab_manager.is_empty() {
                     self.state.sidebar_state.visible = true;
@@ -4065,6 +4085,7 @@ Acknowledge that you have received this context by replying ONLY with the single
             .collect();
 
         for idx in indices_to_close.into_iter().rev() {
+            self.stop_agent_for_tab(idx);
             self.state.tab_manager.close_tab(idx);
         }
 

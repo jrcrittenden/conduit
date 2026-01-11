@@ -66,10 +66,10 @@ Respond ONLY with valid JSON (no markdown, no explanation):
     let mut failures: Vec<(Tool, TitleGeneratorError)> = Vec::new();
 
     if tools.is_available(Tool::Claude) {
-        if let Some(tool_path) = tools.get_path(Tool::Claude).cloned() {
+        if let Some(tool_path) = tools.get_path(Tool::Claude) {
             let result = tokio::time::timeout(
                 Duration::from_secs(AI_CALL_TIMEOUT_SECS),
-                call_claude(&tool_path, &prompt, working_dir),
+                call_claude(tool_path, &prompt, working_dir),
             )
             .await;
             match result {
@@ -93,10 +93,10 @@ Respond ONLY with valid JSON (no markdown, no explanation):
     }
 
     if tools.is_available(Tool::Codex) {
-        if let Some(tool_path) = tools.get_path(Tool::Codex).cloned() {
+        if let Some(tool_path) = tools.get_path(Tool::Codex) {
             let result = tokio::time::timeout(
                 Duration::from_secs(AI_CALL_TIMEOUT_SECS),
-                call_codex(&tool_path, &prompt, working_dir),
+                call_codex(tool_path, &prompt, working_dir),
             )
             .await;
             match result {
