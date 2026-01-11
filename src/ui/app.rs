@@ -57,6 +57,50 @@ use crate::ui::session::AgentSession;
 use crate::ui::terminal_guard::TerminalGuard;
 use crate::util::ToolAvailability;
 
+#[cfg(target_os = "macos")]
+const PROC_PIDTBSDINFO: libc::c_int = 3;
+
+#[cfg(target_os = "macos")]
+const MAXCOMLEN: usize = 16;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: libc::uid_t,
+    pbi_gid: libc::gid_t,
+    pbi_ruid: libc::uid_t,
+    pbi_rgid: libc::gid_t,
+    pbi_svuid: libc::uid_t,
+    pbi_svgid: libc::gid_t,
+    rfu_1: u32,
+    pbi_comm: [u8; MAXCOMLEN],
+    pbi_name: [u8; 2 * MAXCOMLEN],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn proc_pidinfo(
+        pid: libc::c_int,
+        flavor: libc::c_int,
+        arg: u64,
+        buffer: *mut libc::c_void,
+        buffersize: libc::c_int,
+    ) -> libc::c_int;
+}
+
 /// Timeout for double-press detection (ms)
 const DOUBLE_PRESS_TIMEOUT_MS: u64 = 500;
 // 20s allows slow CLI agents to shut down on congested machines without UI hangs.
@@ -883,11 +927,13 @@ impl App {
         }
 
         if was_processing {
-            if let Some(session) = self.state.tab_manager.active_session_mut() {
-                let display = MessageDisplay::System {
-                    content: "Interrupted".to_string(),
-                };
-                session.chat_view.push(display.to_chat_message());
+            if let Some(session_id) = session_id {
+                if let Some(session) = self.state.tab_manager.session_by_id_mut(session_id) {
+                    let display = MessageDisplay::System {
+                        content: "Interrupted".to_string(),
+                    };
+                    session.chat_view.push(display.to_chat_message());
+                }
             }
             self.state.stop_footer_spinner();
         }
@@ -999,8 +1045,17 @@ impl App {
                 continue;
             }
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::ESRCH) {
-                return true;
+            if let Some(code) = err.raw_os_error() {
+                if code == libc::ESRCH {
+                    return true;
+                }
+                if code == libc::EPERM {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(AGENT_TERMINATION_POLL_INTERVAL);
+                    continue;
+                }
             }
             tracing::warn!(
                 error = %err,
@@ -1050,7 +1105,18 @@ impl App {
 
     #[cfg(target_os = "linux")]
     fn pid_start_time(pid: u32) -> Option<u64> {
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+        let stat = match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+            Ok(contents) => contents,
+            Err(err) => {
+                tracing::debug!(
+                    pid,
+                    error = %err,
+                    "Failed to read /proc/{}/stat for pid start time",
+                    pid
+                );
+                return None;
+            }
+        };
         let end = stat.rfind(')')?;
         let after = &stat[end + 1..];
         let mut fields = after.split_whitespace();
@@ -1058,7 +1124,71 @@ impl App {
         start_time_str.parse().ok()
     }
 
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    fn pid_start_time(pid: u32) -> Option<u64> {
+        let mut info = ProcBsdInfo {
+            pbi_flags: 0,
+            pbi_status: 0,
+            pbi_xstatus: 0,
+            pbi_pid: 0,
+            pbi_ppid: 0,
+            pbi_uid: 0,
+            pbi_gid: 0,
+            pbi_ruid: 0,
+            pbi_rgid: 0,
+            pbi_svuid: 0,
+            pbi_svgid: 0,
+            rfu_1: 0,
+            pbi_comm: [0; MAXCOMLEN],
+            pbi_name: [0; 2 * MAXCOMLEN],
+            pbi_nfiles: 0,
+            pbi_pgid: 0,
+            pbi_pjobc: 0,
+            e_tdev: 0,
+            e_tpgid: 0,
+            pbi_nice: 0,
+            pbi_start_tvsec: 0,
+            pbi_start_tvusec: 0,
+        };
+        let size = std::mem::size_of::<ProcBsdInfo>() as libc::c_int;
+        let result = unsafe {
+            proc_pidinfo(
+                pid as libc::c_int,
+                PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            )
+        };
+        if result <= 0 {
+            let err = std::io::Error::last_os_error();
+            tracing::debug!(
+                pid,
+                error = %err,
+                "Failed to read pid start time via proc_pidinfo"
+            );
+            return None;
+        }
+        if result < size {
+            tracing::debug!(
+                pid,
+                result,
+                expected = size,
+                "Short proc_pidinfo response for pid start time"
+            );
+            return None;
+        }
+        let secs = info.pbi_start_tvsec;
+        let usecs = info.pbi_start_tvusec;
+        Some(secs.saturating_mul(1_000_000).saturating_add(usecs))
+    }
+
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    fn pid_start_time(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    #[cfg(not(unix))]
     fn pid_start_time(_pid: u32) -> Option<u64> {
         None
     }
@@ -6331,6 +6461,9 @@ Acknowledge that you have received this context by replying ONLY with the single
                     }
 
                     session.chat_view.stream_append(&msg.text);
+                    if msg.is_final {
+                        Self::flush_pending_agent_output(session);
+                    }
                 }
                 AgentEvent::ToolStarted(tool) => {
                     // Update processing state to show tool name
