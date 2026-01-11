@@ -64,6 +64,8 @@ pub struct AgentSession {
     pub needs_attention: bool,
     /// PID of the running agent subprocess (for interrupt/kill)
     pub agent_pid: Option<u32>,
+    /// Best-effort PID start time to reduce kill reuse risk (platform-dependent)
+    pub agent_pid_start_time: Option<u64>,
     /// Pending user message that hasn't been confirmed by agent yet
     pub pending_user_message: Option<String>,
     /// Queued messages waiting to be delivered
@@ -128,6 +130,7 @@ impl AgentSession {
             pr_number: None,
             needs_attention: false,
             agent_pid: None,
+            agent_pid_start_time: None,
             pending_user_message: None,
             context_state: ContextWindowState::new(default_context),
             pending_context_warning: None,

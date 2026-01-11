@@ -59,8 +59,11 @@ use crate::util::ToolAvailability;
 
 /// Timeout for double-press detection (ms)
 const DOUBLE_PRESS_TIMEOUT_MS: u64 = 500;
+// 20s allows slow CLI agents to shut down on congested machines without UI hangs.
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+// 500ms grace keeps UI responsive while giving SIGTERM a brief chance to exit.
 const AGENT_TERMINATION_GRACE: Duration = Duration::from_millis(500);
+// 50ms polling keeps wait loops short without a busy spin.
 const AGENT_TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Main application state
@@ -860,10 +863,14 @@ impl App {
     /// Interrupt the current agent processing
     fn interrupt_agent(&mut self) {
         let mut pid = None;
+        let mut pid_start_time = None;
         let mut was_processing = false;
+        let mut session_id = None;
 
         if let Some(session) = self.state.tab_manager.active_session_mut() {
+            session_id = Some(session.id);
             pid = session.agent_pid.take();
+            pid_start_time = session.agent_pid_start_time.take();
             if session.is_processing {
                 was_processing = true;
                 session.stop_processing();
@@ -872,12 +879,7 @@ impl App {
         }
 
         if let Some(pid) = pid {
-            if !self.terminate_agent_pid(pid, "interrupt_agent") {
-                self.state.set_timed_footer_message(
-                    "Failed to terminate agent; process may still be running".to_string(),
-                    Duration::from_secs(5),
-                );
-            }
+            self.spawn_agent_termination(pid, pid_start_time, "interrupt_agent", session_id, true);
         }
 
         if was_processing {
@@ -891,7 +893,40 @@ impl App {
         }
     }
 
-    fn terminate_agent_pid(&self, pid: u32, context: &str) -> bool {
+    fn spawn_agent_termination(
+        &self,
+        pid: u32,
+        pid_start_time: Option<u64>,
+        context: &'static str,
+        session_id: Option<Uuid>,
+        report_result: bool,
+    ) {
+        let event_tx = self.event_tx.clone();
+        let context = context.to_string();
+        tokio::task::spawn_blocking(move || {
+            let success = App::terminate_agent_pid(pid, pid_start_time, &context);
+            if report_result {
+                send_app_event(
+                    &event_tx,
+                    AppEvent::AgentTerminationResult {
+                        session_id,
+                        pid,
+                        context,
+                        success,
+                    },
+                    "agent_termination_result",
+                );
+            } else if !success {
+                tracing::warn!(
+                    pid,
+                    context = %context,
+                    "Agent termination failed"
+                );
+            }
+        });
+    }
+
+    fn terminate_agent_pid(pid: u32, pid_start_time: Option<u64>, context: &str) -> bool {
         #[cfg(unix)]
         {
             let term_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
@@ -906,8 +941,12 @@ impl App {
                     context,
                     "Failed to send SIGTERM to agent"
                 );
-            } else if self.wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGTERM") {
+            } else if Self::wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGTERM") {
                 return true;
+            }
+
+            if !Self::pid_identity_matches(pid, pid_start_time, context) {
+                return false;
             }
 
             let kill_result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
@@ -925,7 +964,7 @@ impl App {
                 return false;
             }
 
-            if self.wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGKILL") {
+            if Self::wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGKILL") {
                 return true;
             }
 
@@ -948,7 +987,7 @@ impl App {
     }
 
     #[cfg(unix)]
-    fn wait_for_pid_exit(&self, pid: u32, timeout: Duration, context: &str, signal: &str) -> bool {
+    fn wait_for_pid_exit(pid: u32, timeout: Duration, context: &str, signal: &str) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             let result = unsafe { libc::kill(pid as i32, 0) };
@@ -974,8 +1013,59 @@ impl App {
         }
     }
 
+    #[cfg(unix)]
+    fn pid_identity_matches(pid: u32, pid_start_time: Option<u64>, context: &str) -> bool {
+        let Some(expected_start_time) = pid_start_time else {
+            tracing::warn!(
+                pid,
+                context,
+                "Agent pid identity unavailable; skipping SIGKILL"
+            );
+            return false;
+        };
+        match Self::pid_start_time(pid) {
+            Some(current_start_time) => {
+                if current_start_time != expected_start_time {
+                    tracing::warn!(
+                        pid,
+                        context,
+                        expected_start_time,
+                        current_start_time,
+                        "Agent pid start time mismatch; skipping SIGKILL"
+                    );
+                    return false;
+                }
+                true
+            }
+            None => {
+                tracing::warn!(
+                    pid,
+                    context,
+                    "Unable to verify agent pid start time; skipping SIGKILL"
+                );
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pid_start_time(pid: u32) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+        let end = stat.rfind(')')?;
+        let after = &stat[end + 1..];
+        let mut fields = after.split_whitespace();
+        let start_time_str = fields.nth(19)?;
+        start_time_str.parse().ok()
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn pid_start_time(_pid: u32) -> Option<u64> {
+        None
+    }
+
     fn stop_agent_for_tab(&mut self, tab_index: usize) {
         let mut pid = None;
+        let mut pid_start_time = None;
         {
             if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                 Self::flush_pending_agent_output(session);
@@ -983,13 +1073,12 @@ impl App {
                     session.stop_processing();
                 }
                 pid = session.agent_pid.take();
+                pid_start_time = session.agent_pid_start_time.take();
             }
         }
 
         if let Some(pid) = pid {
-            if !self.terminate_agent_pid(pid, "stop_agent_for_tab") {
-                tracing::warn!(pid, tab_index, "Agent termination failed during tab close");
-            }
+            self.spawn_agent_termination(pid, pid_start_time, "stop_agent_for_tab", None, false);
         }
     }
 
@@ -5840,6 +5929,7 @@ Acknowledge that you have received this context by replying ONLY with the single
                 };
                 if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                     session.agent_pid = Some(pid);
+                    session.agent_pid_start_time = Self::pid_start_time(pid);
                     tracing::debug!(
                         session_id = %session_id,
                         "Agent started with PID {} for tab {}",
@@ -5871,11 +5961,36 @@ Acknowledge that you have received this context by replying ONLY with the single
                 if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                     session.stop_processing();
                     session.chat_view.finalize_streaming();
+                    session.tools_in_flight = 0;
+                    session.set_processing_state(ProcessingState::Thinking);
                     let display = MessageDisplay::Error { content: error };
                     session.chat_view.push(display.to_chat_message());
                 }
                 if is_active_tab {
                     self.state.stop_footer_spinner();
+                }
+            }
+            AppEvent::AgentTerminationResult {
+                session_id,
+                pid,
+                context,
+                success,
+            } => {
+                if !success {
+                    tracing::warn!(
+                        pid,
+                        context = %context,
+                        "Agent termination did not complete"
+                    );
+                    if session_id
+                        .and_then(|id| self.state.tab_manager.session_index_by_id(id))
+                        .is_some()
+                    {
+                        self.state.set_timed_footer_message(
+                            "Failed to terminate agent; process may still be running".to_string(),
+                            Duration::from_secs(5),
+                        );
+                    }
                 }
             }
             AppEvent::AgentStreamEnded { session_id } => {
@@ -5892,6 +6007,7 @@ Acknowledge that you have received this context by replying ONLY with the single
                     if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                         // Clear PID since process has exited
                         session.agent_pid = None;
+                        session.agent_pid_start_time = None;
                         // Safety: don't let fork-seed suppression leak into future runs
                         session.suppress_next_assistant_reply = false;
                         session.suppress_next_turn_summary = false;
@@ -6182,6 +6298,8 @@ Acknowledge that you have received this context by replying ONLY with the single
                 AgentEvent::TurnFailed(failed) => {
                     session.stop_processing();
                     session.chat_view.finalize_streaming();
+                    session.tools_in_flight = 0;
+                    session.set_processing_state(ProcessingState::Thinking);
                     // Only stop footer spinner if this is the active tab
                     if is_active_tab {
                         should_stop_footer_spinner = true;
@@ -6317,6 +6435,8 @@ Acknowledge that you have received this context by replying ONLY with the single
                     if err.is_fatal {
                         session.stop_processing();
                         session.chat_view.finalize_streaming();
+                        session.tools_in_flight = 0;
+                        session.set_processing_state(ProcessingState::Thinking);
                         // Only stop footer spinner if this is the active tab
                         if is_active_tab {
                             should_stop_footer_spinner = true;
