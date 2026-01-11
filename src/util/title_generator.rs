@@ -22,7 +22,7 @@ pub struct GeneratedMetadata {
     pub title: String,
     /// Short branch name suffix (kebab-case, no slashes)
     pub branch_suffix: String,
-    /// Tool used to generate the metadata (set by caller)
+    /// Tool used to generate the metadata (set by generate_title_and_branch)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_used: Option<String>,
     /// Whether the result came from a fallback tool
@@ -66,44 +66,56 @@ Respond ONLY with valid JSON (no markdown, no explanation):
     let mut failures: Vec<(Tool, TitleGeneratorError)> = Vec::new();
 
     if tools.is_available(Tool::Claude) {
-        let tool_path = tools.get_path(Tool::Claude).unwrap().clone();
-        let result = tokio::time::timeout(
-            Duration::from_secs(AI_CALL_TIMEOUT_SECS),
-            call_claude(&tool_path, &prompt, working_dir),
-        )
-        .await;
-        match result {
-            Ok(Ok(mut metadata)) => {
-                metadata.tool_used = Some(Tool::Claude.display_name().to_string());
-                metadata.used_fallback = false;
-                return Ok(metadata);
+        if let Some(tool_path) = tools.get_path(Tool::Claude).cloned() {
+            let result = tokio::time::timeout(
+                Duration::from_secs(AI_CALL_TIMEOUT_SECS),
+                call_claude(&tool_path, &prompt, working_dir),
+            )
+            .await;
+            match result {
+                Ok(Ok(mut metadata)) => {
+                    metadata.tool_used = Some(Tool::Claude.display_name().to_string());
+                    metadata.used_fallback = false;
+                    return Ok(metadata);
+                }
+                Ok(Err(err)) => failures.push((Tool::Claude, err)),
+                Err(_) => failures.push((
+                    Tool::Claude,
+                    TitleGeneratorError::Timeout(AI_CALL_TIMEOUT_SECS),
+                )),
             }
-            Ok(Err(err)) => failures.push((Tool::Claude, err)),
-            Err(_) => failures.push((
+        } else {
+            failures.push((
                 Tool::Claude,
-                TitleGeneratorError::Timeout(AI_CALL_TIMEOUT_SECS),
-            )),
+                TitleGeneratorError::AiCallFailed("Claude tool path missing".to_string()),
+            ));
         }
     }
 
     if tools.is_available(Tool::Codex) {
-        let tool_path = tools.get_path(Tool::Codex).unwrap().clone();
-        let result = tokio::time::timeout(
-            Duration::from_secs(AI_CALL_TIMEOUT_SECS),
-            call_codex(&tool_path, &prompt, working_dir),
-        )
-        .await;
-        match result {
-            Ok(Ok(mut metadata)) => {
-                metadata.tool_used = Some(Tool::Codex.display_name().to_string());
-                metadata.used_fallback = !failures.is_empty();
-                return Ok(metadata);
+        if let Some(tool_path) = tools.get_path(Tool::Codex).cloned() {
+            let result = tokio::time::timeout(
+                Duration::from_secs(AI_CALL_TIMEOUT_SECS),
+                call_codex(&tool_path, &prompt, working_dir),
+            )
+            .await;
+            match result {
+                Ok(Ok(mut metadata)) => {
+                    metadata.tool_used = Some(Tool::Codex.display_name().to_string());
+                    metadata.used_fallback = !failures.is_empty();
+                    return Ok(metadata);
+                }
+                Ok(Err(err)) => failures.push((Tool::Codex, err)),
+                Err(_) => failures.push((
+                    Tool::Codex,
+                    TitleGeneratorError::Timeout(AI_CALL_TIMEOUT_SECS),
+                )),
             }
-            Ok(Err(err)) => failures.push((Tool::Codex, err)),
-            Err(_) => failures.push((
+        } else {
+            failures.push((
                 Tool::Codex,
-                TitleGeneratorError::Timeout(AI_CALL_TIMEOUT_SECS),
-            )),
+                TitleGeneratorError::AiCallFailed("Codex tool path missing".to_string()),
+            ));
         }
     }
 
@@ -111,7 +123,7 @@ Respond ONLY with valid JSON (no markdown, no explanation):
         return Err(TitleGeneratorError::NoToolAvailable);
     }
     if failures.len() == 1 {
-        return Err(failures.pop().unwrap().1);
+        return Err(failures.remove(0).1);
     }
 
     let details = failures
@@ -132,6 +144,7 @@ async fn call_claude(
     cmd.args(["-p", "--output-format", "text", "--model", "sonnet"]);
     cmd.arg("--").arg(prompt);
     cmd.current_dir(working_dir);
+    cmd.kill_on_drop(true);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -160,6 +173,7 @@ async fn call_codex(
     cmd.args(["--quiet", "--approval-mode", "full-auto"]);
     cmd.arg(prompt);
     cmd.current_dir(working_dir);
+    cmd.kill_on_drop(true);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

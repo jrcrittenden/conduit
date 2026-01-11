@@ -5724,11 +5724,13 @@ Acknowledge that you have received this context by replying ONLY with the single
                         session.suppress_next_turn_summary = false;
                         let was_processing = if session.is_processing {
                             session.stop_processing();
-                            session.chat_view.finalize_streaming();
                             true
                         } else {
                             false
                         };
+
+                        // Idempotent safety net: ensure we never leave a streaming buffer behind.
+                        session.chat_view.finalize_streaming();
                         Self::flush_pending_agent_output(session);
                         session.tools_in_flight = 0;
                         was_processing
@@ -5799,7 +5801,7 @@ Acknowledge that you have received this context by replying ONLY with the single
                         if generated.used_fallback {
                             let tool = generated.tool_used.as_deref().unwrap_or("fallback tool");
                             self.state.set_timed_footer_message(
-                                format!("Title generated via {} after fallback", tool),
+                                format!("Title generated via {}", tool),
                                 Duration::from_secs(4),
                             );
                         }
@@ -5921,11 +5923,11 @@ Acknowledge that you have received this context by replying ONLY with the single
     }
 
     fn flush_pending_agent_output(session: &mut crate::ui::session::AgentSession) {
-        if let Some(text) = session.pending_final_assistant_message.take() {
-            session.chat_view.push(ChatMessage::assistant(text));
-        }
         if let Some(summary) = session.pending_turn_summary.take() {
             session.chat_view.push(ChatMessage::turn_summary(summary));
+        }
+        if let Some(text) = session.pending_final_assistant_message.take() {
+            session.chat_view.push(ChatMessage::assistant(text));
         }
     }
 
@@ -6070,7 +6072,13 @@ Acknowledge that you have received this context by replying ONLY with the single
 
                     // Return to thinking state
                     session.set_processing_state(ProcessingState::Thinking);
-                    session.tools_in_flight = session.tools_in_flight.saturating_sub(1);
+                    session.tools_in_flight = match session.tools_in_flight.checked_sub(1) {
+                        Some(value) => value,
+                        None => {
+                            tracing::warn!("tools_in_flight underflow on ToolCompleted");
+                            0
+                        }
+                    };
 
                     // Track file changes for write/edit tools
                     if tool.success {
@@ -6116,7 +6124,15 @@ Acknowledge that you have received this context by replying ONLY with the single
                         tracing::warn!("CommandOutput: no matching tool message found to update");
                     }
                     if !cmd.is_streaming {
-                        session.tools_in_flight = session.tools_in_flight.saturating_sub(1);
+                        session.tools_in_flight = match session.tools_in_flight.checked_sub(1) {
+                            Some(value) => value,
+                            None => {
+                                tracing::warn!(
+                                    "tools_in_flight underflow on CommandOutput (non-streaming)"
+                                );
+                                0
+                            }
+                        };
                     }
                 }
                 AgentEvent::Error(err) => {
