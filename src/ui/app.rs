@@ -59,7 +59,9 @@ use crate::util::ToolAvailability;
 
 /// Timeout for double-press detection (ms)
 const DOUBLE_PRESS_TIMEOUT_MS: u64 = 500;
-const AGENT_SHUTDOWN_TIMEOUT_SECS: u64 = 20;
+const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+const AGENT_TERMINATION_GRACE: Duration = Duration::from_millis(500);
+const AGENT_TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Main application state
 pub struct App {
@@ -861,9 +863,9 @@ impl App {
         let mut was_processing = false;
 
         if let Some(session) = self.state.tab_manager.active_session_mut() {
+            pid = session.agent_pid.take();
             if session.is_processing {
                 was_processing = true;
-                pid = session.agent_pid.take();
                 session.stop_processing();
                 session.chat_view.finalize_streaming();
             }
@@ -904,22 +906,35 @@ impl App {
                     context,
                     "Failed to send SIGTERM to agent"
                 );
-                let kill_result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-                if kill_result == -1 {
-                    let kill_err = std::io::Error::last_os_error();
-                    if kill_err.raw_os_error() == Some(libc::ESRCH) {
-                        return true;
-                    }
-                    tracing::warn!(
-                        error = %kill_err,
-                        pid,
-                        context,
-                        "Failed to send SIGKILL to agent"
-                    );
-                    return false;
-                }
+            } else if self.wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGTERM") {
+                return true;
             }
-            true
+
+            let kill_result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            if kill_result == -1 {
+                let kill_err = std::io::Error::last_os_error();
+                if kill_err.raw_os_error() == Some(libc::ESRCH) {
+                    return true;
+                }
+                tracing::warn!(
+                    error = %kill_err,
+                    pid,
+                    context,
+                    "Failed to send SIGKILL to agent"
+                );
+                return false;
+            }
+
+            if self.wait_for_pid_exit(pid, AGENT_TERMINATION_GRACE, context, "SIGKILL") {
+                return true;
+            }
+
+            tracing::warn!(
+                pid,
+                context,
+                "Agent still running after SIGKILL grace period"
+            );
+            false
         }
         #[cfg(not(unix))]
         {
@@ -929,6 +944,33 @@ impl App {
                 "Process termination not implemented on this platform"
             );
             false
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_pid_exit(&self, pid: u32, timeout: Duration, context: &str, signal: &str) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let result = unsafe { libc::kill(pid as i32, 0) };
+            if result == 0 {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(AGENT_TERMINATION_POLL_INTERVAL);
+                continue;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return true;
+            }
+            tracing::warn!(
+                error = %err,
+                pid,
+                context,
+                signal,
+                "Failed to poll agent pid after signal"
+            );
+            return false;
         }
     }
 
@@ -2428,7 +2470,7 @@ impl App {
                                             "Failed to send AppEvent for agent stream"
                                         );
                                         let stop_result = tokio::time::timeout(
-                                            Duration::from_secs(AGENT_SHUTDOWN_TIMEOUT_SECS),
+                                            AGENT_SHUTDOWN_TIMEOUT,
                                             runner.stop(&handle),
                                         )
                                         .await;
@@ -2447,7 +2489,7 @@ impl App {
                                             Err(_) => {
                                                 tracing::debug!(
                                                     session_id = %session_id,
-                                                    timeout_secs = AGENT_SHUTDOWN_TIMEOUT_SECS,
+                                                    timeout_secs = AGENT_SHUTDOWN_TIMEOUT.as_secs(),
                                                     "Timed out stopping agent after event channel closed"
                                                 );
                                             }
@@ -2455,7 +2497,7 @@ impl App {
 
                                         if !stop_ok {
                                             let kill_result = tokio::time::timeout(
-                                                Duration::from_secs(AGENT_SHUTDOWN_TIMEOUT_SECS),
+                                                AGENT_SHUTDOWN_TIMEOUT,
                                                 runner.kill(&handle),
                                             )
                                             .await;
@@ -2471,7 +2513,7 @@ impl App {
                                                 Err(_) => {
                                                     tracing::debug!(
                                                         session_id = %session_id,
-                                                        timeout_secs = AGENT_SHUTDOWN_TIMEOUT_SECS,
+                                                        timeout_secs = AGENT_SHUTDOWN_TIMEOUT.as_secs(),
                                                         "Timed out killing agent after event channel closed"
                                                     );
                                                 }
@@ -5865,8 +5907,6 @@ Acknowledge that you have received this context by replying ONLY with the single
                             false
                         };
 
-                        // Idempotent safety net: ensure we never leave a streaming buffer behind.
-                        session.chat_view.finalize_streaming();
                         Self::flush_pending_agent_output(session);
                         session.tools_in_flight = 0;
                         was_processing
@@ -6137,6 +6177,9 @@ Acknowledge that you have received this context by replying ONLY with the single
                     if session.suppress_next_turn_summary {
                         session.suppress_next_turn_summary = false;
                     } else {
+                        if session.pending_turn_summary.is_some() {
+                            Self::flush_pending_agent_output(session);
+                        }
                         let summary = session.current_turn_summary.clone();
                         session.pending_turn_summary = Some(summary);
                     }
