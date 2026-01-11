@@ -2,6 +2,28 @@
 
 - [ ] Sweep the code for "\_ = " error swallowing instances, add it to AGENTS.md and CLAUDE.md
 
+- [ ] When restoring sessions, restore the arrow up history too.
+
+- [ ] If we press Enter on an empty prompt, scroll to the bottom (if not there already)
+
+- [ ] When the workspace is being removed, show a spinner of some sort because it can take quite a while, and the git stats keep updating until it's done.
+
+- [ ] BUG: copying agent conversation lacks some spaces (on line ends?):
+
+Example from a real session:
+
+```
+• Codex CLI: It already has a queued‑message feature, but queued messages are only consumed after the current turn ends. An open feature requestexplicitly calls out that messages “sit in the queue until the agent fully finishes,” and asks for mid‑turn ingestion. (github.com)
+• Codex CLI queue semantics: In a public discussion, a user notes Codex currently sends each queued message as a separate user message, whereas some competitors concatenate queued items into a single next-turn message. (github.com)
+• Claude Code (architecture): Reverse‑engineering writeups describe a main agent loop coupled with an asynchronous message queue in the corescheduling layer, implying messages can be accepted while the agent is running and injected between steps. (blog.promptlayer.com)
+• Claude Code (user input injection): Another reverse‑engineering post notes that new console input can be injected into the conversation flowmid‑process, i.e., “steering” as the agent continues. (pierce.dev)
+• Claude Code (harness feasibility): A third‑party SDK doc shows Claude Code CLI supports bidirectional streaming via stdin/stdout in stream‑jsonmode, which is a prerequisite for mid‑turn message injection by a harness. (hexdocs.pm)
+• Anecdotal Claude Code behavior: Reddit users report messages typed during a run are queued and applied after the current step, with ESCinterrupting for immediate handling—useful signal but not authoritative. (reddit.com)
+```
+
+- [ ] Integrate with GitHub actions for automatic task assignment and execution.
+  - [ ] Maybe others like Linear, Vibe-Kanban?
+
 - [ ] BUG: don't allow the user to send messages while streaming
 
 - [ ] Handle claude ExitPlanMode and AskQuestion tools properly
@@ -58,7 +80,7 @@
 
 - [x] Add a new action to copy the current workspace path to clipboard, map it to Alt+Shift+C
 
-- [-] Improve PR tracking.
+- [x] Improve PR tracking.
   - [x] Remove PR indicator from tab.
   - [x] Simplify what is displayed on the right-hand side of the prompt area, remove project and path, leaving just branch name. Prepend it with PR # if available plus our custom dot. If there are any git changes, display git status like +2 (changes/green), -66 (deletions/red). Order PR (if there is one) <dot> git status <dot> branch.
   - [x] Consider displaying similar git status indicators on workspace sidebar for insight just by looking at the side bar. Mock it up.
@@ -86,6 +108,6 @@
 - [x] When we have no workspaces under a project, it shows collapsed. It has to be shown expanded.
 - [x] Dialogs are not showing when there's no workspace open. I tried Alt+I to import a session. Then when you open a tab the dialog is visible. Can you help me by compiling a list of all the keys that open dialogs so we can check which ones should be valid in this initial state?
 
-- [ ] Investigate why sometimes the git status are not showing on the sidebar:
+- [x] Investigate why sometimes the git status are not showing on the sidebar:
       ![Sidebar showing vast-snow with no git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_J7Q6Kciems/CleanShot/%202026-01-07/%20at/%2015.00.09@2x.png)
       ![Prompt shows the git status](/Users/fcoury/Library/Application/%20Support/CleanShot/media/media_U6MdBjM1Vi/CleanShot/%202026-01-07/%20at/%2015.00.53@2x.png)
