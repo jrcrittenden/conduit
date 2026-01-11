@@ -9108,6 +9108,7 @@ mod tests {
     use crate::agent::events::AssistantMessageEvent;
     use crate::agent::AgentType;
     use crate::config::Config;
+    use crate::ui::components::MessageRole;
     use crate::ui::session::AgentSession;
     use crate::util::ToolAvailability;
     use std::sync::Arc;
@@ -9274,7 +9275,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_event_routes_by_session_id_after_tab_close() {
+    async fn test_agent_event_routes_streaming_by_session_id_after_tab_close() {
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let session_c = Uuid::new_v4();
+
+        let mut app = build_test_app_with_sessions(&[session_a, session_b, session_c]);
+
+        // Close the first tab so indices shift: B -> 0, C -> 1
+        assert!(app.state.tab_manager.close_tab(0));
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_b),
+            Some(0)
+        );
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_c),
+            Some(1)
+        );
+
+        let event = AgentEvent::AssistantMessage(AssistantMessageEvent {
+            text: "message for B".to_string(),
+            is_final: false,
+        });
+
+        app.handle_agent_event(session_b, event).await.unwrap();
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_b)
+                .expect("session B missing");
+            assert_eq!(session.chat_view.streaming_buffer(), Some("message for B"));
+            assert!(session.chat_view.messages().is_empty());
+        }
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_c)
+                .expect("session C missing");
+            assert!(session.chat_view.streaming_buffer().is_none());
+            assert!(session.chat_view.messages().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_event_routes_final_by_session_id_after_tab_close() {
         let session_a = Uuid::new_v4();
         let session_b = Uuid::new_v4();
         let session_c = Uuid::new_v4();
@@ -9305,7 +9353,11 @@ mod tests {
                 .tab_manager
                 .session_by_id_mut(session_b)
                 .expect("session B missing");
-            assert_eq!(session.chat_view.streaming_buffer(), Some("message for B"));
+            assert!(session.chat_view.streaming_buffer().is_none());
+            let messages = session.chat_view.messages();
+            let last = messages.last().expect("missing assistant message");
+            assert_eq!(last.role, MessageRole::Assistant);
+            assert_eq!(last.content, "message for B");
         }
 
         {
@@ -9315,6 +9367,7 @@ mod tests {
                 .session_by_id_mut(session_c)
                 .expect("session C missing");
             assert!(session.chat_view.streaming_buffer().is_none());
+            assert!(session.chat_view.messages().is_empty());
         }
     }
 }
