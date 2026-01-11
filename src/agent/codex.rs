@@ -606,7 +606,7 @@ impl AgentRunner for CodexCliRunner {
         }
         #[cfg(not(unix))]
         {
-            drop(handle);
+            let _ = handle;
             return Err(AgentError::NotSupported(
                 "Stop not implemented on this platform".into(),
             ));
@@ -623,7 +623,7 @@ impl AgentRunner for CodexCliRunner {
         }
         #[cfg(not(unix))]
         {
-            drop(handle);
+            let _ = handle;
             return Err(AgentError::NotSupported(
                 "Kill not implemented on this platform".into(),
             ));
