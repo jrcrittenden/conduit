@@ -88,8 +88,6 @@ pub struct AgentSession {
     pub title: Option<String>,
     /// Whether title generation is currently in flight (prevents duplicate calls)
     pub title_generation_pending: bool,
-    /// Final assistant message buffered until stream end (keeps final response last)
-    pub pending_final_assistant_message: Option<String>,
     /// Turn summary buffered until stream end
     pub pending_turn_summary: Option<TurnSummary>,
     /// Number of tools currently in flight for this turn
@@ -142,7 +140,6 @@ impl AgentSession {
             suppress_next_turn_summary: false,
             title: None,
             title_generation_pending: false,
-            pending_final_assistant_message: None,
             pending_turn_summary: None,
             tools_in_flight: 0,
         };
@@ -256,7 +253,6 @@ impl AgentSession {
         self.is_processing = true;
         self.thinking_indicator.reset();
         self.current_turn_summary = TurnSummary::new();
-        self.pending_final_assistant_message = None;
         self.pending_turn_summary = None;
         self.tools_in_flight = 0;
         self.update_status();
