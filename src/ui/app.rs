@@ -60,6 +60,7 @@ use crate::ui::terminal_guard::TerminalGuard;
 use crate::util::ToolAvailability;
 
 mod app_actions_queue;
+mod app_actions_tabs;
 mod app_input;
 mod app_scroll;
 mod app_selection;
@@ -1616,85 +1617,8 @@ impl App {
             }
 
             // ========== Tab Management ==========
-            Action::CloseTab => {
-                let active = self.state.tab_manager.active_index();
-                self.stop_agent_for_tab(active);
-                self.state.tab_manager.close_tab(active);
-                if self.state.tab_manager.is_empty() {
-                    self.state.stop_footer_spinner();
-                    self.state.sidebar_state.visible = true;
-                    self.state.input_mode = InputMode::SidebarNavigation;
-                } else {
-                    self.sync_sidebar_to_active_tab();
-                    self.sync_footer_spinner();
-                }
-                effects.push(Effect::SaveSessionState);
-            }
-            Action::NextTab => {
-                // Include sidebar in tab cycle when visible
-                if self.state.input_mode == InputMode::SidebarNavigation {
-                    // From sidebar, go to first tab
-                    if !self.state.tab_manager.is_empty() {
-                        self.state.tab_manager.switch_to(0);
-                        self.state.sidebar_state.set_focused(false);
-                        self.state.input_mode = InputMode::Normal;
-                        self.sync_sidebar_to_active_tab();
-                    }
-                } else if self.state.sidebar_state.visible {
-                    // Check if on last tab - if so, go to sidebar
-                    let current = self.state.tab_manager.active_index();
-                    let count = self.state.tab_manager.len();
-                    if count > 0 && current == count - 1 {
-                        // On last tab, go to sidebar
-                        self.state.sidebar_state.set_focused(true);
-                        self.state.input_mode = InputMode::SidebarNavigation;
-                    } else {
-                        self.state.tab_manager.next_tab();
-                        self.sync_sidebar_to_active_tab();
-                        self.sync_footer_spinner();
-                    }
-                } else {
-                    self.state.tab_manager.next_tab();
-                    self.sync_sidebar_to_active_tab();
-                    self.sync_footer_spinner();
-                }
-            }
-            Action::PrevTab => {
-                // Include sidebar in tab cycle when visible
-                if self.state.input_mode == InputMode::SidebarNavigation {
-                    // From sidebar, go to last tab
-                    let count = self.state.tab_manager.len();
-                    if count > 0 {
-                        self.state.tab_manager.switch_to(count - 1);
-                        self.state.sidebar_state.set_focused(false);
-                        self.state.input_mode = InputMode::Normal;
-                        self.sync_sidebar_to_active_tab();
-                        self.sync_footer_spinner();
-                    }
-                } else if self.state.sidebar_state.visible {
-                    // Check if on first tab - if so, go to sidebar
-                    let current = self.state.tab_manager.active_index();
-                    if current == 0 {
-                        // On first tab, go to sidebar
-                        self.state.sidebar_state.set_focused(true);
-                        self.state.input_mode = InputMode::SidebarNavigation;
-                    } else {
-                        self.state.tab_manager.prev_tab();
-                        self.sync_sidebar_to_active_tab();
-                        self.sync_footer_spinner();
-                    }
-                } else {
-                    self.state.tab_manager.prev_tab();
-                    self.sync_sidebar_to_active_tab();
-                    self.sync_footer_spinner();
-                }
-            }
-            Action::SwitchToTab(n) => {
-                if n > 0 {
-                    self.state.tab_manager.switch_to((n - 1) as usize);
-                    self.sync_sidebar_to_active_tab();
-                    self.sync_footer_spinner();
-                }
+            Action::CloseTab | Action::NextTab | Action::PrevTab | Action::SwitchToTab(_) => {
+                self.handle_tab_action(action, &mut effects);
             }
 
             // ========== Chat Scrolling ==========
