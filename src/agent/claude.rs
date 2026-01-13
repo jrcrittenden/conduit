@@ -320,6 +320,10 @@ impl AgentRunner for ClaudeCodeRunner {
                         return;
                     }
                     if let Some(payload) = stdin_payload {
+                        tracing::info!(
+                            "Writing initial payload to Claude stdin: {} bytes",
+                            payload.len()
+                        );
                         if let Err(err) = stdin.write_all(payload.as_bytes()).await {
                             tracing::error!(
                                 "Failed to write initial payload to Claude stdin: {}",
@@ -327,6 +331,9 @@ impl AgentRunner for ClaudeCodeRunner {
                             );
                             return;
                         }
+                        tracing::info!("Successfully wrote initial payload to Claude stdin");
+                    } else {
+                        tracing::info!("No initial stdin_payload to write to Claude");
                     }
                     while let Some(line) = rx.recv().await {
                         if let Err(err) = stdin.write_all(line.as_bytes()).await {

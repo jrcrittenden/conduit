@@ -6343,20 +6343,97 @@ impl App {
         Ok(format!("{json}\n"))
     }
 
-    fn build_user_prompt_jsonl(prompt: &str) -> anyhow::Result<String> {
+    /// Encode an image file to base64 and determine its media type
+    fn encode_image_to_base64(path: &PathBuf) -> anyhow::Result<(String, String)> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let data = std::fs::read(path)
+            .map_err(|e| anyhow!("Failed to read image file {}: {}", path.display(), e))?;
+
+        let media_type = match path.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            _ => "image/png", // Default to PNG for unknown extensions
+        };
+
+        let base64_data = STANDARD.encode(&data);
+        Ok((base64_data, media_type.to_string()))
+    }
+
+    fn build_user_prompt_jsonl(prompt: &str, images: &[PathBuf]) -> anyhow::Result<String> {
+        let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+
+        tracing::info!(
+            "build_user_prompt_jsonl: building JSONL with {} images, prompt_len={}",
+            images.len(),
+            prompt.len()
+        );
+
+        // Add image content blocks first (Claude works best with images before text)
+        for (i, path) in images.iter().enumerate() {
+            tracing::info!(
+                "build_user_prompt_jsonl: processing image {} at {:?}",
+                i,
+                path
+            );
+            match Self::encode_image_to_base64(path) {
+                Ok((base64_data, media_type)) => {
+                    tracing::info!(
+                        "build_user_prompt_jsonl: encoded image {} successfully, media_type={}, base64_len={}",
+                        i,
+                        media_type,
+                        base64_data.len()
+                    );
+                    // Add image label if multiple images
+                    if images.len() > 1 {
+                        content_blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": format!("Image {}:", i + 1),
+                        }));
+                    }
+                    content_blocks.push(serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64_data,
+                        }
+                    }));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to encode image {}: {}", path.display(), e);
+                    // Fall back to mentioning the file path
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": format!("[Failed to load image: {}]", path.display()),
+                    }));
+                }
+            }
+        }
+
+        // Add text content block
+        if !prompt.is_empty() {
+            content_blocks.push(serde_json::json!({
+                "type": "text",
+                "text": prompt,
+            }));
+        }
+
         let payload = serde_json::json!({
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    }
-                ],
+                "content": content_blocks,
             }
         });
         let json = serde_json::to_string(&payload)?;
+        tracing::info!(
+            "build_user_prompt_jsonl: final JSONL payload size={} bytes, content_blocks={}",
+            json.len(),
+            content_blocks.len()
+        );
         Ok(format!("{json}\n"))
     }
 
@@ -6511,7 +6588,7 @@ impl App {
         &mut self,
         tab_index: usize,
         prompt: String,
-        mut images: Vec<PathBuf>,
+        images: Vec<PathBuf>,
         image_placeholders: Vec<String>,
         hidden: bool,
         stdin_payload: Option<String>,
@@ -6615,14 +6692,12 @@ impl App {
         }
 
         // Start agent
-        // Strip placeholders unconditionally for Codex (handles edge case where user
-        // manually typed placeholder text without attaching images)
-        if agent_type == AgentType::Codex {
+        // Strip placeholders for both Codex and Claude since images are sent separately:
+        // - Codex: images passed via --images flag
+        // - Claude: images encoded as base64 in JSONL payload
+        // This prevents the agent from trying to read the file path from the placeholder text
+        if agent_type == AgentType::Codex || agent_type == AgentType::Claude {
             prompt = Self::strip_image_placeholders(prompt, &image_placeholders);
-        }
-        if agent_type == AgentType::Claude && !images.is_empty() {
-            prompt = Self::append_image_paths_to_prompt(prompt, &images);
-            images.clear();
         }
 
         if prompt.trim().is_empty() && images.is_empty() && stdin_payload.is_none() {
@@ -6672,7 +6747,11 @@ impl App {
         if agent_type == AgentType::Claude {
             use_stream_json = true;
             if stdin_payload.is_none() {
-                stdin_payload = Some(Self::build_user_prompt_jsonl(&prompt)?);
+                tracing::info!(
+                    "submit_prompt_for_tab: building JSONL for Claude with {} images",
+                    images.len()
+                );
+                stdin_payload = Some(Self::build_user_prompt_jsonl(&prompt, &images)?);
             }
         }
 
@@ -6941,24 +7020,6 @@ impl App {
         }
 
         Ok(effects)
-    }
-
-    fn append_image_paths_to_prompt(prompt: String, images: &[PathBuf]) -> String {
-        if images.is_empty() {
-            return prompt;
-        }
-
-        let mut lines: Vec<String> = Vec::new();
-        if !prompt.trim().is_empty() {
-            lines.push(prompt.trim_end().to_string());
-        }
-
-        lines.push("Image file(s):".to_string());
-        for path in images {
-            lines.push(format!("- {}", path.display()));
-        }
-
-        lines.join("\n")
     }
 
     fn strip_image_placeholders(prompt: String, placeholders: &[String]) -> String {
@@ -9365,13 +9426,82 @@ mod tests {
     }
 
     #[test]
-    fn test_append_image_paths_to_prompt_appends_list() {
-        let prompt = "Test".to_string();
-        let images = vec![PathBuf::from("a.png"), PathBuf::from("b.png")];
+    fn test_build_user_prompt_jsonl_with_no_images() {
+        let result = App::build_user_prompt_jsonl("Test prompt", &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
 
-        let combined = App::append_image_paths_to_prompt(prompt, &images);
+        assert_eq!(parsed["type"], "user");
+        assert_eq!(parsed["message"]["role"], "user");
 
-        assert_eq!(combined, "Test\nImage file(s):\n- a.png\n- b.png");
+        let content = parsed["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Test prompt");
+    }
+
+    #[test]
+    fn test_build_user_prompt_jsonl_with_missing_images_fallback() {
+        // Test with non-existent image paths - should add fallback text blocks
+        let images = vec![PathBuf::from("/nonexistent/image.png")];
+        let result = App::build_user_prompt_jsonl("Test prompt", &images).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
+
+        let content = parsed["message"]["content"].as_array().unwrap();
+        // Should have fallback text for failed image + the prompt text
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to load image"));
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "Test prompt");
+    }
+
+    #[test]
+    fn test_build_user_prompt_jsonl_with_real_image() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a minimal valid PNG file (1x1 red pixel)
+        let png_data: [u8; 70] = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1 dimensions
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, // 8-bit RGB
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
+            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x18,
+            0xDD, 0x8D, 0xB5, // compressed image data
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60,
+            0x82, // IEND chunk
+        ];
+
+        let mut temp_file = NamedTempFile::with_suffix(".png").unwrap();
+        temp_file.write_all(&png_data).unwrap();
+        let temp_path = temp_file.path().to_path_buf();
+
+        let result =
+            App::build_user_prompt_jsonl("What is in this image?", &[temp_path.clone()]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
+
+        assert_eq!(parsed["type"], "user");
+        assert_eq!(parsed["message"]["role"], "user");
+
+        let content = parsed["message"]["content"].as_array().unwrap();
+        // Should have image block + text block
+        assert_eq!(content.len(), 2, "Expected 2 content blocks (image + text)");
+
+        // First block should be an image
+        assert_eq!(content[0]["type"], "image", "First block should be image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        // Verify base64 data is non-empty
+        let base64_data = content[0]["source"]["data"].as_str().unwrap();
+        assert!(!base64_data.is_empty(), "base64 data should not be empty");
+
+        // Second block should be text
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "What is in this image?");
     }
 
     #[test]
