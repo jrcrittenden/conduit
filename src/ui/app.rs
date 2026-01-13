@@ -1784,26 +1784,7 @@ impl App {
                 }
             }
             Action::NewProject => {
-                let base_dir = self
-                    .app_state_dao
-                    .as_ref()
-                    .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
-
-                self.state.close_overlays();
-                if let Some(base_dir_str) = base_dir {
-                    let base_path = if base_dir_str.starts_with('~') {
-                        dirs::home_dir()
-                            .map(|h| h.join(base_dir_str[1..].trim_start_matches('/')))
-                            .unwrap_or_else(|| PathBuf::from(&base_dir_str))
-                    } else {
-                        PathBuf::from(&base_dir_str)
-                    };
-                    self.state.project_picker_state.show(base_path);
-                    self.state.input_mode = InputMode::PickingProject;
-                } else {
-                    self.state.base_dir_dialog_state.show();
-                    self.state.input_mode = InputMode::SettingBaseDir;
-                }
+                self.open_project_picker_or_base_dir();
             }
             Action::NewWorkspaceUnderCursor => {
                 use crate::ui::components::{ActionType, NodeType};
@@ -4660,6 +4641,29 @@ impl App {
         }
     }
 
+    fn open_project_picker_or_base_dir(&mut self) {
+        let base_dir = self
+            .app_state_dao
+            .as_ref()
+            .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
+
+        self.state.close_overlays();
+        if let Some(base_dir_str) = base_dir {
+            let base_path = if base_dir_str.starts_with('~') {
+                dirs::home_dir()
+                    .map(|h| h.join(base_dir_str[1..].trim_start_matches('/')))
+                    .unwrap_or_else(|| PathBuf::from(&base_dir_str))
+            } else {
+                PathBuf::from(&base_dir_str)
+            };
+            self.state.project_picker_state.show(base_path);
+            self.state.input_mode = InputMode::PickingProject;
+        } else {
+            self.state.base_dir_dialog_state.show();
+            self.state.input_mode = InputMode::SettingBaseDir;
+        }
+    }
+
     /// Show missing tool dialog and enter MissingTool mode.
     fn show_missing_tool(&mut self, tool: crate::util::Tool, message: impl Into<String>) {
         self.state.close_overlays();
@@ -6008,26 +6012,7 @@ impl App {
         if let Some(button_area) = self.state.sidebar_state.add_project_button_area {
             if Self::point_in_rect(x, y, button_area) {
                 // Trigger new project dialog (same logic as Action::NewProject)
-                let base_dir = self
-                    .app_state_dao
-                    .as_ref()
-                    .and_then(|dao| dao.get("projects_base_dir").ok().flatten());
-
-                self.state.close_overlays();
-                if let Some(base_dir_str) = base_dir {
-                    let base_path = if base_dir_str.starts_with('~') {
-                        dirs::home_dir()
-                            .map(|h| h.join(base_dir_str[1..].trim_start_matches('/')))
-                            .unwrap_or_else(|| PathBuf::from(&base_dir_str))
-                    } else {
-                        PathBuf::from(&base_dir_str)
-                    };
-                    self.state.project_picker_state.show(base_path);
-                    self.state.input_mode = InputMode::PickingProject;
-                } else {
-                    self.state.base_dir_dialog_state.show();
-                    self.state.input_mode = InputMode::SettingBaseDir;
-                }
+                self.open_project_picker_or_base_dir();
                 return None;
             }
         }
