@@ -59,6 +59,7 @@ use crate::ui::session::AgentSession;
 use crate::ui::terminal_guard::TerminalGuard;
 use crate::util::ToolAvailability;
 
+mod app_actions_pr;
 mod app_actions_queue;
 mod app_actions_sidebar;
 mod app_actions_tabs;
@@ -7116,29 +7117,6 @@ impl App {
             Duration::from_secs(3),
         );
         Ok(())
-    }
-
-    /// Handle Ctrl+P: Open existing PR or create new one
-    fn handle_pr_action(&mut self) -> Option<Effect> {
-        let tab_index = self.state.tab_manager.active_index();
-        let session = self.state.tab_manager.active_session()?;
-
-        let working_dir = match &session.working_dir {
-            Some(d) => d.clone(),
-            None => return None, // No working dir
-        };
-
-        // Show loading dialog immediately
-        self.state.close_overlays();
-        self.state
-            .confirmation_dialog_state
-            .show_loading("Create Pull Request", "Checking repository status...");
-        self.state.input_mode = InputMode::Confirming;
-
-        Some(Effect::PrPreflight {
-            tab_index,
-            working_dir,
-        })
     }
 
     /// Initiate fork session flow - validate and show confirmation dialog
