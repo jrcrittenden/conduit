@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
@@ -141,6 +142,7 @@ fn check_state_from_status(check: &PrStatusCheck) -> CodeRabbitCheckState {
 #[derive(Debug, Clone)]
 pub struct CodeRabbitItemDraft {
     pub comment_id: i64,
+    pub commit_id: Option<String>,
     pub source: CodeRabbitItemSource,
     pub category: CodeRabbitCategory,
     pub severity: Option<CodeRabbitSeverity>,
@@ -322,12 +324,7 @@ impl CodeRabbitProcessor {
     ) -> Result<()> {
         let observed_at = Utc::now();
         let fetcher = CodeRabbitFetcher::new(working_dir.to_path_buf());
-        let items = match fetcher.fetch_actionable_items(
-            round.pr_number as u32,
-            &round.head_sha,
-            round.check_started_at,
-            observed_at,
-        ) {
+        let drafts = match fetcher.fetch_actionable_items(round.pr_number as u32, observed_at) {
             Ok(items) => items,
             Err(error) => {
                 tracing::warn!(
@@ -339,27 +336,30 @@ impl CodeRabbitProcessor {
             }
         };
 
-        let mut to_insert = Vec::new();
-        for item in items {
-            to_insert.push(CodeRabbitItem {
-                id: Uuid::new_v4(),
-                round_id: round.id,
-                comment_id: item.comment_id,
-                source: item.source,
-                category: item.category,
-                severity: item.severity,
-                file_path: item.file_path,
-                line: item.line,
-                original_line: item.original_line,
-                diff_hunk: item.diff_hunk,
-                html_url: item.html_url,
-                body: item.body,
-                agent_prompt: item.agent_prompt,
-                created_at: item.created_at,
-                updated_at: item.updated_at,
-            });
+        let window_end = observed_at + Duration::minutes(CODERABBIT_WINDOW_SLACK_MINUTES);
+        let mut current_round_drafts = Vec::new();
+        let mut foreign_by_commit: HashMap<String, Vec<CodeRabbitItemDraft>> = HashMap::new();
+
+        for draft in drafts {
+            match draft.commit_id.as_deref() {
+                Some(commit_id) if commit_id.eq_ignore_ascii_case(&round.head_sha) => {
+                    current_round_drafts.push(draft);
+                }
+                Some(commit_id) => {
+                    foreign_by_commit
+                        .entry(commit_id.to_string())
+                        .or_default()
+                        .push(draft);
+                }
+                None => {
+                    if within_window(draft.created_at, Some(round.check_started_at), window_end) {
+                        current_round_drafts.push(draft);
+                    }
+                }
+            }
         }
 
+        let to_insert = build_items(round.id, &current_round_drafts);
         if !to_insert.is_empty() {
             self.item_store
                 .insert_items(&to_insert)
@@ -379,25 +379,94 @@ impl CodeRabbitProcessor {
             round.status = CodeRabbitRoundStatus::Complete;
             round.completed_at = Some(observed_at);
             round.next_fetch_at = None;
-            self.round_store
-                .update(&round)
-                .context("Finalize CodeRabbit round")?;
-            return Ok(());
-        }
-
-        let backoff = &settings.coderabbit_backoff_seconds;
-        if (round.attempt_count as usize) >= backoff.len() {
-            round.status = CodeRabbitRoundStatus::Complete;
-            round.completed_at = Some(observed_at);
-            round.next_fetch_at = None;
         } else {
-            let delay = backoff[round.attempt_count as usize - 1];
-            round.next_fetch_at = Some(observed_at + Duration::seconds(delay));
+            let backoff = &settings.coderabbit_backoff_seconds;
+            if (round.attempt_count as usize) >= backoff.len() {
+                round.status = CodeRabbitRoundStatus::Complete;
+                round.completed_at = Some(observed_at);
+                round.next_fetch_at = None;
+            } else {
+                let delay = backoff[round.attempt_count as usize - 1];
+                round.next_fetch_at = Some(observed_at + Duration::seconds(delay));
+            }
         }
 
         self.round_store
             .update(&round)
             .context("Update CodeRabbit round after fetch")?;
+
+        self.capture_foreign_rounds(&round, foreign_by_commit, observed_at)
+    }
+
+    fn capture_foreign_rounds(
+        &self,
+        base_round: &CodeRabbitRound,
+        foreign_by_commit: HashMap<String, Vec<CodeRabbitItemDraft>>,
+        observed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        for (commit_id, drafts) in foreign_by_commit {
+            self.capture_round_for_commit(base_round, &commit_id, &drafts, observed_at)?;
+        }
+        Ok(())
+    }
+
+    fn capture_round_for_commit(
+        &self,
+        base_round: &CodeRabbitRound,
+        commit_id: &str,
+        drafts: &[CodeRabbitItemDraft],
+        observed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let existing = self
+            .round_store
+            .get_latest_for_head(base_round.repository_id, base_round.pr_number, commit_id)
+            .context("Load CodeRabbit round by commit")?;
+
+        let mut round = if let Some(round) = existing {
+            round
+        } else {
+            let check_started_at = drafts
+                .iter()
+                .map(|draft| draft.created_at)
+                .min()
+                .unwrap_or(observed_at);
+            let round = CodeRabbitRound::new(
+                base_round.repository_id,
+                base_round.workspace_id,
+                base_round.pr_number,
+                commit_id.to_string(),
+                CodeRabbitCheckState::Unknown.as_str().to_string(),
+                check_started_at,
+                observed_at,
+            );
+            self.round_store
+                .create(&round)
+                .context("Create CodeRabbit round for prior commit")?;
+            round
+        };
+
+        let to_insert = build_items(round.id, drafts);
+        if !to_insert.is_empty() {
+            self.item_store
+                .insert_items(&to_insert)
+                .context("Insert CodeRabbit items for prior commit")?;
+        }
+
+        let total_actionable = self
+            .item_store
+            .count_for_round(round.id)
+            .context("Count CodeRabbit items for prior commit")?;
+
+        if total_actionable > 0 && round.status != CodeRabbitRoundStatus::Complete {
+            round.status = CodeRabbitRoundStatus::Complete;
+            round.completed_at = Some(observed_at);
+            round.next_fetch_at = None;
+        }
+        round.actionable_count = total_actionable;
+        round.updated_at = observed_at;
+        self.round_store
+            .update(&round)
+            .context("Update CodeRabbit round for prior commit")?;
         Ok(())
     }
 }
@@ -414,13 +483,8 @@ impl CodeRabbitFetcher {
     fn fetch_actionable_items(
         &self,
         pr_number: u32,
-        head_sha: &str,
-        check_started_at: DateTime<Utc>,
         observed_at: DateTime<Utc>,
     ) -> Result<Vec<CodeRabbitItemDraft>> {
-        let window_start = Some(check_started_at);
-        let window_end = observed_at + Duration::minutes(CODERABBIT_WINDOW_SLACK_MINUTES);
-
         let review_comments: Vec<GitHubReviewComment> = gh_api_paginated(
             &self.working_dir,
             &format!(
@@ -454,20 +518,12 @@ impl CodeRabbitFetcher {
             if !is_coderabbit_login(&comment.user.login) {
                 continue;
             }
-            if !matches_commit_or_window(
-                comment.commit_id.as_deref(),
-                head_sha,
-                parse_timestamp(Some(&comment.created_at)),
-                window_start,
-                window_end,
-            ) {
-                continue;
-            }
             if let Some((category, severity)) = parse_actionable(&comment.body) {
                 let created_at = parse_timestamp(Some(&comment.created_at)).unwrap_or(observed_at);
                 let updated_at = parse_timestamp(Some(&comment.updated_at)).unwrap_or(created_at);
                 drafts.push(CodeRabbitItemDraft {
                     comment_id: comment.id,
+                    commit_id: comment.commit_id.clone(),
                     source: CodeRabbitItemSource::ReviewComment,
                     category,
                     severity,
@@ -488,20 +544,12 @@ impl CodeRabbitFetcher {
             if !is_coderabbit_login(&comment.user.login) {
                 continue;
             }
-            if !matches_commit_or_window(
-                None,
-                head_sha,
-                parse_timestamp(Some(&comment.created_at)),
-                window_start,
-                window_end,
-            ) {
-                continue;
-            }
             if let Some((category, severity)) = parse_actionable(&comment.body) {
                 let created_at = parse_timestamp(Some(&comment.created_at)).unwrap_or(observed_at);
                 let updated_at = parse_timestamp(Some(&comment.updated_at)).unwrap_or(created_at);
                 drafts.push(CodeRabbitItemDraft {
                     comment_id: comment.id,
+                    commit_id: None,
                     source: CodeRabbitItemSource::IssueComment,
                     category,
                     severity,
@@ -526,20 +574,12 @@ impl CodeRabbitFetcher {
             if body.is_empty() {
                 continue;
             }
-            if !matches_commit_or_window(
-                review.commit_id.as_deref(),
-                head_sha,
-                parse_timestamp(review.submitted_at.as_deref()),
-                window_start,
-                window_end,
-            ) {
-                continue;
-            }
             if let Some((category, severity)) = parse_actionable(&body) {
                 let created_at =
                     parse_timestamp(review.submitted_at.as_deref()).unwrap_or(observed_at);
                 drafts.push(CodeRabbitItemDraft {
                     comment_id: review.id,
+                    commit_id: review.commit_id.clone(),
                     source: CodeRabbitItemSource::Review,
                     category,
                     severity,
@@ -617,22 +657,6 @@ fn is_coderabbit_login(login: &str) -> bool {
         .any(|candidate| candidate.eq_ignore_ascii_case(login))
 }
 
-fn matches_commit_or_window(
-    commit_id: Option<&str>,
-    head_sha: &str,
-    created_at: Option<DateTime<Utc>>,
-    window_start: Option<DateTime<Utc>>,
-    window_end: DateTime<Utc>,
-) -> bool {
-    if let Some(commit_id) = commit_id {
-        return commit_id.eq_ignore_ascii_case(head_sha);
-    }
-    if let Some(created_at) = created_at {
-        return within_window(created_at, window_start, window_end);
-    }
-    false
-}
-
 fn within_window(
     created_at: DateTime<Utc>,
     window_start: Option<DateTime<Utc>>,
@@ -693,6 +717,29 @@ fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
     value
         .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn build_items(round_id: Uuid, drafts: &[CodeRabbitItemDraft]) -> Vec<CodeRabbitItem> {
+    drafts
+        .iter()
+        .map(|draft| CodeRabbitItem {
+            id: Uuid::new_v4(),
+            round_id,
+            comment_id: draft.comment_id,
+            source: draft.source,
+            category: draft.category,
+            severity: draft.severity,
+            file_path: draft.file_path.clone(),
+            line: draft.line,
+            original_line: draft.original_line,
+            diff_hunk: draft.diff_hunk.clone(),
+            html_url: draft.html_url.clone(),
+            body: draft.body.clone(),
+            agent_prompt: draft.agent_prompt.clone(),
+            created_at: draft.created_at,
+            updated_at: draft.updated_at,
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]

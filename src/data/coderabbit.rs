@@ -200,6 +200,30 @@ impl CodeRabbitRoundStore {
         }
     }
 
+    pub fn get_latest_for_head(
+        &self,
+        repository_id: Uuid,
+        pr_number: i64,
+        head_sha: &str,
+    ) -> SqliteResult<Option<CodeRabbitRound>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repository_id, workspace_id, pr_number, head_sha, check_state, check_started_at,
+                    observed_at, status, attempt_count, next_fetch_at, actionable_count, completed_at,
+                    created_at, updated_at
+             FROM coderabbit_rounds
+             WHERE repository_id = ?1 AND pr_number = ?2 AND head_sha = ?3
+             ORDER BY check_started_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![repository_id.to_string(), pr_number, head_sha])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::row_to_round(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn list_pending_due(&self, now: DateTime<Utc>) -> SqliteResult<Vec<CodeRabbitRound>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

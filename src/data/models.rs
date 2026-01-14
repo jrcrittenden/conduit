@@ -371,7 +371,11 @@ impl CodeRabbitCategory {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        value.parse().ok()
+        match value.to_ascii_lowercase().as_str() {
+            "potential-issue" => Some(CodeRabbitCategory::PotentialIssue),
+            "refactor-suggestion" => Some(CodeRabbitCategory::RefactorSuggestion),
+            _ => None,
+        }
     }
 }
 
@@ -405,7 +409,14 @@ impl CodeRabbitSeverity {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        value.parse().ok()
+        match value.to_ascii_lowercase().as_str() {
+            "critical" => Some(CodeRabbitSeverity::Critical),
+            "major" => Some(CodeRabbitSeverity::Major),
+            "minor" => Some(CodeRabbitSeverity::Minor),
+            "trivial" => Some(CodeRabbitSeverity::Trivial),
+            "info" => Some(CodeRabbitSeverity::Info),
+            _ => None,
+        }
     }
 }
 
