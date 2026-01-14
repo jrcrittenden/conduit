@@ -8566,6 +8566,7 @@ mod tests {
             app_state_dao: None,
             session_tab_dao: None,
             fork_seed_dao: None,
+            coderabbit_processor: None,
             worktree_manager: WorktreeManager::new(),
             git_tracker: None,
         }
