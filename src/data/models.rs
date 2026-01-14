@@ -242,6 +242,14 @@ impl CodeRabbitMode {
     }
 }
 
+impl std::str::FromStr for CodeRabbitMode {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(CodeRabbitMode::from_str(value))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodeRabbitRetention {
@@ -262,6 +270,14 @@ impl CodeRabbitRetention {
             "delete-on-close" => CodeRabbitRetention::DeleteOnClose,
             _ => CodeRabbitRetention::Keep,
         }
+    }
+}
+
+impl std::str::FromStr for CodeRabbitRetention {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(CodeRabbitRetention::from_str(value))
     }
 }
 
@@ -297,6 +313,14 @@ impl CodeRabbitRoundStatus {
     }
 }
 
+impl std::str::FromStr for CodeRabbitRoundStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(CodeRabbitRoundStatus::from_str(value))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodeRabbitItemSource {
@@ -323,6 +347,14 @@ impl CodeRabbitItemSource {
     }
 }
 
+impl std::str::FromStr for CodeRabbitItemSource {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(CodeRabbitItemSource::from_str(value))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodeRabbitCategory {
@@ -339,10 +371,18 @@ impl CodeRabbitCategory {
     }
 
     pub fn from_str(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl std::str::FromStr for CodeRabbitCategory {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "potential-issue" => Some(CodeRabbitCategory::PotentialIssue),
-            "refactor-suggestion" => Some(CodeRabbitCategory::RefactorSuggestion),
-            _ => None,
+            "potential-issue" => Ok(CodeRabbitCategory::PotentialIssue),
+            "refactor-suggestion" => Ok(CodeRabbitCategory::RefactorSuggestion),
+            _ => Err(()),
         }
     }
 }
@@ -369,13 +409,21 @@ impl CodeRabbitSeverity {
     }
 
     pub fn from_str(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl std::str::FromStr for CodeRabbitSeverity {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "critical" => Some(CodeRabbitSeverity::Critical),
-            "major" => Some(CodeRabbitSeverity::Major),
-            "minor" => Some(CodeRabbitSeverity::Minor),
-            "trivial" => Some(CodeRabbitSeverity::Trivial),
-            "info" => Some(CodeRabbitSeverity::Info),
-            _ => None,
+            "critical" => Ok(CodeRabbitSeverity::Critical),
+            "major" => Ok(CodeRabbitSeverity::Major),
+            "minor" => Ok(CodeRabbitSeverity::Minor),
+            "trivial" => Ok(CodeRabbitSeverity::Trivial),
+            "info" => Ok(CodeRabbitSeverity::Info),
+            _ => Err(()),
         }
     }
 }
