@@ -35,7 +35,8 @@ use crate::agent::{
 use crate::coderabbit::{CodeRabbitCompletion, CodeRabbitProcessor};
 use crate::config::{parse_action, parse_key_notation, Config, KeyContext, COMMAND_NAMES};
 use crate::data::{
-    AppStateStore, CodeRabbitCommentStore, CodeRabbitItemStore, CodeRabbitRoundStore, Database,
+    AppStateStore, CodeRabbitCommentStore, CodeRabbitFeedbackScope, CodeRabbitItem,
+    CodeRabbitItemKind, CodeRabbitItemStore, CodeRabbitRound, CodeRabbitRoundStore, Database,
     ForkSeed, ForkSeedStore, QueuedImageAttachment, QueuedMessage, QueuedMessageMode, Repository,
     RepositorySettingsStore, RepositoryStore, SessionTab, SessionTabStore, WorkspaceStore,
 };
@@ -43,13 +44,14 @@ use crate::git::{PrManager, PrStatus, WorktreeManager};
 use crate::ui::action::Action;
 use crate::ui::app_prompt;
 use crate::ui::app_queue;
-use crate::ui::app_state::{AppState, PendingForkRequest};
+use crate::ui::app_state::{AppState, PendingCodeRabbitSend, PendingForkRequest};
 use crate::ui::components::{
-    dialog_content_area, AddRepoDialog, AgentSelector, BaseDirDialog, ChatMessage, CommandPalette,
-    ConfirmationContext, ConfirmationDialog, ConfirmationType, DefaultModelSelection, ErrorDialog,
-    EventDirection, GlobalFooter, HelpDialog, InlinePromptState, InlinePromptType, MessageRole,
-    MissingToolDialog, ModelSelector, ProcessingState, ProjectPicker, PromptAnswer, RawEventsClick,
-    SessionHeader, SessionImportPicker, Sidebar, SidebarData, TabBar, TabBarHitTarget, ThemePicker,
+    dialog_content_area, AddRepoDialog, AgentSelector, BaseDirDialog, ChatMessage,
+    CodeRabbitFeedbackPicker, CommandPalette, ConfirmationContext, ConfirmationDialog,
+    ConfirmationType, DefaultModelSelection, ErrorDialog, EventDirection, GlobalFooter, HelpDialog,
+    InlinePromptState, InlinePromptType, MessageRole, MissingToolDialog, ModelSelector,
+    ProcessingState, ProjectPicker, PromptAnswer, RawEventsClick, SessionHeader,
+    SessionImportPicker, Sidebar, SidebarData, TabBar, TabBarHitTarget, ThemePicker,
     SIDEBAR_HEADER_ROWS,
 };
 use crate::ui::effect::Effect;
@@ -61,6 +63,7 @@ use crate::ui::session::AgentSession;
 use crate::ui::terminal_guard::TerminalGuard;
 use crate::util::ToolAvailability;
 
+mod app_actions_coderabbit;
 mod app_actions_confirm;
 mod app_actions_confirmation;
 mod app_actions_dialog;
@@ -592,6 +595,7 @@ impl App {
         let Some(processor) = self.coderabbit_processor.clone() else {
             return;
         };
+        let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(20));
             interval.tick().await;
@@ -601,7 +605,15 @@ impl App {
                 let result =
                     tokio::task::spawn_blocking(move || processor.process_due_rounds()).await;
                 match result {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(rounds)) => {
+                        for round in rounds {
+                            send_app_event(
+                                &event_tx,
+                                AppEvent::CodeRabbitRoundUpdated { round },
+                                "coderabbit_round_updated",
+                            );
+                        }
+                    }
                     Ok(Err(error)) => {
                         tracing::warn!(error = %error, "CodeRabbit retry loop failed");
                     }
@@ -1509,7 +1521,9 @@ impl App {
             | Action::ToggleAgentMode
             | Action::DumpDebugState
             | Action::CopyWorkspacePath
-            | Action::CopySelection => {
+            | Action::CopySelection
+            | Action::OpenCodeRabbitFeedback
+            | Action::ToggleReviewLoop => {
                 self.handle_global_action(action, &mut effects);
             }
             Action::OpenPr => {
@@ -1695,6 +1709,14 @@ impl App {
             // ========== Command Palette ==========
             Action::OpenCommandPalette => {
                 self.handle_overlay_action(action);
+            }
+
+            // ========== CodeRabbit Feedback ==========
+            Action::CodeRabbitToggleSelection
+            | Action::CodeRabbitSelectAll
+            | Action::CodeRabbitSelectNone
+            | Action::CodeRabbitCycleFilter => {
+                self.handle_coderabbit_feedback_action(action);
             }
         }
 
@@ -2596,6 +2618,7 @@ impl App {
                     | InputMode::CommandPalette
                     | InputMode::SelectingTheme
                     | InputMode::SelectingModel
+                    | InputMode::CodeRabbitFeedback
             )
     }
 
@@ -3262,6 +3285,11 @@ impl App {
             self.state.pending_fork_request = None;
         }
 
+        if let Some(ConfirmationContext::CodeRabbitEnqueue { round_id }) = &ctx {
+            self.state.pending_coderabbit_send = None;
+            self.mark_coderabbit_round_processed(round_id.clone());
+        }
+
         self.state.confirmation_dialog_state.hide();
 
         // Return appropriate input mode based on context
@@ -3270,7 +3298,8 @@ impl App {
             Some(ConfirmationContext::CreatePullRequest { .. })
             | Some(ConfirmationContext::OpenExistingPr { .. })
             | Some(ConfirmationContext::ForkSession { .. })
-            | Some(ConfirmationContext::SteerFallback { .. }) => InputMode::Normal,
+            | Some(ConfirmationContext::SteerFallback { .. })
+            | Some(ConfirmationContext::CodeRabbitEnqueue { .. }) => InputMode::Normal,
             // Sidebar operations return to sidebar navigation
             Some(ConfirmationContext::ArchiveWorkspace(_))
             | Some(ConfirmationContext::RemoveProject(_)) => InputMode::SidebarNavigation,
@@ -4685,6 +4714,9 @@ impl App {
             AppEvent::GitTracker(update) => {
                 self.handle_git_tracker_update(update);
             }
+            AppEvent::CodeRabbitRoundUpdated { round } => {
+                self.handle_coderabbit_round_update(round);
+            }
             AppEvent::ShellCommandCompleted {
                 session_id,
                 message_index,
@@ -4897,6 +4929,108 @@ impl App {
         }
     }
 
+    fn handle_coderabbit_round_update(&mut self, round: CodeRabbitRound) {
+        let Some(processor) = self.coderabbit_processor.clone() else {
+            return;
+        };
+
+        if round.total_count > 0 && round.notified_at.is_none() {
+            if let Err(error) = processor.mark_round_notified(round.id, Utc::now()) {
+                tracing::warn!(error = %error, "Failed to mark CodeRabbit round notified");
+            }
+
+            if let Some(workspace_id) = round.workspace_id {
+                for session in self.state.tab_manager.sessions_mut() {
+                    if session.workspace_id == Some(workspace_id) {
+                        session.needs_attention = true;
+                    }
+                }
+            }
+
+            self.state.set_timed_footer_message(
+                format!(
+                    "CodeRabbit feedback ready: {} items (PR #{})",
+                    round.total_count, round.pr_number
+                ),
+                Duration::from_secs(6),
+            );
+        }
+
+        if round.total_count == 0 {
+            return;
+        }
+
+        let settings = match processor.get_settings(round.repository_id) {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load CodeRabbit settings");
+                return;
+            }
+        };
+
+        if !settings.coderabbit_review_loop_enabled {
+            return;
+        }
+
+        if round.processed_at.is_some() {
+            return;
+        }
+
+        if settings.coderabbit_review_loop_done_condition.is_done(
+            round.actionable_count,
+            round.total_count,
+            settings.coderabbit_review_loop_scope,
+        ) {
+            return;
+        }
+
+        let mut items = match processor.list_items_for_round(round.id) {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load CodeRabbit items for review loop");
+                return;
+            }
+        };
+
+        if settings.coderabbit_review_loop_scope == CodeRabbitFeedbackScope::ActionableOnly {
+            items.retain(|item| item.actionable);
+        }
+
+        if items.is_empty() {
+            return;
+        }
+
+        let tab_index = round.workspace_id.and_then(|workspace_id| {
+            if self
+                .state
+                .tab_manager
+                .active_session()
+                .is_some_and(|session| session.workspace_id == Some(workspace_id))
+            {
+                Some(self.state.tab_manager.active_index())
+            } else {
+                self.find_tab_for_workspace(workspace_id)
+            }
+        });
+
+        let Some(tab_index) = tab_index else {
+            return;
+        };
+
+        let prompt =
+            self.build_coderabbit_prompt(round.pr_number, Some(round.head_sha.as_str()), &items);
+
+        if let Err(error) = self.dispatch_coderabbit_prompt(
+            tab_index,
+            round.id,
+            prompt,
+            items.len(),
+            settings.coderabbit_review_loop_ask_before_enqueue,
+        ) {
+            tracing::warn!(error = %error, "Failed to dispatch CodeRabbit review loop prompt");
+        }
+    }
+
     fn handle_coderabbit_completion(
         &mut self,
         workspace_id: Uuid,
@@ -4905,13 +5039,21 @@ impl App {
         let Some(processor) = self.coderabbit_processor.clone() else {
             return;
         };
+        let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 processor.handle_completion(workspace_id, completion)
             })
             .await;
             match result {
-                Ok(Ok(())) => {}
+                Ok(Ok(Some(round))) => {
+                    send_app_event(
+                        &event_tx,
+                        AppEvent::CodeRabbitRoundUpdated { round },
+                        "coderabbit_round_updated",
+                    );
+                }
+                Ok(Ok(None)) => {}
                 Ok(Err(error)) => {
                     tracing::warn!(error = %error, "CodeRabbit completion handling failed");
                 }
@@ -7284,6 +7426,496 @@ impl App {
         self.state.input_mode = InputMode::Normal;
     }
 
+    fn open_coderabbit_feedback(&mut self) {
+        let Some(processor) = self.coderabbit_processor.clone() else {
+            self.state.set_timed_footer_message(
+                "CodeRabbit feedback is unavailable".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Some(session) = self.state.tab_manager.active_session() else {
+            self.state.set_timed_footer_message(
+                "No active session for CodeRabbit feedback".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Some(workspace_id) = session.workspace_id else {
+            self.state.set_timed_footer_message(
+                "No workspace selected for CodeRabbit feedback".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let pr_number = match session.pr_number {
+            Some(number) => number as i64,
+            None => {
+                self.state.set_timed_footer_message(
+                    "No PR detected for CodeRabbit feedback".to_string(),
+                    Duration::from_secs(4),
+                );
+                return;
+            }
+        };
+
+        let Some(workspace_dao) = &self.workspace_dao else {
+            tracing::warn!("Workspace database unavailable for CodeRabbit feedback");
+            self.state.set_timed_footer_message(
+                "Workspace database unavailable".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) else {
+            self.state.set_timed_footer_message(
+                "Workspace not found for CodeRabbit feedback".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let round = match processor.get_latest_round_for_pr(workspace.repository_id, pr_number) {
+            Ok(Some(round)) => round,
+            Ok(None) => {
+                self.state.set_timed_footer_message(
+                    "No CodeRabbit feedback rounds yet".to_string(),
+                    Duration::from_secs(4),
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load CodeRabbit round");
+                self.state.set_timed_footer_message(
+                    "Failed to load CodeRabbit feedback".to_string(),
+                    Duration::from_secs(4),
+                );
+                return;
+            }
+        };
+
+        let items = match processor.list_items_for_round(round.id) {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load CodeRabbit items");
+                self.state.set_timed_footer_message(
+                    "Failed to load CodeRabbit feedback".to_string(),
+                    Duration::from_secs(4),
+                );
+                return;
+            }
+        };
+
+        if items.is_empty() {
+            self.state.set_timed_footer_message(
+                "No CodeRabbit feedback items yet".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        }
+
+        self.state.close_overlays();
+        self.state.pending_coderabbit_send = None;
+        self.state.coderabbit_feedback_state.show(
+            round.id,
+            round.pr_number,
+            round.head_sha.clone(),
+            items,
+        );
+        self.state.input_mode = InputMode::CodeRabbitFeedback;
+    }
+
+    fn toggle_review_loop(&mut self) {
+        let Some(processor) = self.coderabbit_processor.clone() else {
+            self.state.set_timed_footer_message(
+                "CodeRabbit review loop unavailable".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Some(session) = self.state.tab_manager.active_session() else {
+            self.state.set_timed_footer_message(
+                "No active session for review loop".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Some(workspace_id) = session.workspace_id else {
+            self.state.set_timed_footer_message(
+                "No workspace selected for review loop".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Some(workspace_dao) = &self.workspace_dao else {
+            tracing::warn!("Workspace database unavailable for review loop");
+            self.state.set_timed_footer_message(
+                "Workspace database unavailable".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let Ok(Some(workspace)) = workspace_dao.get_by_id(workspace_id) else {
+            self.state.set_timed_footer_message(
+                "Workspace not found for review loop".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        };
+
+        let mut settings = match processor.get_settings(workspace.repository_id) {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load CodeRabbit settings");
+                self.state.set_timed_footer_message(
+                    "Failed to load CodeRabbit settings".to_string(),
+                    Duration::from_secs(4),
+                );
+                return;
+            }
+        };
+
+        settings.coderabbit_review_loop_enabled = !settings.coderabbit_review_loop_enabled;
+        if let Err(error) = processor.save_settings(&settings) {
+            tracing::warn!(error = %error, "Failed to save CodeRabbit settings");
+            self.state.set_timed_footer_message(
+                "Failed to save CodeRabbit settings".to_string(),
+                Duration::from_secs(4),
+            );
+            return;
+        }
+
+        let label = if settings.coderabbit_review_loop_enabled {
+            "Review Loop enabled"
+        } else {
+            "Review Loop disabled"
+        };
+        self.state
+            .set_timed_footer_message(label.to_string(), Duration::from_secs(4));
+    }
+
+    fn submit_coderabbit_feedback(&mut self) -> anyhow::Result<Vec<Effect>> {
+        let mut effects = Vec::new();
+        let round_id = match self.state.coderabbit_feedback_state.round_id {
+            Some(round_id) => round_id,
+            None => {
+                self.state.set_timed_footer_message(
+                    "No CodeRabbit feedback round selected".to_string(),
+                    Duration::from_secs(4),
+                );
+                return Ok(effects);
+            }
+        };
+
+        let pr_number = match self.state.coderabbit_feedback_state.pr_number {
+            Some(pr_number) => pr_number,
+            None => {
+                self.state.set_timed_footer_message(
+                    "No PR selected for CodeRabbit feedback".to_string(),
+                    Duration::from_secs(4),
+                );
+                return Ok(effects);
+            }
+        };
+
+        let selected_items = self.state.coderabbit_feedback_state.selected_items();
+        if selected_items.is_empty() {
+            self.state.set_timed_footer_message(
+                "No CodeRabbit feedback selected".to_string(),
+                Duration::from_secs(4),
+            );
+            return Ok(effects);
+        }
+
+        let head_sha = self.state.coderabbit_feedback_state.head_sha.clone();
+        let prompt = self.build_coderabbit_prompt(pr_number, head_sha.as_deref(), &selected_items);
+        let selected_count = selected_items.len();
+
+        let tab_index = if self.state.tab_manager.active_session().is_some() {
+            self.state.tab_manager.active_index()
+        } else {
+            self.state.set_timed_footer_message(
+                "No active session to send CodeRabbit feedback".to_string(),
+                Duration::from_secs(4),
+            );
+            return Ok(effects);
+        };
+
+        self.state.coderabbit_feedback_state.hide();
+        self.state.pending_coderabbit_send = None;
+        self.state.input_mode = InputMode::Normal;
+
+        effects.extend(self.dispatch_coderabbit_prompt(
+            tab_index,
+            round_id,
+            prompt,
+            selected_count,
+            false,
+        )?);
+
+        Ok(effects)
+    }
+
+    fn dispatch_coderabbit_prompt(
+        &mut self,
+        tab_index: usize,
+        round_id: Uuid,
+        prompt: String,
+        selected_count: usize,
+        ask_before_enqueue: bool,
+    ) -> anyhow::Result<Vec<Effect>> {
+        let mut effects = Vec::new();
+        let (session_id, is_busy) = {
+            let Some(session) = self.state.tab_manager.session(tab_index) else {
+                self.state.set_timed_footer_message(
+                    "Session not available for CodeRabbit feedback".to_string(),
+                    Duration::from_secs(4),
+                );
+                return Ok(effects);
+            };
+            (
+                session.id,
+                session.is_processing || session.inline_prompt.is_some(),
+            )
+        };
+
+        if is_busy && ask_before_enqueue {
+            self.show_coderabbit_enqueue_prompt(session_id, round_id, prompt, selected_count);
+            return Ok(effects);
+        }
+
+        if is_busy {
+            self.queue_coderabbit_prompt(tab_index, prompt, selected_count);
+            self.mark_coderabbit_round_processed(round_id);
+            return Ok(effects);
+        }
+
+        effects.extend(self.submit_prompt_for_tab(
+            tab_index,
+            prompt,
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+        )?);
+        self.mark_coderabbit_round_processed(round_id);
+        Ok(effects)
+    }
+
+    fn show_coderabbit_enqueue_prompt(
+        &mut self,
+        session_id: Uuid,
+        round_id: Uuid,
+        prompt: String,
+        selected_count: usize,
+    ) {
+        self.state.close_overlays();
+        self.state.pending_coderabbit_send = Some(PendingCodeRabbitSend {
+            session_id,
+            round_id,
+            prompt: Arc::from(prompt),
+            selected_count,
+        });
+
+        let message = format!(
+            "CodeRabbit feedback ({} items) is ready, but the agent is busy.\nQueue it to send when the run finishes?",
+            selected_count
+        );
+        self.state.confirmation_dialog_state.show(
+            "Queue CodeRabbit feedback?",
+            message,
+            vec!["Queued feedback will send automatically.".to_string()],
+            ConfirmationType::Info,
+            "Queue",
+            Some(ConfirmationContext::CodeRabbitEnqueue { round_id }),
+        );
+        self.state.input_mode = InputMode::Confirming;
+    }
+
+    fn queue_coderabbit_prompt(&mut self, tab_index: usize, prompt: String, count: usize) {
+        let Some(session) = self.state.tab_manager.session_mut(tab_index) else {
+            return;
+        };
+
+        let queued = QueuedMessage {
+            id: Uuid::new_v4(),
+            mode: QueuedMessageMode::FollowUp,
+            text: prompt,
+            images: Vec::new(),
+            created_at: Utc::now(),
+        };
+        session.queue_message(queued);
+        self.state.set_timed_footer_message(
+            format!("CodeRabbit feedback queued ({} items)", count),
+            Duration::from_secs(4),
+        );
+    }
+
+    fn confirm_coderabbit_enqueue(&mut self, round_id: Uuid) -> anyhow::Result<Vec<Effect>> {
+        let mut effects = Vec::new();
+        let pending = self.state.pending_coderabbit_send.take();
+        let Some(pending) = pending else {
+            self.state.set_timed_footer_message(
+                "CodeRabbit feedback queue not found".to_string(),
+                Duration::from_secs(4),
+            );
+            self.mark_coderabbit_round_processed(round_id);
+            return Ok(effects);
+        };
+
+        if pending.round_id != round_id {
+            self.state.set_timed_footer_message(
+                "CodeRabbit feedback queue mismatch".to_string(),
+                Duration::from_secs(4),
+            );
+            self.mark_coderabbit_round_processed(round_id);
+            return Ok(effects);
+        }
+
+        let Some(tab_index) = self
+            .state
+            .tab_manager
+            .session_index_by_id(pending.session_id)
+        else {
+            self.state.set_timed_footer_message(
+                "Session missing for CodeRabbit feedback".to_string(),
+                Duration::from_secs(4),
+            );
+            self.mark_coderabbit_round_processed(round_id);
+            return Ok(effects);
+        };
+
+        let prompt = pending.prompt.as_ref().to_string();
+        let selected_count = pending.selected_count;
+
+        let is_busy = self
+            .state
+            .tab_manager
+            .session(tab_index)
+            .is_some_and(|session| session.is_processing || session.inline_prompt.is_some());
+
+        if is_busy {
+            self.queue_coderabbit_prompt(tab_index, prompt, selected_count);
+        } else {
+            effects.extend(self.submit_prompt_for_tab(
+                tab_index,
+                prompt,
+                Vec::new(),
+                Vec::new(),
+                false,
+                None,
+            )?);
+        }
+
+        self.mark_coderabbit_round_processed(round_id);
+        Ok(effects)
+    }
+
+    fn mark_coderabbit_round_processed(&self, round_id: Uuid) {
+        let Some(processor) = self.coderabbit_processor.clone() else {
+            return;
+        };
+        if let Err(error) = processor.mark_round_processed(round_id, Utc::now()) {
+            tracing::warn!(error = %error, "Failed to mark CodeRabbit round processed");
+        }
+    }
+
+    fn build_coderabbit_prompt(
+        &self,
+        pr_number: i64,
+        head_sha: Option<&str>,
+        items: &[CodeRabbitItem],
+    ) -> String {
+        let mut prompt = String::new();
+        if let Some(head_sha) = head_sha {
+            prompt.push_str(&format!(
+                "CodeRabbit feedback for PR #{} (head {}).\n",
+                pr_number, head_sha
+            ));
+        } else {
+            prompt.push_str(&format!("CodeRabbit feedback for PR #{}.\n", pr_number));
+        }
+        prompt.push_str(
+            "Please address the following items. Apply fixes or explain why an item should be skipped.\n\n",
+        );
+
+        for (idx, item) in items.iter().enumerate() {
+            let kind_label = match item.kind {
+                CodeRabbitItemKind::Actionable => "Actionable",
+                CodeRabbitItemKind::Nitpick => "Nitpick",
+                CodeRabbitItemKind::OutsideDiff => "Outside diff",
+            };
+            let location = Self::format_coderabbit_location(item);
+            prompt.push_str(&format!(
+                "{}) [{}] {} (source: {})\n",
+                idx + 1,
+                kind_label,
+                location,
+                item.source.as_str()
+            ));
+
+            if let Some(category) = item.category.as_ref() {
+                prompt.push_str(&format!("   Category: {}\n", category.as_str()));
+            }
+            if let Some(severity) = item.severity.as_ref() {
+                prompt.push_str(&format!("   Severity: {}\n", severity.as_str()));
+            }
+            prompt.push_str(&format!("   URL: {}\n", item.html_url));
+
+            prompt.push_str("   Comment:\n");
+            for line in item.body.lines() {
+                prompt.push_str("     ");
+                prompt.push_str(line);
+                prompt.push('\n');
+            }
+
+            if let Some(agent_prompt) = item.agent_prompt.as_ref() {
+                prompt.push_str("   Prompt for AI Agents:\n");
+                for line in agent_prompt.lines() {
+                    prompt.push_str("     ");
+                    prompt.push_str(line);
+                    prompt.push('\n');
+                }
+            }
+
+            prompt.push('\n');
+        }
+
+        prompt
+    }
+
+    fn format_coderabbit_location(item: &CodeRabbitItem) -> String {
+        if let Some(path) = item.file_path.as_ref() {
+            let mut location = path.clone();
+            if let Some(line_start) = item.line_start {
+                if let Some(line_end) = item.line_end {
+                    if line_end != line_start {
+                        location.push_str(&format!(":{}-{}", line_start, line_end));
+                    } else {
+                        location.push_str(&format!(":{}", line_start));
+                    }
+                } else {
+                    location.push_str(&format!(":{}", line_start));
+                }
+            }
+            return location;
+        }
+
+        if let Some(section) = item.section.as_ref() {
+            return section.clone();
+        }
+
+        item.source.as_str().to_string()
+    }
+
     fn show_steer_fallback_prompt(&mut self, message_id: Uuid) {
         self.state.close_overlays();
         self.state.confirmation_dialog_state.show(
@@ -7613,6 +8245,12 @@ impl App {
                             f.buffer_mut(),
                             &self.state.command_palette_state,
                         );
+                    }
+
+                    // Draw CodeRabbit feedback picker
+                    if self.state.coderabbit_feedback_state.is_visible() {
+                        let picker = CodeRabbitFeedbackPicker;
+                        picker.render(size, f.buffer_mut(), &self.state.coderabbit_feedback_state);
                     }
 
                     // Draw footer for empty state (sidebar-aware)
@@ -7977,6 +8615,12 @@ impl App {
         if self.state.session_import_state.is_visible() {
             let picker = SessionImportPicker::new();
             picker.render(size, f.buffer_mut(), &self.state.session_import_state);
+        }
+
+        // Draw CodeRabbit feedback picker if open
+        if self.state.coderabbit_feedback_state.is_visible() {
+            let picker = CodeRabbitFeedbackPicker;
+            picker.render(size, f.buffer_mut(), &self.state.coderabbit_feedback_state);
         }
 
         // Draw confirmation dialog if open

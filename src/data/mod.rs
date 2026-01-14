@@ -19,9 +19,10 @@ pub use database::Database;
 pub use fork_seed::ForkSeedStore;
 pub use models::{
     CodeRabbitCategory, CodeRabbitComment, CodeRabbitFeedbackScope, CodeRabbitItem,
-    CodeRabbitItemKind, CodeRabbitItemSource, CodeRabbitMode, CodeRabbitRetention, CodeRabbitRound,
-    CodeRabbitRoundStatus, CodeRabbitSeverity, ForkSeed, QueuedImageAttachment, QueuedMessage,
-    QueuedMessageMode, Repository, RepositorySettings, SessionTab, Workspace,
+    CodeRabbitItemKind, CodeRabbitItemSource, CodeRabbitMode, CodeRabbitRetention,
+    CodeRabbitReviewLoopDoneCondition, CodeRabbitRound, CodeRabbitRoundStatus, CodeRabbitSeverity,
+    ForkSeed, QueuedImageAttachment, QueuedMessage, QueuedMessageMode, Repository,
+    RepositorySettings, SessionTab, Workspace,
 };
 pub use repository::RepositoryStore;
 pub use session_tab::SessionTabStore;

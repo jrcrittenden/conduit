@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS repository_settings (
     coderabbit_retention TEXT NOT NULL DEFAULT 'keep',
     coderabbit_scope TEXT NOT NULL DEFAULT 'all',
     coderabbit_backoff_seconds TEXT NOT NULL DEFAULT '30,120,300',
+    coderabbit_review_loop_enabled INTEGER NOT NULL DEFAULT 0,
+    coderabbit_review_loop_scope TEXT NOT NULL DEFAULT 'all',
+    coderabbit_review_loop_done_condition TEXT NOT NULL DEFAULT 'actionable-zero',
+    coderabbit_review_loop_ask_before_enqueue INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
 );
@@ -100,6 +104,8 @@ CREATE TABLE IF NOT EXISTS coderabbit_rounds (
     actionable_count INTEGER NOT NULL DEFAULT 0,
     total_count INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT,
+    notified_at TEXT,
+    processed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE,
@@ -493,6 +499,10 @@ CREATE TABLE IF NOT EXISTS repository_settings (
     coderabbit_retention TEXT NOT NULL DEFAULT 'keep',
     coderabbit_scope TEXT NOT NULL DEFAULT 'all',
     coderabbit_backoff_seconds TEXT NOT NULL DEFAULT '30,120,300',
+    coderabbit_review_loop_enabled INTEGER NOT NULL DEFAULT 0,
+    coderabbit_review_loop_scope TEXT NOT NULL DEFAULT 'all',
+    coderabbit_review_loop_done_condition TEXT NOT NULL DEFAULT 'actionable-zero',
+    coderabbit_review_loop_ask_before_enqueue INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
 );
@@ -527,6 +537,8 @@ CREATE TABLE IF NOT EXISTS coderabbit_rounds (
     actionable_count INTEGER NOT NULL DEFAULT 0,
     total_count INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT,
+    notified_at TEXT,
+    processed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE,
@@ -733,6 +745,98 @@ ALTER TABLE coderabbit_items_new RENAME TO coderabbit_items;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_coderabbit_items_unique
     ON coderabbit_items(round_id, item_key);
 "#,
+            )?;
+        }
+
+        // Migration 17: Add CodeRabbit review loop settings columns
+        let has_review_loop_enabled: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('repository_settings') WHERE name='coderabbit_review_loop_enabled'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_review_loop_enabled {
+            conn.execute(
+                "ALTER TABLE repository_settings ADD COLUMN coderabbit_review_loop_enabled INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
+        let has_review_loop_scope: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('repository_settings') WHERE name='coderabbit_review_loop_scope'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_review_loop_scope {
+            conn.execute(
+                "ALTER TABLE repository_settings ADD COLUMN coderabbit_review_loop_scope TEXT NOT NULL DEFAULT 'all'",
+                [],
+            )?;
+        }
+
+        let has_review_loop_done: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('repository_settings') WHERE name='coderabbit_review_loop_done_condition'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_review_loop_done {
+            conn.execute(
+                "ALTER TABLE repository_settings ADD COLUMN coderabbit_review_loop_done_condition TEXT NOT NULL DEFAULT 'actionable-zero'",
+                [],
+            )?;
+        }
+
+        let has_review_loop_ask_before: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('repository_settings') WHERE name='coderabbit_review_loop_ask_before_enqueue'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_review_loop_ask_before {
+            conn.execute(
+                "ALTER TABLE repository_settings ADD COLUMN coderabbit_review_loop_ask_before_enqueue INTEGER NOT NULL DEFAULT 1",
+                [],
+            )?;
+        }
+
+        // Migration 18: Add notification tracking to coderabbit_rounds
+        let has_notified_at: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('coderabbit_rounds') WHERE name='notified_at'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_notified_at {
+            conn.execute(
+                "ALTER TABLE coderabbit_rounds ADD COLUMN notified_at TEXT",
+                [],
+            )?;
+        }
+
+        let has_processed_at: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('coderabbit_rounds') WHERE name='processed_at'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_processed_at {
+            conn.execute(
+                "ALTER TABLE coderabbit_rounds ADD COLUMN processed_at TEXT",
+                [],
             )?;
         }
 

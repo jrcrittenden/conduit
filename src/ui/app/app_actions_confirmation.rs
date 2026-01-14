@@ -60,6 +60,11 @@ impl App {
                                     effects.push(effect);
                                 }
                             }
+                            ConfirmationContext::CodeRabbitEnqueue { round_id } => {
+                                self.state.confirmation_dialog_state.hide();
+                                self.state.input_mode = InputMode::Normal;
+                                effects.extend(self.confirm_coderabbit_enqueue(round_id)?);
+                            }
                         }
                     }
                 }

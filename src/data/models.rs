@@ -312,6 +312,56 @@ impl std::str::FromStr for CodeRabbitFeedbackScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodeRabbitReviewLoopDoneCondition {
+    ActionableZero,
+    TotalZero,
+    ScopeZero,
+}
+
+impl CodeRabbitReviewLoopDoneCondition {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CodeRabbitReviewLoopDoneCondition::ActionableZero => "actionable-zero",
+            CodeRabbitReviewLoopDoneCondition::TotalZero => "total-zero",
+            CodeRabbitReviewLoopDoneCondition::ScopeZero => "scope-zero",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "total-zero" => CodeRabbitReviewLoopDoneCondition::TotalZero,
+            "scope-zero" => CodeRabbitReviewLoopDoneCondition::ScopeZero,
+            _ => CodeRabbitReviewLoopDoneCondition::ActionableZero,
+        }
+    }
+
+    pub fn is_done(
+        self,
+        actionable_count: i64,
+        total_count: i64,
+        scope: CodeRabbitFeedbackScope,
+    ) -> bool {
+        match self {
+            CodeRabbitReviewLoopDoneCondition::ActionableZero => actionable_count == 0,
+            CodeRabbitReviewLoopDoneCondition::TotalZero => total_count == 0,
+            CodeRabbitReviewLoopDoneCondition::ScopeZero => match scope {
+                CodeRabbitFeedbackScope::All => total_count == 0,
+                CodeRabbitFeedbackScope::ActionableOnly => actionable_count == 0,
+            },
+        }
+    }
+}
+
+impl std::str::FromStr for CodeRabbitReviewLoopDoneCondition {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(CodeRabbitReviewLoopDoneCondition::parse(value))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepositorySettings {
     pub repository_id: Uuid,
@@ -319,6 +369,10 @@ pub struct RepositorySettings {
     pub coderabbit_retention: CodeRabbitRetention,
     pub coderabbit_scope: CodeRabbitFeedbackScope,
     pub coderabbit_backoff_seconds: Vec<i64>,
+    pub coderabbit_review_loop_enabled: bool,
+    pub coderabbit_review_loop_scope: CodeRabbitFeedbackScope,
+    pub coderabbit_review_loop_done_condition: CodeRabbitReviewLoopDoneCondition,
+    pub coderabbit_review_loop_ask_before_enqueue: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -510,6 +564,8 @@ pub struct CodeRabbitRound {
     pub actionable_count: i64,
     pub total_count: i64,
     pub completed_at: Option<DateTime<Utc>>,
+    pub notified_at: Option<DateTime<Utc>>,
+    pub processed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -540,6 +596,8 @@ impl CodeRabbitRound {
             actionable_count: 0,
             total_count: 0,
             completed_at: None,
+            notified_at: None,
+            processed_at: None,
             created_at: now,
             updated_at: now,
         }

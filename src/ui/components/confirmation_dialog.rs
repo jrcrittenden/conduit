@@ -52,6 +52,8 @@ pub enum ConfirmationContext {
         /// The branch to fork from (computed at dialog show time for consistency)
         base_branch: String,
     },
+    /// Queue CodeRabbit feedback while agent is busy
+    CodeRabbitEnqueue { round_id: Uuid },
 }
 
 impl ConfirmationType {

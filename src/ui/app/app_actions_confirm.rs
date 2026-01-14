@@ -128,6 +128,9 @@ impl App {
                     self.state.input_mode = InputMode::PickingProject;
                 }
             }
+            InputMode::CodeRabbitFeedback => {
+                effects.extend(self.submit_coderabbit_feedback()?);
+            }
             InputMode::Confirming => {
                 if self.state.confirmation_dialog_state.is_confirm_selected() {
                     if let Some(context) = self.state.confirmation_dialog_state.context.clone() {
@@ -181,6 +184,12 @@ impl App {
                                 {
                                     effects.push(effect);
                                 }
+                                return Ok(());
+                            }
+                            ConfirmationContext::CodeRabbitEnqueue { round_id } => {
+                                self.state.confirmation_dialog_state.hide();
+                                self.state.input_mode = InputMode::Normal;
+                                effects.extend(self.confirm_coderabbit_enqueue(round_id)?);
                                 return Ok(());
                             }
                         }

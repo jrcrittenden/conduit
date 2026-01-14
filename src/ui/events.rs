@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::agent::{AgentEvent, AgentInput, AgentType};
+use crate::data::CodeRabbitRound;
 use crate::git::PrPreflightResult;
 use crate::ui::git_tracker::GitTrackerUpdate;
 use tokio::sync::mpsc;
@@ -122,6 +123,9 @@ pub enum AppEvent {
     /// Git tracker update (PR status, git stats, branch changes)
     GitTracker(GitTrackerUpdate),
 
+    /// CodeRabbit round updated after fetch
+    CodeRabbitRoundUpdated { round: CodeRabbitRound },
+
     /// Title/branch generation completed
     TitleGenerated {
         /// Stable session ID for correlation (avoids stale tab_index after close/reorder)
@@ -221,6 +225,8 @@ pub enum InputMode {
     CommandPalette,
     /// Missing tool dialog is open
     MissingTool,
+    /// Reviewing CodeRabbit feedback
+    CodeRabbitFeedback,
     /// Editing queued messages inline
     QueueEditing,
 }

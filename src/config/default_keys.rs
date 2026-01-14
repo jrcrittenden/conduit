@@ -709,6 +709,42 @@ pub fn default_keybindings() -> KeybindingConfig {
         Action::Cancel,
     );
 
+    // ========== CodeRabbit Feedback ==========
+    let coderabbit = config
+        .context
+        .entry(KeyContext::CodeRabbitFeedback)
+        .or_default();
+
+    coderabbit.insert(
+        KeyCombo::new(KeyCode::Up, KeyModifiers::NONE),
+        Action::SelectPrev,
+    );
+    coderabbit.insert(
+        KeyCombo::new(KeyCode::Down, KeyModifiers::NONE),
+        Action::SelectNext,
+    );
+    bind(coderabbit, "k", Action::SelectPrev);
+    bind(coderabbit, "j", Action::SelectNext);
+    bind(coderabbit, "C-k", Action::SelectPrev);
+    bind(coderabbit, "C-j", Action::SelectNext);
+    bind(coderabbit, "C-f", Action::SelectPageDown);
+    bind(coderabbit, "C-b", Action::SelectPageUp);
+    coderabbit.insert(
+        KeyCombo::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        Action::CodeRabbitToggleSelection,
+    );
+    bind(coderabbit, "a", Action::CodeRabbitSelectAll);
+    bind(coderabbit, "n", Action::CodeRabbitSelectNone);
+    bind(coderabbit, "f", Action::CodeRabbitCycleFilter);
+    coderabbit.insert(
+        KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE),
+        Action::Confirm,
+    );
+    coderabbit.insert(
+        KeyCombo::new(KeyCode::Esc, KeyModifiers::NONE),
+        Action::Cancel,
+    );
+
     config
 }
 

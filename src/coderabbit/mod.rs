@@ -216,7 +216,7 @@ impl CodeRabbitProcessor {
         &self,
         workspace_id: Uuid,
         completion: CodeRabbitCompletion,
-    ) -> Result<()> {
+    ) -> Result<Option<CodeRabbitRound>> {
         let workspace = self
             .workspace_store
             .get_by_id(workspace_id)
@@ -228,7 +228,7 @@ impl CodeRabbitProcessor {
             .get_or_default(repo_id)
             .context("Load repository settings for CodeRabbit")?;
         if settings.coderabbit_mode == CodeRabbitMode::Disabled {
-            return Ok(());
+            return Ok(None);
         }
 
         let observed_at = Utc::now();
@@ -270,7 +270,7 @@ impl CodeRabbitProcessor {
         };
 
         if round.status == CodeRabbitRoundStatus::Complete {
-            return Ok(());
+            return Ok(None);
         }
 
         round.check_state = completion.check_state.as_str().to_string();
@@ -282,15 +282,17 @@ impl CodeRabbitProcessor {
             .context("Update CodeRabbit round scheduling")?;
 
         let working_dir = self.resolve_working_dir(&round)?;
-        self.fetch_and_update_round(round, &settings, &working_dir)
+        let round = self.fetch_and_update_round(round, &settings, &working_dir)?;
+        Ok(Some(round))
     }
 
-    pub fn process_due_rounds(&self) -> Result<()> {
+    pub fn process_due_rounds(&self) -> Result<Vec<CodeRabbitRound>> {
         let now = Utc::now();
         let due_rounds = self
             .round_store
             .list_pending_due(now)
             .context("Load pending CodeRabbit rounds")?;
+        let mut processed = Vec::new();
         for round in due_rounds {
             let settings = self
                 .settings_store
@@ -310,14 +312,17 @@ impl CodeRabbitProcessor {
                     continue;
                 }
             };
-            if let Err(error) = self.fetch_and_update_round(round, &settings, &working_dir) {
-                tracing::warn!(
-                    error = %error,
-                    "CodeRabbit round processing failed"
-                );
+            match self.fetch_and_update_round(round, &settings, &working_dir) {
+                Ok(round) => processed.push(round),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "CodeRabbit round processing failed"
+                    );
+                }
             }
         }
-        Ok(())
+        Ok(processed)
     }
 
     pub fn cleanup_rounds_if_needed(&self, repository_id: Uuid, pr_number: i64) -> Result<()> {
@@ -331,6 +336,46 @@ impl CodeRabbitProcessor {
                 .context("Delete CodeRabbit rounds for closed PR")?;
         }
         Ok(())
+    }
+
+    pub fn get_latest_round_for_pr(
+        &self,
+        repository_id: Uuid,
+        pr_number: i64,
+    ) -> Result<Option<CodeRabbitRound>> {
+        self.round_store
+            .get_latest_for_pr(repository_id, pr_number)
+            .context("Load CodeRabbit round for PR")
+    }
+
+    pub fn list_items_for_round(&self, round_id: Uuid) -> Result<Vec<CodeRabbitItem>> {
+        self.item_store
+            .list_for_round(round_id)
+            .context("Load CodeRabbit items for round")
+    }
+
+    pub fn mark_round_notified(&self, round_id: Uuid, notified_at: DateTime<Utc>) -> Result<()> {
+        self.round_store
+            .mark_notified(round_id, notified_at)
+            .context("Mark CodeRabbit round notified")
+    }
+
+    pub fn mark_round_processed(&self, round_id: Uuid, processed_at: DateTime<Utc>) -> Result<()> {
+        self.round_store
+            .mark_processed(round_id, processed_at)
+            .context("Mark CodeRabbit round processed")
+    }
+
+    pub fn get_settings(&self, repository_id: Uuid) -> Result<RepositorySettings> {
+        self.settings_store
+            .get_or_default(repository_id)
+            .context("Load repository settings for CodeRabbit")
+    }
+
+    pub fn save_settings(&self, settings: &RepositorySettings) -> Result<()> {
+        self.settings_store
+            .upsert(settings)
+            .context("Update repository settings for CodeRabbit")
     }
 
     fn resolve_working_dir(&self, round: &CodeRabbitRound) -> Result<PathBuf> {
@@ -358,7 +403,7 @@ impl CodeRabbitProcessor {
         mut round: CodeRabbitRound,
         settings: &RepositorySettings,
         working_dir: &Path,
-    ) -> Result<()> {
+    ) -> Result<CodeRabbitRound> {
         let observed_at = Utc::now();
         let fetcher = CodeRabbitFetcher::new(working_dir.to_path_buf());
         let fetched = match fetcher.fetch_feedback(round.pr_number as u32, observed_at) {
@@ -486,7 +531,9 @@ impl CodeRabbitProcessor {
             foreign_items_by_commit,
             observed_at,
             scope,
-        )
+        )?;
+
+        Ok(round)
     }
 
     fn capture_foreign_rounds(

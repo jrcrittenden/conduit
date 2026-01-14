@@ -64,6 +64,10 @@ impl App {
                     self.state.command_palette_state.hide();
                     self.state.input_mode = InputMode::Normal;
                 }
+                InputMode::CodeRabbitFeedback => {
+                    self.state.coderabbit_feedback_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
                 InputMode::QueueEditing => {
                     self.close_queue_editor();
                 }

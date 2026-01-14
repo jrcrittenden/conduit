@@ -6,10 +6,10 @@ use ratatui::layout::Rect;
 
 use crate::agent::{AgentMode, AgentType};
 use crate::ui::components::{
-    AddRepoDialogState, AgentSelectorState, BaseDirDialogState, CommandPaletteState,
-    ConfirmationDialogState, ErrorDialogState, HelpDialogState, KnightRiderSpinner,
-    LogoShineAnimation, MissingToolDialogState, ModelSelectorState, ProjectPickerState,
-    SessionImportPickerState, SidebarData, SidebarState, ThemePickerState,
+    AddRepoDialogState, AgentSelectorState, BaseDirDialogState, CodeRabbitFeedbackPickerState,
+    CommandPaletteState, ConfirmationDialogState, ErrorDialogState, HelpDialogState,
+    KnightRiderSpinner, LogoShineAnimation, MissingToolDialogState, ModelSelectorState,
+    ProjectPickerState, SessionImportPickerState, SidebarData, SidebarState, ThemePickerState,
 };
 use crate::ui::events::{InputMode, ViewMode};
 use crate::ui::tab_manager::TabManager;
@@ -205,6 +205,10 @@ pub struct AppState {
     pub was_splash_visible: bool,
     /// Pending fork request data (set during confirmation)
     pub pending_fork_request: Option<PendingForkRequest>,
+    /// CodeRabbit feedback picker state
+    pub coderabbit_feedback_state: CodeRabbitFeedbackPickerState,
+    /// Pending CodeRabbit send request (awaiting confirmation)
+    pub pending_coderabbit_send: Option<PendingCodeRabbitSend>,
 }
 
 /// Pending fork request data captured before workspace creation
@@ -235,6 +239,25 @@ impl std::fmt::Debug for PendingForkRequest {
             .field("token_estimate", &self.token_estimate)
             .field("context_window", &self.context_window)
             .field("fork_seed_id", &self.fork_seed_id)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct PendingCodeRabbitSend {
+    pub session_id: Uuid,
+    pub round_id: Uuid,
+    pub prompt: Arc<str>,
+    pub selected_count: usize,
+}
+
+impl std::fmt::Debug for PendingCodeRabbitSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingCodeRabbitSend")
+            .field("session_id", &self.session_id)
+            .field("round_id", &self.round_id)
+            .field("selected_count", &self.selected_count)
+            .field("prompt_len", &self.prompt.len())
             .finish()
     }
 }
@@ -304,6 +327,8 @@ impl AppState {
             logo_shine: LogoShineAnimation::new(),
             was_splash_visible: true, // Start on splash screen
             pending_fork_request: None,
+            coderabbit_feedback_state: CodeRabbitFeedbackPickerState::new(),
+            pending_coderabbit_send: None,
         }
     }
 
@@ -320,6 +345,7 @@ impl AppState {
         self.help_dialog_state.hide();
         self.missing_tool_dialog_state.hide();
         self.command_palette_state.hide();
+        self.coderabbit_feedback_state.hide();
     }
 
     pub fn has_active_overlay(&self) -> bool {
@@ -335,6 +361,7 @@ impl AppState {
             || self.missing_tool_dialog_state.is_visible()
             || self.session_import_state.is_visible()
             || self.command_palette_state.is_visible()
+            || self.coderabbit_feedback_state.is_visible()
     }
 
     /// Start footer spinner with optional message

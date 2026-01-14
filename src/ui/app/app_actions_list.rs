@@ -36,6 +36,9 @@ impl App {
                         session.select_queue_next();
                     }
                 }
+                InputMode::CodeRabbitFeedback => {
+                    self.state.coderabbit_feedback_state.list.select_next();
+                }
                 _ => {}
             },
             Action::SelectPrev => match self.state.input_mode {
@@ -69,6 +72,9 @@ impl App {
                         session.select_queue_prev();
                     }
                 }
+                InputMode::CodeRabbitFeedback => {
+                    self.state.coderabbit_feedback_state.list.select_prev();
+                }
                 _ => {}
             },
             Action::SelectPageDown => {
@@ -76,6 +82,8 @@ impl App {
                     self.state.project_picker_state.page_down();
                 } else if self.state.input_mode == InputMode::ImportingSession {
                     self.state.session_import_state.page_down();
+                } else if self.state.input_mode == InputMode::CodeRabbitFeedback {
+                    self.state.coderabbit_feedback_state.list.page_down();
                 }
             }
             Action::SelectPageUp => {
@@ -83,6 +91,8 @@ impl App {
                     self.state.project_picker_state.page_up();
                 } else if self.state.input_mode == InputMode::ImportingSession {
                     self.state.session_import_state.page_up();
+                } else if self.state.input_mode == InputMode::CodeRabbitFeedback {
+                    self.state.coderabbit_feedback_state.list.page_up();
                 }
             }
             _ => {}

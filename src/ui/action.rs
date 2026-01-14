@@ -40,6 +40,10 @@ pub enum Action {
     CopyWorkspacePath,
     /// Copy active selection to clipboard
     CopySelection,
+    /// Open CodeRabbit feedback picker
+    OpenCodeRabbitFeedback,
+    /// Toggle Review Loop for current repo
+    ToggleReviewLoop,
 
     // ========== Tab Management ==========
     /// Close current tab
@@ -218,6 +222,16 @@ pub enum Action {
     // ========== Command Palette ==========
     /// Open command palette
     OpenCommandPalette,
+
+    // ========== CodeRabbit Feedback ==========
+    /// Toggle selection in CodeRabbit feedback list
+    CodeRabbitToggleSelection,
+    /// Select all CodeRabbit feedback items
+    CodeRabbitSelectAll,
+    /// Clear CodeRabbit feedback selection
+    CodeRabbitSelectNone,
+    /// Cycle CodeRabbit feedback filter
+    CodeRabbitCycleFilter,
 }
 
 impl Action {
@@ -240,6 +254,8 @@ impl Action {
             Action::Suspend => "Suspend",
             Action::CopyWorkspacePath => "Copy workspace path",
             Action::CopySelection => "Copy selection",
+            Action::OpenCodeRabbitFeedback => "CodeRabbit feedback",
+            Action::ToggleReviewLoop => "Toggle Review Loop",
 
             // Tab management
             Action::CloseTab => "Close tab",
@@ -341,6 +357,10 @@ impl Action {
 
             // Command palette
             Action::OpenCommandPalette => "Command palette",
+            Action::CodeRabbitToggleSelection => "Toggle selection",
+            Action::CodeRabbitSelectAll => "Select all",
+            Action::CodeRabbitSelectNone => "Select none",
+            Action::CodeRabbitCycleFilter => "Cycle filter",
         }
     }
 
@@ -353,6 +373,7 @@ impl Action {
                 | Action::ShowThemePicker
                 | Action::OpenQueueEditor
                 | Action::OpenSessionImport
+                | Action::OpenCodeRabbitFeedback
                 | Action::ShowHelp
                 | Action::AddRepository
                 | Action::OpenSettings
@@ -380,6 +401,8 @@ impl Action {
                 | Action::DumpDebugState
                 | Action::CopyWorkspacePath
                 | Action::CopySelection
+                | Action::OpenCodeRabbitFeedback
+                | Action::ToggleReviewLoop
                 // Tab management
                 | Action::CloseTab
                 | Action::NextTab

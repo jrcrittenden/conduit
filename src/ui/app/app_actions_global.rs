@@ -203,6 +203,12 @@ impl App {
                     );
                 }
             }
+            Action::OpenCodeRabbitFeedback => {
+                self.open_coderabbit_feedback();
+            }
+            Action::ToggleReviewLoop => {
+                self.toggle_review_loop();
+            }
             _ => {}
         }
     }

@@ -27,6 +27,8 @@ impl App {
                 && self.state.theme_picker_state.is_visible())
             && !(self.state.input_mode == InputMode::SelectingModel
                 && self.state.model_selector_state.is_visible())
+            && !(self.state.input_mode == InputMode::CodeRabbitFeedback
+                && self.state.coderabbit_feedback_state.is_visible())
     }
 
     pub(super) fn raw_events_list_visible_height(&self) -> usize {
@@ -96,6 +98,15 @@ impl App {
             }
             for _ in 0..*pending_down {
                 self.state.theme_picker_state.select_next();
+            }
+        } else if self.state.input_mode == InputMode::CodeRabbitFeedback
+            && self.state.coderabbit_feedback_state.is_visible()
+        {
+            for _ in 0..*pending_up {
+                self.state.coderabbit_feedback_state.list.select_prev();
+            }
+            for _ in 0..*pending_down {
+                self.state.coderabbit_feedback_state.list.select_next();
             }
         } else if self.state.view_mode == ViewMode::RawEvents {
             let list_height = self.raw_events_list_visible_height();

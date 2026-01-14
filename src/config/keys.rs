@@ -124,6 +124,8 @@ pub enum KeyContext {
     ThemePicker,
     /// Queue editor (inline)
     QueueEditing,
+    /// CodeRabbit feedback picker
+    CodeRabbitFeedback,
 }
 
 impl KeyContext {
@@ -145,6 +147,7 @@ impl KeyContext {
             KeyContext::CommandPalette,
             KeyContext::ThemePicker,
             KeyContext::QueueEditing,
+            KeyContext::CodeRabbitFeedback,
         ]
     }
 
@@ -174,6 +177,7 @@ impl KeyContext {
             InputMode::MissingTool => return KeyContext::Dialog,
             InputMode::SelectingTheme => return KeyContext::ThemePicker,
             InputMode::QueueEditing => return KeyContext::QueueEditing,
+            InputMode::CodeRabbitFeedback => return KeyContext::CodeRabbitFeedback,
             // Non-modal modes - continue to check view mode
             InputMode::Normal | InputMode::Scrolling | InputMode::SidebarNavigation => {}
         }
