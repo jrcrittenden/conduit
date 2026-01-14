@@ -62,6 +62,7 @@ pub struct CodeRabbitCompletion {
     pub head_sha: String,
     pub check_state: CodeRabbitCheckState,
     pub check_started_at: Option<String>,
+    pub check_completed_at: Option<String>,
 }
 
 pub fn detect_completion(old: Option<&PrStatus>, new: &PrStatus) -> Option<CodeRabbitCompletion> {
@@ -73,17 +74,15 @@ pub fn detect_completion(old: Option<&PrStatus>, new: &PrStatus) -> Option<CodeR
         return None;
     }
 
-    let old_state = old
-        .and_then(|status| find_coderabbit_check(&status.status_checks))
-        .map(check_state_from_status);
+    let old_check = old.and_then(|status| find_coderabbit_check(&status.status_checks));
+    let old_state = old_check.map(check_state_from_status);
     let started_at = new_check.started_at.clone();
+    let completed_at = new_check.completed_at.clone();
+    let new_key = check_run_key(new_check);
 
-    if let (Some(old_status), Some(old_check)) = (
-        old_state,
-        old.and_then(|status| find_coderabbit_check(&status.status_checks)),
-    ) {
-        let same_started_at = started_at.as_deref() == old_check.started_at.as_deref();
-        if old_status.is_terminal() && old_status == new_state && same_started_at {
+    if let (Some(old_status), Some(old_check)) = (old_state, old_check) {
+        let old_key = check_run_key(old_check);
+        if old_status.is_terminal() && old_status == new_state && old_key == new_key {
             return None;
         }
     }
@@ -93,6 +92,7 @@ pub fn detect_completion(old: Option<&PrStatus>, new: &PrStatus) -> Option<CodeR
         head_sha,
         check_state: new_state,
         check_started_at: started_at,
+        check_completed_at: completed_at,
     })
 }
 
@@ -109,6 +109,13 @@ fn find_coderabbit_check(checks: &[PrStatusCheck]) -> Option<&PrStatusCheck> {
                 .map(|value| value == CODERABBIT_CONTEXT)
                 .unwrap_or(false)
     })
+}
+
+fn check_run_key(check: &PrStatusCheck) -> Option<&str> {
+    check
+        .started_at
+        .as_deref()
+        .or_else(|| check.completed_at.as_deref())
 }
 
 fn check_state_from_status(check: &PrStatusCheck) -> CodeRabbitCheckState {
@@ -225,16 +232,24 @@ impl CodeRabbitProcessor {
         }
 
         let observed_at = Utc::now();
-        let check_started_at =
-            parse_timestamp(completion.check_started_at.as_deref()).unwrap_or(observed_at);
-        let check_started_at_key = check_started_at.to_rfc3339();
         let pr_number = completion.pr_number as i64;
         let head_sha = completion.head_sha.clone();
+        let parsed_started_at = parse_timestamp(completion.check_started_at.as_deref());
+        let parsed_completed_at = parse_timestamp(completion.check_completed_at.as_deref());
+        let check_started_at = parsed_started_at
+            .or(parsed_completed_at)
+            .unwrap_or(observed_at);
+        let check_started_at_key = check_started_at.to_rfc3339();
 
-        let existing = self
-            .round_store
-            .get_by_key(repo_id, pr_number, &head_sha, &check_started_at_key)
-            .context("Check existing CodeRabbit round")?;
+        let existing = if parsed_started_at.is_some() {
+            self.round_store
+                .get_by_key(repo_id, pr_number, &head_sha, &check_started_at_key)
+                .context("Check existing CodeRabbit round")?
+        } else {
+            self.round_store
+                .get_latest_for_head(repo_id, pr_number, &head_sha)
+                .context("Check existing CodeRabbit round by head")?
+        };
 
         let mut round = if let Some(round) = existing {
             round

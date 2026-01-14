@@ -371,12 +371,29 @@ impl GitTracker {
             .flatten();
 
         // Update state and send updates
+        let mut completion = None;
         if let Some((_, state)) = self.workspaces.get_mut(&workspace_id) {
+            if state.pr_status.is_none() {
+                if let Some(new_status) = new_pr_status.as_ref() {
+                    completion = detect_completion(None, new_status);
+                }
+            }
             state.diff_stats = new_stats.clone();
             state.branch_name = new_branch.clone();
             state.pr_status = new_pr_status.clone();
             state.last_git_check = Some(Instant::now());
             state.last_pr_check = Some(Instant::now());
+        }
+
+        if let Some(completion) = completion {
+            send_update(
+                &update_tx,
+                GitTrackerUpdate::CodeRabbitCheckCompleted {
+                    workspace_id,
+                    completion,
+                },
+                "coderabbit_check_completed",
+            );
         }
 
         // Send all updates
