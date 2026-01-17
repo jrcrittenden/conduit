@@ -9,7 +9,7 @@ use crate::ui::components::{
     AddRepoDialogState, AgentSelectorState, BaseDirDialogState, CommandPaletteState,
     ConfirmationDialogState, ErrorDialogState, HelpDialogState, KnightRiderSpinner,
     LogoShineAnimation, MissingToolDialogState, ModelSelectorState, ProjectPickerState,
-    SessionImportPickerState, SidebarData, SidebarState, ThemePickerState,
+    SessionImportPickerState, SidebarData, SidebarState, SlashMenuState, ThemePickerState,
 };
 use crate::ui::events::{InputMode, ViewMode};
 use crate::ui::tab_manager::TabManager;
@@ -172,6 +172,7 @@ pub struct AppState {
     pub help_dialog_state: HelpDialogState,
     pub missing_tool_dialog_state: MissingToolDialogState,
     pub command_palette_state: CommandPaletteState,
+    pub slash_menu_state: SlashMenuState,
     pub command_buffer: String,
     pub sidebar_area: Option<Rect>,
     pub tab_bar_area: Option<Rect>,
@@ -279,6 +280,7 @@ impl AppState {
             help_dialog_state: HelpDialogState::new(),
             missing_tool_dialog_state: MissingToolDialogState::default(),
             command_palette_state: CommandPaletteState::new(),
+            slash_menu_state: SlashMenuState::new(),
             command_buffer: String::new(),
             sidebar_area: None,
             tab_bar_area: None,
@@ -320,6 +322,7 @@ impl AppState {
         self.help_dialog_state.hide();
         self.missing_tool_dialog_state.hide();
         self.command_palette_state.hide();
+        self.slash_menu_state.hide();
     }
 
     pub fn has_active_overlay(&self) -> bool {
@@ -335,6 +338,7 @@ impl AppState {
             || self.missing_tool_dialog_state.is_visible()
             || self.session_import_state.is_visible()
             || self.command_palette_state.is_visible()
+            || self.slash_menu_state.is_visible()
     }
 
     /// Start footer spinner with optional message
@@ -399,6 +403,7 @@ mod tests {
         state.error_dialog_state.visible = true;
         state.help_dialog_state.visible = true;
         state.command_palette_state.visible = true;
+        state.slash_menu_state.visible = true;
 
         state.close_overlays();
 
@@ -413,6 +418,7 @@ mod tests {
         assert!(!state.error_dialog_state.visible);
         assert!(!state.help_dialog_state.visible);
         assert!(!state.command_palette_state.visible);
+        assert!(!state.slash_menu_state.visible);
         assert!(!state.has_active_overlay());
     }
 

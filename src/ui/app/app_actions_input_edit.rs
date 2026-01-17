@@ -37,6 +37,9 @@ impl App {
                 InputMode::CommandPalette => {
                     self.state.command_palette_state.delete_char();
                 }
+                InputMode::SlashMenu => {
+                    self.state.slash_menu_state.delete_char();
+                }
                 InputMode::SettingBaseDir => {
                     self.state.base_dir_dialog_state.delete_char();
                 }
@@ -62,6 +65,8 @@ impl App {
                     self.state.theme_picker_state.delete();
                 } else if self.state.input_mode == InputMode::SelectingModel {
                     self.state.model_selector_state.delete_forward();
+                } else if self.state.input_mode == InputMode::SlashMenu {
+                    self.state.slash_menu_state.delete_forward();
                 } else if self.state.input_mode == InputMode::SettingBaseDir {
                     self.state.base_dir_dialog_state.delete_forward();
                 } else if let Some(session) = self.state.tab_manager.active_session_mut() {

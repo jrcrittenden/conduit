@@ -343,17 +343,12 @@ impl App {
         // Global command mode trigger - ':' from most modes enters command mode
         // Only trigger when input box is empty (so pasting "hello:world" doesn't activate command mode)
         // Also skip when inline prompt is active (user should respond to prompt first)
-        let has_inline_prompt = self
-            .state
-            .tab_manager
-            .active_session()
-            .is_some_and(|s| s.inline_prompt.is_some());
+        let active_session = self.state.tab_manager.active_session();
+        let has_active_session = active_session.is_some();
+        let has_inline_prompt = active_session.is_some_and(|s| s.inline_prompt.is_some());
 
         // Only enter command mode if the input box is empty and not in shell mode
-        let (input_is_empty, shell_mode) = self
-            .state
-            .tab_manager
-            .active_session()
+        let (input_is_empty, shell_mode) = active_session
             .map(|s| (s.input_box.input().is_empty(), s.input_box.is_shell_mode()))
             .unwrap_or((true, false));
 
@@ -367,6 +362,21 @@ impl App {
         ) {
             self.state.command_buffer.clear();
             self.state.input_mode = InputMode::Command;
+            return Ok(Vec::new());
+        }
+
+        if Self::should_trigger_slash_menu(
+            key.code,
+            key.modifiers,
+            self.state.input_mode,
+            input_is_empty,
+            shell_mode,
+            has_inline_prompt,
+            has_active_session,
+        ) {
+            self.state.close_overlays();
+            self.state.slash_menu_state.show();
+            self.state.input_mode = InputMode::SlashMenu;
             return Ok(Vec::new());
         }
 
@@ -480,6 +490,9 @@ impl App {
             InputMode::CommandPalette => {
                 self.state.command_palette_state.insert_char(c);
             }
+            InputMode::SlashMenu => {
+                self.state.slash_menu_state.insert_char(c);
+            }
             InputMode::MissingTool => {
                 self.state.missing_tool_dialog_state.insert_char(c);
             }
@@ -554,6 +567,12 @@ impl App {
                 let sanitized = pasted.replace('\n', " ");
                 for ch in sanitized.chars() {
                     self.state.command_palette_state.insert_char(ch);
+                }
+            }
+            InputMode::SlashMenu => {
+                let sanitized = pasted.replace('\n', " ");
+                for ch in sanitized.chars() {
+                    self.state.slash_menu_state.insert_char(ch);
                 }
             }
             InputMode::MissingTool => {

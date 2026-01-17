@@ -219,6 +219,8 @@ pub enum InputMode {
     ImportingSession,
     /// Command palette is open
     CommandPalette,
+    /// Slash command menu is open
+    SlashMenu,
     /// Missing tool dialog is open
     MissingTool,
     /// Editing queued messages inline

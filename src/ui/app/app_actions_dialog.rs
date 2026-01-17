@@ -64,6 +64,10 @@ impl App {
                     self.state.command_palette_state.hide();
                     self.state.input_mode = InputMode::Normal;
                 }
+                InputMode::SlashMenu => {
+                    self.state.slash_menu_state.hide();
+                    self.state.input_mode = InputMode::Normal;
+                }
                 InputMode::QueueEditing => {
                     self.close_queue_editor();
                 }

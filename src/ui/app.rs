@@ -47,8 +47,8 @@ use crate::ui::components::{
     ConfirmationContext, ConfirmationDialog, ConfirmationType, DefaultModelSelection, ErrorDialog,
     EventDirection, GlobalFooter, HelpDialog, InlinePromptState, InlinePromptType, MessageRole,
     MissingToolDialog, ModelSelector, ProcessingState, ProjectPicker, PromptAnswer, RawEventsClick,
-    SessionHeader, SessionImportPicker, Sidebar, SidebarData, TabBar, TabBarHitTarget, ThemePicker,
-    SIDEBAR_HEADER_ROWS,
+    SessionHeader, SessionImportPicker, Sidebar, SidebarData, SlashCommand, SlashMenu, TabBar,
+    TabBarHitTarget, ThemePicker, SIDEBAR_HEADER_ROWS,
 };
 use crate::ui::effect::Effect;
 use crate::ui::events::{
@@ -1518,7 +1518,28 @@ impl App {
                 self.handle_list_action(action);
             }
             Action::Confirm => {
-                if self.state.input_mode == InputMode::CommandPalette {
+                if self.state.input_mode == InputMode::SlashMenu {
+                    if let Some(entry) = self.state.slash_menu_state.selected_entry() {
+                        let command = entry.command;
+                        self.state.slash_menu_state.hide();
+                        self.state.input_mode = InputMode::Normal;
+                        match command {
+                            SlashCommand::Model => {
+                                effects.extend(
+                                    Box::pin(self.execute_action(
+                                        Action::ShowModelSelector,
+                                        terminal,
+                                        guard,
+                                    ))
+                                    .await?,
+                                );
+                            }
+                            SlashCommand::NewSession => {
+                                self.start_new_session_in_place();
+                            }
+                        }
+                    }
+                } else if self.state.input_mode == InputMode::CommandPalette {
                     if let Some(entry) = self.state.command_palette_state.selected_entry() {
                         let action = entry.action.clone();
                         self.state.command_palette_state.hide();
@@ -2519,9 +2540,29 @@ impl App {
                     | InputMode::Confirming
                     | InputMode::ImportingSession
                     | InputMode::CommandPalette
+                    | InputMode::SlashMenu
                     | InputMode::SelectingTheme
                     | InputMode::SelectingModel
             )
+    }
+
+    /// Helper to check if a slash keypress should trigger the slash menu.
+    fn should_trigger_slash_menu(
+        key_code: KeyCode,
+        key_modifiers: KeyModifiers,
+        input_mode: InputMode,
+        input_is_empty: bool,
+        shell_mode: bool,
+        has_inline_prompt: bool,
+        has_active_session: bool,
+    ) -> bool {
+        key_code == KeyCode::Char('/')
+            && key_modifiers.is_empty()
+            && input_is_empty
+            && has_active_session
+            && !shell_mode
+            && !has_inline_prompt
+            && input_mode == InputMode::Normal
     }
 
     async fn read_bounded_output<R>(mut reader: R, limit: usize) -> io::Result<(Vec<u8>, bool)>
@@ -3508,6 +3549,73 @@ impl App {
             session.update_status();
         }
         self.state.input_mode = InputMode::Normal;
+    }
+
+    /// Replace the active session with a fresh one (same workspace, reset history).
+    fn start_new_session_in_place(&mut self) {
+        if self.state.tab_manager.is_empty() {
+            self.state.set_timed_footer_message(
+                "No active session to reset".to_string(),
+                Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let active_index = self.state.tab_manager.active_index();
+        let (
+            agent_type,
+            working_dir,
+            workspace_id,
+            project_name,
+            workspace_name,
+            pr_number,
+            is_processing,
+        ) = match self.state.tab_manager.session(active_index) {
+            Some(session) => (
+                session.agent_type,
+                session.working_dir.clone(),
+                session.workspace_id,
+                session.project_name.clone(),
+                session.workspace_name.clone(),
+                session.pr_number,
+                session.is_processing,
+            ),
+            None => {
+                self.state.set_timed_footer_message(
+                    "No active session to reset".to_string(),
+                    Duration::from_secs(3),
+                );
+                return;
+            }
+        };
+
+        if is_processing {
+            self.state.set_timed_footer_message(
+                "Stop the agent before starting a new session".to_string(),
+                Duration::from_secs(3),
+            );
+            return;
+        }
+
+        let mut new_session = if let Some(dir) = working_dir {
+            AgentSession::with_working_dir(agent_type, dir)
+        } else {
+            AgentSession::new(agent_type)
+        };
+        new_session.workspace_id = workspace_id;
+        new_session.project_name = project_name;
+        new_session.workspace_name = workspace_name;
+        new_session.pr_number = pr_number;
+        new_session.model = Some(self.config.default_model_for(agent_type));
+        new_session.init_context_for_model();
+        new_session.update_status();
+
+        if let Some(session) = self.state.tab_manager.sessions_mut().get_mut(active_index) {
+            *session = new_session;
+        }
+
+        self.state
+            .set_timed_footer_message("Started a new session".to_string(), Duration::from_secs(3));
     }
 
     /// Create a new tab by importing an external session
@@ -7725,6 +7833,10 @@ impl App {
                     f.set_cursor_position((cx, cy));
                 }
 
+                if self.state.slash_menu_state.is_visible() && !has_inline_prompt {
+                    self.render_slash_menu(chat_chunk, input_area_inner, f.buffer_mut());
+                }
+
                 // Draw footer (full width) - context-aware based on input mode
                 let footer = GlobalFooter::from_state(
                     self.state.view_mode,
@@ -7989,6 +8101,40 @@ impl App {
             },
             buf,
         );
+    }
+
+    fn render_slash_menu(
+        &mut self,
+        chat_area: Rect,
+        input_area: Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        if !self.state.slash_menu_state.is_visible() {
+            return;
+        }
+
+        let available_height = input_area.y.saturating_sub(chat_area.y);
+        let list_height_max = available_height.saturating_sub(4);
+        if list_height_max == 0 {
+            return;
+        }
+
+        let list_len = self.state.slash_menu_state.filtered_len().max(1);
+        let list_height = list_len.min(list_height_max as usize).max(1) as u16;
+        self.state
+            .slash_menu_state
+            .set_max_visible(list_height as usize);
+
+        let menu_height = list_height.saturating_add(4);
+        let menu_y = input_area.y.saturating_sub(menu_height);
+        let menu_area = Rect {
+            x: input_area.x,
+            y: menu_y,
+            width: input_area.width,
+            height: menu_height,
+        };
+
+        SlashMenu::new().render(menu_area, buf, &self.state.slash_menu_state);
     }
 
     fn find_latest_plan_file(session: &AgentSession) -> Option<std::path::PathBuf> {
@@ -8517,6 +8663,54 @@ mod tests {
         assert!(
             !result,
             "Colon should NOT trigger command mode while selecting a model"
+        );
+    }
+
+    #[test]
+    fn test_slash_triggers_menu_on_empty_input() {
+        let result = App::should_trigger_slash_menu(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            true,
+            false,
+            false,
+            true,
+        );
+        assert!(result, "Slash should trigger menu on empty input");
+    }
+
+    #[test]
+    fn test_slash_does_not_trigger_with_existing_input() {
+        let result = App::should_trigger_slash_menu(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            false,
+            false,
+            false,
+            true,
+        );
+        assert!(
+            !result,
+            "Slash should not trigger menu when input has content"
+        );
+    }
+
+    #[test]
+    fn test_slash_does_not_trigger_without_session() {
+        let result = App::should_trigger_slash_menu(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            InputMode::Normal,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(
+            !result,
+            "Slash should not trigger menu without an active session"
         );
     }
 
