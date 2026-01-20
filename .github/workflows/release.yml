@@ -22,6 +22,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: warp-macos-latest-arm64-6x
             archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: warp-windows-latest-x64-4x
             archive: zip
