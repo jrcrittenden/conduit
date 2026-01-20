@@ -1,0 +1,198 @@
+---
+// Choose Your Interface - TUI vs Web section
+---
+
+<!-- Lightbox Modal -->
+<div id="lightbox" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/90 backdrop-blur-sm cursor-zoom-out" onclick="closeLightbox()">
+  <img id="lightbox-img" src="" alt="" class="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl" />
+  <button class="absolute top-4 right-4 text-white/70 hover:text-white transition-colors" onclick="closeLightbox()">
+    <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  </button>
+</div>
+
+<section class="py-24 px-4 bg-[var(--color-bg-base)]">
+  <div class="max-w-6xl mx-auto">
+    <!-- Section Header -->
+    <div class="text-center mb-16">
+      <p class="text-[var(--color-text-muted)] font-mono text-sm mb-2">
+        <span class="text-[var(--color-phosphor)]">//</span> CHOOSE YOUR PATH
+      </p>
+      <h2 class="font-display text-3xl md:text-4xl text-[var(--color-text-bright)] mb-4">
+        One Tool, Two Interfaces
+      </h2>
+      <p class="text-[var(--color-text-secondary)] max-w-2xl mx-auto">
+        Whether you live in the terminal or prefer a browser, Conduit adapts to your workflow.
+      </p>
+    </div>
+
+    <!-- Two Options Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+      <!-- TUI Option -->
+      <div class="group terminal-frame overflow-hidden transition-all duration-300 hover:border-[var(--color-phosphor)]">
+        <div class="terminal-buttons">
+          <div class="terminal-button terminal-button-close"></div>
+          <div class="terminal-button terminal-button-minimize"></div>
+          <div class="terminal-button terminal-button-maximize"></div>
+          <span class="ml-4 text-[var(--color-phosphor)] text-xs font-mono">Terminal</span>
+        </div>
+        <div class="p-6">
+          <!-- Screenshot area -->
+          <div
+            class="aspect-video bg-[var(--color-bg-terminal)] rounded-lg mb-6 overflow-hidden border border-[var(--color-border-dim)] cursor-zoom-in hover:border-[var(--color-phosphor)] transition-colors"
+            onclick="openLightbox('/screenshots/screenshot-tui.png', 'Conduit TUI Interface')"
+          >
+            <img
+              src="/screenshots/screenshot-tui.png"
+              alt="Conduit TUI Interface"
+              class="w-full h-full object-contain"
+            />
+          </div>
+
+          <h3 class="font-display text-xl text-[var(--color-text-bright)] mb-3">
+            Terminal Native
+          </h3>
+          <p class="text-[var(--color-text-secondary)] text-sm mb-4">
+            The full power of Conduit in your terminal. Fast, efficient, and keyboard-driven.
+          </p>
+          <ul class="space-y-2 text-[var(--color-text-secondary)] text-sm font-mono mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-phosphor)]">→</span>
+              Keyboard-first navigation
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-phosphor)]">→</span>
+              Vim-style keybindings
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-phosphor)]">→</span>
+              Minimal resource usage
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-phosphor)]">→</span>
+              Works over SSH
+            </li>
+          </ul>
+          <div class="bg-[var(--color-bg-terminal)] rounded-lg p-3 mb-4 font-mono text-sm">
+            <span class="text-[var(--color-accent-success)]">$</span>
+            <span class="text-[var(--color-text-primary)]"> conduit</span>
+          </div>
+          <a href="#install" class="btn-primary inline-flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Install CLI
+          </a>
+        </div>
+      </div>
+
+      <!-- Web Option -->
+      <div class="group terminal-frame overflow-hidden transition-all duration-300 hover:border-[var(--color-accent-primary)]">
+        <div class="terminal-buttons">
+          <div class="terminal-button" style="background: #ff5f57;"></div>
+          <div class="terminal-button" style="background: #febc2e;"></div>
+          <div class="terminal-button" style="background: #28c840;"></div>
+          <span class="ml-4 text-[var(--color-accent-primary)] text-xs font-mono">Browser</span>
+        </div>
+        <div class="p-6">
+          <!-- Screenshot area -->
+          <div
+            id="web-screenshot-container"
+            class="aspect-video bg-[var(--color-bg-surface)] rounded-lg mb-6 overflow-hidden border border-[var(--color-border-dim)] flex items-center justify-center hover:border-[var(--color-accent-primary)] transition-colors"
+          >
+            <img
+              id="web-screenshot"
+              src="/screenshots/screenshot-web.png"
+              alt="Conduit Web Interface"
+              class="w-full h-full object-contain cursor-zoom-in hidden"
+              onclick="openLightbox('/screenshots/screenshot-web.png', 'Conduit Web Interface')"
+              onload="this.classList.remove('hidden'); this.nextElementSibling.classList.add('hidden');"
+              onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');"
+            />
+            <!-- Placeholder when no screenshot -->
+            <div class="flex flex-col items-center justify-center text-center p-8">
+              <svg class="w-16 h-16 text-[var(--color-accent-primary)] mb-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+              </svg>
+              <p class="text-[var(--color-text-muted)] font-mono text-sm">Web Interface</p>
+              <p class="text-[var(--color-text-faint)] font-mono text-xs mt-1">Coming Soon</p>
+            </div>
+          </div>
+
+          <h3 class="font-display text-xl text-[var(--color-text-bright)] mb-3">
+            Browser Access
+          </h3>
+          <p class="text-[var(--color-text-secondary)] text-sm mb-4">
+            Access Conduit from any device with a browser. Perfect for remote work and collaboration.
+          </p>
+          <ul class="space-y-2 text-[var(--color-text-secondary)] text-sm font-mono mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-accent-primary)]">→</span>
+              Access from any device
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-accent-primary)]">→</span>
+              Mouse-friendly interface
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-accent-primary)]">→</span>
+              Share sessions via URL
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-[var(--color-accent-primary)]">→</span>
+              Configurable host & port
+            </li>
+          </ul>
+          <div class="bg-[var(--color-bg-terminal)] rounded-lg p-3 mb-4 font-mono text-sm">
+            <span class="text-[var(--color-accent-success)]">$</span>
+            <span class="text-[var(--color-text-primary)]"> conduit serve</span>
+            <span class="text-[var(--color-text-muted)]"> --port 3000</span>
+          </div>
+          <a href="/docs/web-interface" class="btn-secondary inline-flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Learn More
+          </a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<script>
+  function openLightbox(src: string, alt: string) {
+    const lightbox = document.getElementById('lightbox');
+    const img = document.getElementById('lightbox-img') as HTMLImageElement;
+    if (lightbox && img) {
+      img.src = src;
+      img.alt = alt;
+      lightbox.classList.remove('hidden');
+      lightbox.classList.add('flex');
+      document.body.style.overflow = 'hidden';
+    }
+  }
+
+  function closeLightbox() {
+    const lightbox = document.getElementById('lightbox');
+    if (lightbox) {
+      lightbox.classList.add('hidden');
+      lightbox.classList.remove('flex');
+      document.body.style.overflow = '';
+    }
+  }
+
+  // Close on escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeLightbox();
+    }
+  });
+
+  // Make functions available globally
+  (window as any).openLightbox = openLightbox;
+  (window as any).closeLightbox = closeLightbox;
+</script>
