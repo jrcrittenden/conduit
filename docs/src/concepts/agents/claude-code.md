@@ -1,6 +1,6 @@
 # Claude Code
 
-[Claude Code](https://github.com/anthropics/claude-code) is Anthropic's official CLI for Claude.
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI for Claude.
 
 ## Features
 
@@ -36,5 +36,5 @@ Toggle with `Tab` or `Ctrl+4`.
 ## Installation
 
 ```bash
-npm install -g @anthropic/claude-code
+npm install -g @anthropic-ai/claude-code
 ```

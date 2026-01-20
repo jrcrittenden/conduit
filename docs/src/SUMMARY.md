@@ -17,6 +17,7 @@
 - [Agents](./concepts/agents.md)
   - [Claude Code](./concepts/agents/claude-code.md)
   - [Codex CLI](./concepts/agents/codex.md)
+  - [Gemini CLI](./concepts/agents/gemini.md)
 - [Build vs Plan Mode](./concepts/build-plan-mode.md)
 
 # User Interface

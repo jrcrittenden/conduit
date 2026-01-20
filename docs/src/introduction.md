@@ -15,8 +15,9 @@ Conduit is a multi-agent terminal user interface (TUI) that lets you run AI codi
 
 | Agent | Description |
 |-------|-------------|
-| [Claude Code](https://github.com/anthropics/claude-code) | Anthropic's official CLI for Claude with tool execution |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Anthropic's official CLI for Claude with tool execution |
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's command-line coding assistant |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's command-line interface for Gemini |
 
 ## Quick Example
 
@@ -41,7 +42,7 @@ conduit
 ## Requirements
 
 - **Git** — Required for workspace management
-- **At least one agent** — Claude Code or Codex CLI installed and configured
+- **At least one agent** — Claude Code, Codex CLI, or Gemini CLI installed and configured
 - **Terminal** — A terminal emulator with good Unicode and color support
 
 ## Navigation
@@ -50,4 +51,4 @@ Use the sidebar to browse documentation by topic, or use the search (`/` or `s`)
 
 ---
 
-*Conduit is currently in early access. Join our [Discord](https://discord.gg/conduit) for support and updates.*
+*Conduit is currently in early access. Join our [Discord](https://discord.gg/F9pfRd642H) for support and updates.*

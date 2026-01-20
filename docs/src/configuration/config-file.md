@@ -5,7 +5,7 @@ Complete reference for `~/.conduit/config.toml`.
 ## Application Settings
 
 ```toml
-# Default agent: "claude" or "codex"
+# Default agent: "claude", "codex", or "gemini"
 default_agent = "claude"
 
 # Working directory for agents (defaults to current directory)
@@ -44,6 +44,7 @@ git = "/usr/bin/git"
 gh = "/usr/local/bin/gh"
 claude = "/opt/homebrew/bin/claude"
 codex = "/usr/local/bin/codex"
+gemini = "/usr/local/bin/gemini"
 ```
 
 ## Selection & Clipboard

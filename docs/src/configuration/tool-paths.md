@@ -9,6 +9,7 @@ Conduit searches your `PATH` for:
 - `gh` — GitHub CLI (optional)
 - `claude` — Claude Code agent
 - `codex` — Codex CLI agent
+- `gemini` — Gemini CLI agent
 
 ## Custom Paths
 
@@ -20,6 +21,7 @@ git = "/usr/bin/git"
 gh = "/usr/local/bin/gh"
 claude = "/opt/homebrew/bin/claude"
 codex = "/home/user/.local/bin/codex"
+gemini = "/home/user/.local/bin/gemini"
 ```
 
 ## Verifying Paths
@@ -28,7 +30,7 @@ Check tool detection:
 
 ```bash
 # Should show tool locations
-which claude codex git gh
+which claude codex gemini git gh
 ```
 
 ## Missing Tools

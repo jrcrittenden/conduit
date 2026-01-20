@@ -1,16 +1,40 @@
 # Installation
 
+## Quick Install
+
+The fastest way to install Conduit:
+
+```bash
+curl -fsSL https://getconduit.sh/install | sh
+```
+
+This script automatically detects your platform (macOS/Linux) and architecture, downloads the appropriate binary, and installs it to `~/.local/bin`.
+
 ## Prerequisites
 
-Before installing Conduit, ensure you have:
+Before using Conduit, ensure you have:
 
-- **Rust 1.70+** — For building from source
 - **Git** — Required for workspace and worktree management
 - **At least one AI agent:**
-  - [Claude Code](https://github.com/anthropics/claude-code) — `npm install -g @anthropic/claude-code`
-  - [Codex CLI](https://github.com/openai/codex) — Follow OpenAI's installation guide
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
+  - [Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) — `npm install -g @anthropic-ai/gemini-cli`
 
-## Build from Source
+## Alternative Installation Methods
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install conduit-cli/tap/conduit
+```
+
+### Cargo (from crates.io)
+
+```bash
+cargo install conduit-tui
+```
+
+### Build from Source
 
 Clone the repository and build with Cargo:
 
@@ -22,7 +46,7 @@ cargo build --release
 
 The binary will be at `./target/release/conduit`.
 
-### Add to PATH
+#### Add to PATH
 
 ```bash
 # Copy to a directory in your PATH
@@ -36,7 +60,7 @@ ln -s $(pwd)/target/release/conduit ~/.local/bin/conduit
 
 ```bash
 # Check Conduit is installed
-conduit --help
+conduit --version
 
 # Start the TUI
 conduit
@@ -47,7 +71,7 @@ conduit
 On first launch, Conduit will:
 
 1. **Detect Git** — Shows an error dialog if Git is not found
-2. **Detect Agents** — Searches for `claude` and `codex` binaries
+2. **Detect Agents** — Searches for `claude`, `codex`, and `gemini` binaries
 3. **Create Config Directory** — Creates `~/.conduit/` for settings and data
 
 If no agents are found, you'll be prompted to configure tool paths in the settings.

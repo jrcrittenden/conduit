@@ -25,7 +25,7 @@ You'll see:
 On first run, Conduit checks for:
 
 1. **Git** — Required for all operations
-2. **Agents** — Looks for `claude` and `codex` in your PATH
+2. **Agents** — Looks for `claude`, `codex`, and `gemini` in your PATH
 
 If an agent isn't found, you can configure its path in settings (`s` from sidebar).
 
