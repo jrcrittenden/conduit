@@ -655,7 +655,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "conduit"
+name = "conduit-cli"
 version = "0.1.6"
 dependencies = [
  "agent-client-protocol",

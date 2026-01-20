@@ -5,6 +5,7 @@
 This document outlines the implementation plan for comprehensive end-to-end, integration, and unit testing for Conduit. The goal is to ensure deterministic, reproducible tests that prevent regressions in core user flows.
 
 **Priority Order** (per stakeholder input):
+
 1. Agent Interaction
 2. PR Creation
 3. Workspace Creation
@@ -1669,7 +1670,7 @@ jobs:
 Add to `README.md`:
 
 ```markdown
-[![codecov](https://codecov.io/gh/fcoury/conduit/branch/main/graph/badge.svg)](https://codecov.io/gh/fcoury/conduit)
+[![codecov](https://codecov.io/gh/conduit-cli/conduit/branch/main/graph/badge.svg)](https://codecov.io/gh/conduit-cli/conduit)
 ```
 
 ---
@@ -1677,6 +1678,7 @@ Add to `README.md`:
 ## Implementation Checklist
 
 ### Phase 1: Foundation (Week 1)
+
 - [ ] Add dev-dependencies to Cargo.toml
 - [ ] Create `tests/` directory structure
 - [ ] Create `tests/common/mod.rs` with helper modules
@@ -1687,27 +1689,32 @@ Add to `README.md`:
 - [ ] Add `pub mod mock;` to `src/agent/mod.rs`
 
 ### Phase 2: Agent Tests (Week 1-2)
+
 - [ ] Create JSONL fixtures in `tests/fixtures/jsonl/`
 - [ ] Create `tests/integration/agent_session.rs`
 - [ ] Create `tests/integration/session_state.rs`
 - [ ] Add property-based tests for JSONL parsing
 
 ### Phase 3: PR Tests (Week 2)
+
 - [ ] Extend `src/git/pr.rs` tests
 - [ ] Create `tests/integration/pr_workflow.rs`
 - [ ] Test PR preflight with various repo states
 
 ### Phase 4: Workspace Tests (Week 2-3)
+
 - [ ] Extend `src/util/names.rs` tests
 - [ ] Create `tests/integration/workspace_flow.rs`
 - [ ] Test full workspace creation flow
 
 ### Phase 5: TUI Snapshots (Week 3)
+
 - [ ] Create `tests/integration/ui_snapshots.rs`
 - [ ] Generate initial snapshots with `cargo insta test`
 - [ ] Review and approve snapshots
 
 ### Phase 6: E2E & CI (Week 3-4)
+
 - [ ] Create `tests/e2e/cli_args.rs`
 - [ ] Create `.github/workflows/test.yml`
 - [ ] Set up Codecov integration

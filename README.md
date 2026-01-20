@@ -23,7 +23,7 @@ A multi-agent Terminal User Interface (TUI) for orchestrating AI coding assistan
 ### Build from Source
 
 ```bash
-git clone https://github.com/fcoury/conduit.git
+git clone https://github.com/conduit-cli/conduit.git
 cd conduit
 cargo build --release
 ```
@@ -42,23 +42,23 @@ conduit debug-keys
 
 ### Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+N` | New project (opens project picker) |
-| `Alt+Shift+W` | Close current tab |
-| `Tab` / `Shift+Tab` | Switch to next/previous tab |
-| `Alt+1-9` | Jump to specific tab |
-| `Alt+Shift+F`† | Fork current session |
-| `Enter` | Submit prompt |
-| `Shift+Enter` or `Alt+Enter` | Add newline in input |
-| `Ctrl+C` | Interrupt agent |
-| `Ctrl+Q` | Quit |
-| `Ctrl+T` | Toggle sidebar |
-| `Ctrl+G` | Toggle view mode (Chat/Raw Events) |
-| `Ctrl+O` | Show model selector |
-| `Ctrl+\` | Toggle Build/Plan mode* |
-| `Alt+I` | Import session |
-| `?` or `:help` | Show help |
+| Shortcut                     | Action                             |
+| ---------------------------- | ---------------------------------- |
+| `Ctrl+N`                     | New project (opens project picker) |
+| `Alt+Shift+W`                | Close current tab                  |
+| `Tab` / `Shift+Tab`          | Switch to next/previous tab        |
+| `Alt+1-9`                    | Jump to specific tab               |
+| `Alt+Shift+F`†               | Fork current session               |
+| `Enter`                      | Submit prompt                      |
+| `Shift+Enter` or `Alt+Enter` | Add newline in input               |
+| `Ctrl+C`                     | Interrupt agent                    |
+| `Ctrl+Q`                     | Quit                               |
+| `Ctrl+T`                     | Toggle sidebar                     |
+| `Ctrl+G`                     | Toggle view mode (Chat/Raw Events) |
+| `Ctrl+O`                     | Show model selector                |
+| `Ctrl+\`                     | Toggle Build/Plan mode\*           |
+| `Alt+I`                      | Import session                     |
+| `?` or `:help`               | Show help                          |
 
 \* **Note on `Ctrl+\`**: Terminal emulators vary in how they report this key combination. Some terminals send it as `Ctrl+4`. Use `conduit debug-keys` to verify how your terminal reports this shortcut. If it doesn't work, you can customize the keybinding in your config.
 † **Note on `Alt+Shift+F`**: Some terminals don't emit distinct Alt+Shift combos. Use `conduit debug-keys` to verify how your terminal reports this shortcut and override the keybinding in your config if needed.
@@ -115,6 +115,7 @@ src/
 ### Claude Code
 
 Spawns the `claude` binary in headless mode with streaming JSON output:
+
 - Real-time event streaming
 - Tool execution (Read, Edit, Write, Bash, Glob, Grep)
 - Session resumption
@@ -122,6 +123,7 @@ Spawns the `claude` binary in headless mode with streaming JSON output:
 ### Codex CLI
 
 Spawns the `codex` binary with structured JSON output:
+
 - Full automation mode
 - Session persistence
 - Event-based communication
@@ -130,12 +132,12 @@ Spawns the `codex` binary with structured JSON output:
 
 Default settings in `src/config/settings.rs`:
 
-| Setting | Default |
-|---------|---------|
-| Default agent | Claude Code |
-| Max tabs | 10 |
-| Show token usage | Yes |
-| Show cost | Yes |
+| Setting          | Default     |
+| ---------------- | ----------- |
+| Default agent    | Claude Code |
+| Max tabs         | 10          |
+| Show token usage | Yes         |
+| Show cost        | Yes         |
 
 ### Pricing (Claude Sonnet)
 
@@ -170,6 +172,7 @@ Output is in `website/dist/`.
 The site is static and can be deployed to any hosting provider:
 
 **GitHub Pages:**
+
 ```bash
 cd website
 npm run build
@@ -177,10 +180,12 @@ npm run build
 ```
 
 **Netlify/Vercel:**
+
 - Connect repo and set build command to `cd website && npm run build`
 - Set publish directory to `website/dist`
 
 **Manual:**
+
 ```bash
 cd website
 npm run build
