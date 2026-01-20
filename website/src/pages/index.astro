@@ -4,20 +4,13 @@ import Hero from '../components/Hero.astro'
 import Features from '../components/Features.astro'
 import Install from '../components/Install.astro'
 import Footer from '../components/Footer.astro'
-import TeaserHero from '../components/TeaserHero.astro'
-
-const showFullSite = Astro.url.searchParams.get('version') === 'full'
 ---
 
-<Layout title={showFullSite ? "Conduit - Multi-Agent TUI for AI Coding Assistants" : "Conduit - Multi-Agent TUI for AI Coding Assistants | Coming Soon"}>
+<Layout title="Conduit - Multi-Agent TUI for AI Coding Assistants">
   <main>
-    {showFullSite ? (
-      <>
-        <Hero />
-        <Features />
-        <Install />
-        <Footer />
-      </>
-    ) : <TeaserHero />}
+    <Hero />
+    <Features />
+    <Install />
+    <Footer />
   </main>
 </Layout>
