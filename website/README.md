@@ -24,9 +24,12 @@ pnpm install
 
 # Start dev server (includes docs build)
 pnpm dev
+
+# Start dev server accessible from other machines on the network
+pnpm dev -- --host 0.0.0.0
 ```
 
-The site will be available at `http://localhost:4321`.
+The site will be available at `http://localhost:4321` (or your network IP when using `--host`).
 
 ### Project Structure
 
@@ -80,15 +83,20 @@ The website is deployed to Cloudflare Pages.
 # Build first
 pnpm build
 
-# Deploy
+# Deploy (will warn if there are uncommitted changes)
 npx wrangler pages deploy dist --project-name=getconduit-sh --branch=main
+
+# Deploy with uncommitted changes (skip the warning)
+npx wrangler pages deploy dist --project-name=getconduit-sh --branch=main --commit-dirty=true
 ```
 
 ### Quick Deploy (one command)
 
 ```bash
-pnpm build && npx wrangler pages deploy dist --project-name=getconduit-sh --branch=main
+pnpm build && npx wrangler pages deploy dist --project-name=getconduit-sh --branch=main --commit-dirty=true
 ```
+
+> **Important**: The `--branch=main` flag is required for production deployment. Other branches (`master`, `production`, etc.) will only deploy to preview URLs.
 
 ### Troubleshooting Deployment
 
