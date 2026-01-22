@@ -148,9 +148,7 @@ impl<'a> BattleView<'a> {
         }
 
         // Stats line (tokens, cost, time)
-        let time_str = if agent.is_complete() {
-            format!("{:.1}s", agent.elapsed().as_secs_f64())
-        } else if agent.is_processing {
+        let time_str = if agent.is_complete() || agent.is_processing {
             format!("{:.1}s", agent.elapsed().as_secs_f64())
         } else {
             "—".to_string()

@@ -5,9 +5,10 @@ use std::time::Duration;
 use crate::agent::AgentType;
 
 /// Current state of a battle
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum BattleState {
     /// Waiting for user to submit prompt
+    #[default]
     Idle,
 
     /// Battle countdown (3, 2, 1...)
@@ -101,12 +102,6 @@ impl BattleState {
             BattleState::Completed { margin, .. } => Some(*margin),
             _ => None,
         }
-    }
-}
-
-impl Default for BattleState {
-    fn default() -> Self {
-        Self::Idle
     }
 }
 
