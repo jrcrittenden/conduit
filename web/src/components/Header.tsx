@@ -1,6 +1,7 @@
 import { useHealth } from '../hooks';
 import { Circle, Settings, PanelLeft, GitBranch, GitPullRequest, Activity, Download } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { supportsPlanMode } from '../lib/agentCapabilities';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import type { Session, Workspace, WorkspaceStatus } from '../types';
 
@@ -35,6 +36,7 @@ export function Header({
 
   const gitStats = workspaceStatus?.git_stats;
   const prStatus = workspaceStatus?.pr_status;
+  const effectiveAgentMode = activeSession?.agent_mode ?? 'build';
 
   return (
     <header className="flex h-14 items-center justify-between border-b border-border bg-surface px-6">
@@ -66,9 +68,9 @@ export function Header({
                 ? 'Codex'
                 : 'Gemini'}
             </span>
-            {activeSession.agent_mode && (
+            {supportsPlanMode(activeSession.agent_type) && (
               <span className="text-text-muted">
-                · {activeSession.agent_mode === 'plan' ? 'Plan' : 'Build'}
+                · {effectiveAgentMode === 'plan' ? 'Plan' : 'Build'}
               </span>
             )}
             {activeSession.model_display_name && (

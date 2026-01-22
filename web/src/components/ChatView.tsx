@@ -23,6 +23,7 @@ import {
   useWorkspaceActions,
 } from '../hooks';
 import { getFileContent, getSessionEventsPage } from '../lib/api';
+import { supportsPlanMode } from '../lib/agentCapabilities';
 import type {
   Session,
   UserQuestion,
@@ -926,7 +927,7 @@ export function ChatView({
   // Can only change model if session hasn't started (no agent_session_id) and not processing
   const canChangeModel = !session?.agent_session_id && !isProcessing;
   const canChangeMode =
-    session?.agent_type === 'claude' && !session?.agent_session_id && !isProcessing;
+    supportsPlanMode(session?.agent_type) && !session?.agent_session_id && !isProcessing;
   const effectiveAgentMode = session?.agent_mode ?? 'build';
   const queuedMessages = queueData?.messages ?? [];
   const canSendQueued = !!session && !!workspace && !isProcessing;
@@ -1206,12 +1207,12 @@ export function ChatView({
         notice={escHint}
         modelDisplayName={session?.model_display_name}
         agentType={session?.agent_type}
-        agentMode={session?.agent_type === 'claude' ? effectiveAgentMode : undefined}
+        agentMode={supportsPlanMode(session?.agent_type) ? effectiveAgentMode : undefined}
         gitStats={status?.git_stats}
         branch={workspace?.branch}
         onModelClick={() => setShowModelSelector(true)}
         canChangeModel={canChangeModel}
-        onModeToggle={session?.agent_type === 'claude' ? handleToggleAgentMode : undefined}
+        onModeToggle={supportsPlanMode(session?.agent_type) ? handleToggleAgentMode : undefined}
         canChangeMode={canChangeMode}
         attachments={currentAttachments.map((attachment) => ({
           id: attachment.id,

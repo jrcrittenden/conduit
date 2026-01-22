@@ -10,25 +10,11 @@ pub struct AgentCapabilities {
 
 impl AgentCapabilities {
     pub fn for_agent(agent_type: AgentType) -> Self {
-        match agent_type {
-            AgentType::Claude => Self {
-                supports_plan_mode: true,
-                supports_interactive_input: false,
-                supports_steer: false,
-                supports_follow_up: false,
-            },
-            AgentType::Codex => Self {
-                supports_plan_mode: true,
-                supports_interactive_input: false,
-                supports_steer: false,
-                supports_follow_up: false,
-            },
-            AgentType::Gemini => Self {
-                supports_plan_mode: true,
-                supports_interactive_input: false,
-                supports_steer: false,
-                supports_follow_up: false,
-            },
+        Self {
+            supports_plan_mode: agent_type.supports_plan_mode(),
+            supports_interactive_input: false,
+            supports_steer: false,
+            supports_follow_up: false,
         }
     }
 }

@@ -129,14 +129,14 @@ impl SessionService {
             agent_type_changed = session.agent_type != agent_type;
             session.agent_type = agent_type;
         }
-        if agent_type_changed && session.agent_type != AgentType::Claude {
+        if agent_type_changed && !session.agent_type.supports_plan_mode() {
             session.agent_mode = None;
         }
 
         if let Some(agent_mode) = params.agent_mode {
-            if session.agent_type != AgentType::Claude {
+            if !session.agent_type.supports_plan_mode() {
                 return Err(ServiceError::InvalidInput(
-                    "Agent mode is only supported for Claude sessions".to_string(),
+                    "Agent mode is not supported for this agent type".to_string(),
                 ));
             }
             session.agent_mode = Some(agent_mode.as_str().to_string());
@@ -232,9 +232,9 @@ impl SessionService {
             None,
         );
         if let Some(mode) = params.agent_mode {
-            if params.agent_type != AgentType::Claude {
+            if !params.agent_type.supports_plan_mode() {
                 return Err(ServiceError::InvalidInput(
-                    "Agent mode is only supported for Claude sessions".to_string(),
+                    "Agent mode is not supported for this agent type".to_string(),
                 ));
             }
             session.agent_mode = Some(mode.as_str().to_string());

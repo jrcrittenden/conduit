@@ -41,6 +41,7 @@ import {
   useClearUnseenSession,
 } from './hooks';
 import type { Repository, Workspace, Session, SessionEvent, AgentEvent, WorkspaceMode } from './types';
+import { supportsPlanMode } from './lib/agentCapabilities';
 
 // Create a client
 const queryClient = new QueryClient({
@@ -711,7 +712,7 @@ function AppContent() {
   });
 
   const canTogglePlanMode =
-    activeSession?.agent_type === 'claude' &&
+    supportsPlanMode(activeSession?.agent_type) &&
     !activeSession?.agent_session_id;
 
   const handleTogglePlanMode = () => {
