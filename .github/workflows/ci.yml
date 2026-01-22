@@ -97,3 +97,30 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  e2e:
+    name: E2E
+    runs-on: warp-ubuntu-latest-x64-8x
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-shape0-dev libxcb-xfixes0-dev socat jq sqlite3
+
+      - name: Install termwright
+        run: cargo install termwright --locked
+
+      - name: Run E2E tests
+        run: tests/e2e/run_all.sh
