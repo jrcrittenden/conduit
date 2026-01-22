@@ -3412,11 +3412,10 @@ impl App {
 
     /// Find the tab index for a workspace if it's already open
     fn find_tab_for_workspace(&self, workspace_id: uuid::Uuid) -> Option<usize> {
-        self.state
-            .tab_manager
-            .sessions()
-            .iter()
-            .position(|session| session.workspace_id == Some(workspace_id))
+        self.state.tab_manager.tabs().iter().position(|tab| {
+            tab.as_agent()
+                .is_some_and(|session| session.workspace_id == Some(workspace_id))
+        })
     }
 
     /// Extract PR number from text containing a GitHub PR URL
