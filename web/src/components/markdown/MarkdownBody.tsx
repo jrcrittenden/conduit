@@ -111,9 +111,13 @@ export function MarkdownBody({ content, className }: MarkdownBodyProps) {
             {children}
           </ol>
         ),
-        li: ({ children }: { children?: ReactNode }) => (
-          <li className="text-text">{processChildren(children)}</li>
-        ),
+        li: ({ children }: { children?: ReactNode }) => {
+          // Don't render empty list items (e.g., lines that are just "- ")
+          if (!children) return null;
+          if (typeof children === 'string' && !children.trim()) return null;
+          if (Array.isArray(children) && children.every(c => c == null || (typeof c === 'string' && !c.trim()))) return null;
+          return <li className="text-text">{processChildren(children)}</li>;
+        },
         blockquote: ({ children }: { children?: ReactNode }) => (
           <blockquote className="border-l-2 border-accent pl-4 italic text-text-muted mb-3">
             {children}
