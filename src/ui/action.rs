@@ -218,6 +218,20 @@ pub enum Action {
     // ========== Command Palette ==========
     /// Open command palette
     OpenCommandPalette,
+
+    // ========== Battle Mode ==========
+    /// Toggle battle mode (split-pane agent competition)
+    ToggleBattleMode,
+    /// Start a battle with current input
+    StartBattle,
+    /// View battle results
+    ViewBattleResults,
+    /// Share battle results to clipboard
+    ShareBattleResults,
+    /// Compare diffs between battle agents
+    CompareBattleDiffs,
+    /// Dismiss battle results overlay
+    DismissBattleResults,
 }
 
 impl Action {
@@ -341,6 +355,14 @@ impl Action {
 
             // Command palette
             Action::OpenCommandPalette => "Command palette",
+
+            // Battle mode
+            Action::ToggleBattleMode => "Toggle battle mode",
+            Action::StartBattle => "Start battle",
+            Action::ViewBattleResults => "View battle results",
+            Action::ShareBattleResults => "Share battle results",
+            Action::CompareBattleDiffs => "Compare battle diffs",
+            Action::DismissBattleResults => "Close battle results",
         }
     }
 
@@ -401,6 +423,10 @@ impl Action {
                 | Action::OpenQueueEditor
                 | Action::OpenSessionImport
                 | Action::ShowHelp
+                // Battle mode
+                | Action::ToggleBattleMode
+                | Action::ViewBattleResults
+                | Action::ShareBattleResults
         )
     }
 

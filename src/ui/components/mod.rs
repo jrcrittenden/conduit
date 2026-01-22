@@ -1,6 +1,7 @@
 mod add_repo_dialog;
 mod agent_selector;
 mod base_dir_dialog;
+mod battle_view;
 mod chat_message;
 mod chat_view;
 mod command_palette;
@@ -175,6 +176,7 @@ pub use theme::{
     ThemeSource,
 };
 
+pub use battle_view::{BattleTabIndicator, BattleView};
 pub use thinking_indicator::{ProcessingState, ThinkingIndicator};
 pub use tree_view::{
     ActionType, NodeType, SidebarData, SidebarGitDisplay, TreeNode, TreeView, TreeViewState,

@@ -3120,6 +3120,33 @@ impl App {
                     .show(&self.config.keybindings, supports_plan_mode);
                 self.state.input_mode = InputMode::CommandPalette;
             }
+
+            // ========== Battle Mode ==========
+            // TODO: Implement battle mode actions
+            Action::ToggleBattleMode => {
+                // Battle mode not yet fully implemented
+                tracing::info!("Battle mode toggled (not yet implemented)");
+            }
+            Action::StartBattle => {
+                // Start a battle with both agents
+                tracing::info!("Start battle (not yet implemented)");
+            }
+            Action::ViewBattleResults => {
+                // View battle results overlay
+                tracing::info!("View battle results (not yet implemented)");
+            }
+            Action::ShareBattleResults => {
+                // Copy shareable results to clipboard
+                tracing::info!("Share battle results (not yet implemented)");
+            }
+            Action::CompareBattleDiffs => {
+                // Compare diffs between agents
+                tracing::info!("Compare battle diffs (not yet implemented)");
+            }
+            Action::DismissBattleResults => {
+                // Close results overlay
+                tracing::info!("Dismiss battle results (not yet implemented)");
+            }
         }
 
         Ok(effects)
