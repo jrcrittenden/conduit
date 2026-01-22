@@ -33,6 +33,10 @@ cleanup_local() {
 mkdir -p "$DATA_DIR/workspaces/conduit/kind-mist"
 mkdir -p "$DATA_DIR/workspaces/conduit/live-jade"
 
+# Initialize git repos in workspace directories
+git init "$DATA_DIR/workspaces/conduit/kind-mist" >/dev/null 2>&1
+git init "$DATA_DIR/workspaces/conduit/live-jade" >/dev/null 2>&1
+
 cat > "$DATA_DIR/workspaces/conduit/kind-mist/README.md" <<'EOF_FILE'
 FILE TAB MARKER
 EOF_FILE
@@ -111,7 +115,7 @@ INSERT INTO repositories (
 ) VALUES (
     '11111111-1111-1111-1111-111111111111',
     'conduit',
-    '/tmp/conduit-test',
+    'DATA_DIR_PLACEHOLDER/workspaces/conduit',
     NULL,
     'checkout',
     0,
@@ -148,6 +152,7 @@ data_dir = Path("$DATA_DIR")
 conn = sqlite3.connect(db)
 cur = conn.cursor()
 cur.execute("UPDATE workspaces SET path = REPLACE(path, 'DATA_DIR_PLACEHOLDER', ?)", (str(data_dir),))
+cur.execute("UPDATE repositories SET base_path = REPLACE(base_path, 'DATA_DIR_PLACEHOLDER', ?)", (str(data_dir),))
 conn.commit()
 conn.close()
 PY
