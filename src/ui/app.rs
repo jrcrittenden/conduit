@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use anyhow::anyhow;
 use chrono::Utc;
 use crossterm::{
-    event::{self, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind},
+    event::{EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers, MouseEventKind},
     execute,
     terminal::{enable_raw_mode, EnterAlternateScreen},
 };
+use futures::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -954,6 +955,14 @@ impl App {
         const FRAME_INTERVAL_ACTIVE: Duration = Duration::from_millis(16); // ~60 FPS for animations
         const FRAME_INTERVAL_IDLE: Duration = Duration::from_millis(250); // ~4 FPS when idle
 
+        // Create async event stream for terminal input
+        let mut event_stream = EventStream::new();
+
+        // Scroll batching state (moved outside loop to accumulate across frames)
+        let mut pending_scroll_up = 0usize;
+        let mut pending_scroll_down = 0usize;
+        let mut last_tick = Instant::now();
+
         loop {
             let frame_start = Instant::now();
 
@@ -968,98 +977,118 @@ impl App {
             }
 
             // Use shorter interval when animations are active, longer when idle
-            let target_frame = if self.state.needs_animation() {
-                FRAME_INTERVAL_ACTIVE
-            } else {
-                FRAME_INTERVAL_IDLE
-            };
-            let elapsed = frame_start.elapsed();
-            let sleep_duration = target_frame.saturating_sub(elapsed);
+            let target_frame =
+                if self.state.needs_animation() || pending_scroll_up > 0 || pending_scroll_down > 0
+                {
+                    FRAME_INTERVAL_ACTIVE
+                } else {
+                    FRAME_INTERVAL_IDLE
+                };
+
+            // Handle periodic updates (fixed time step)
+            // This ensures we always process ticks/animations even if input events flood the queue
+            if last_tick.elapsed() >= target_frame {
+                let event_start = Instant::now();
+
+                // Flush any pending scroll events accumulated this frame
+                if pending_scroll_up > 0 || pending_scroll_down > 0 {
+                    self.state.need_redraw = true;
+                }
+                self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+
+                // Trigger redraw when animations are active
+                if self.state.needs_animation() {
+                    self.state.need_redraw = true;
+                }
+
+                // Handle tick and trigger redraw if UI state was mutated
+                if self.handle_tick() {
+                    self.state.need_redraw = true;
+                }
+
+                self.state.metrics.event_time = event_start.elapsed();
+                last_tick = Instant::now();
+            }
+
+            let wait = target_frame.saturating_sub(last_tick.elapsed());
 
             tokio::select! {
-                // Terminal input events + tick
-                _ = tokio::time::sleep(sleep_duration) => {
-                    // Measure event processing time (after sleep)
+                // Prioritize terminal input for immediate response
+                biased;
+
+                // Terminal input events via async EventStream - responds immediately
+                Some(result) = event_stream.next() => {
                     let event_start = Instant::now();
-
-                    // Handle keyboard and mouse input
-                    let mut pending_scroll_up = 0usize;
-                    let mut pending_scroll_down = 0usize;
-
-                    while event::poll(Duration::from_millis(0))? {
-                        match event::read()? {
-                            Event::Key(key) => {
-                                self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
-                                self.dispatch_event(AppEvent::Input(Event::Key(key)), terminal, guard)
-                                    .await?;
-                            }
-                            Event::Mouse(mouse) => {
-                                match mouse.kind {
-                                    MouseEventKind::ScrollUp => {
-                                        if self.handle_tab_bar_wheel(
-                                            mouse.column,
-                                            mouse.row,
-                                            true,
-                                        ) {
-                                            continue;
-                                        }
+                    match result {
+                        Ok(Event::Key(key)) => {
+                            self.state.need_redraw = true;
+                            self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+                            self.dispatch_event(AppEvent::Input(Event::Key(key)), terminal, guard)
+                                .await?;
+                        }
+                        Ok(Event::Mouse(mouse)) => {
+                            match mouse.kind {
+                                MouseEventKind::ScrollUp => {
+                                    if self.handle_tab_bar_wheel(
+                                        mouse.column,
+                                        mouse.row,
+                                        true,
+                                    ) {
+                                        // Handled by tab bar, skip
+                                    } else {
                                         if self.should_route_scroll_to_chat() {
                                             self.record_scroll(1);
                                         }
                                         pending_scroll_up = pending_scroll_up.saturating_add(1);
+                                        // Don't set need_redraw here - batch scroll events
+                                        // and redraw on clean tick for smoother scrolling
                                     }
-                                    MouseEventKind::ScrollDown => {
-                                        if self.handle_tab_bar_wheel(
-                                            mouse.column,
-                                            mouse.row,
-                                            false,
-                                        ) {
-                                            continue;
-                                        }
+                                }
+                                MouseEventKind::ScrollDown => {
+                                    if self.handle_tab_bar_wheel(
+                                        mouse.column,
+                                        mouse.row,
+                                        false,
+                                    ) {
+                                        // Handled by tab bar, skip
+                                    } else {
                                         if self.should_route_scroll_to_chat() {
                                             self.record_scroll(1);
                                         }
                                         pending_scroll_down = pending_scroll_down.saturating_add(1);
-                                    }
-                                    _ => {
-                                        self.flush_scroll_deltas(
-                                            &mut pending_scroll_up,
-                                            &mut pending_scroll_down,
-                                        );
-                                        self.dispatch_event(
-                                            AppEvent::Input(Event::Mouse(mouse)),
-                                            terminal,
-                                            guard,
-                                        )
-                                        .await?;
+                                        // Don't set need_redraw here - batch scroll events
+                                        // and redraw on clean tick for smoother scrolling
                                     }
                                 }
-                            }
-                            _ => {
-                                self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+                                _ => {
+                                    self.state.need_redraw = true;
+                                    self.flush_scroll_deltas(
+                                        &mut pending_scroll_up,
+                                        &mut pending_scroll_down,
+                                    );
+                                    self.dispatch_event(
+                                        AppEvent::Input(Event::Mouse(mouse)),
+                                        terminal,
+                                        guard,
+                                    )
+                                    .await?;
+                                }
                             }
                         }
+                        Ok(_) => {
+                            // Other events (resize, focus, paste) - just request redraw
+                            self.state.need_redraw = true;
+                            self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Error reading terminal event");
+                        }
                     }
-
-                    // Request redraw if any scroll events were processed
-                    if pending_scroll_up > 0 || pending_scroll_down > 0 {
-                        self.state.need_redraw = true;
-                    }
-
-                    self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
-
-                    // Trigger redraw when animations are active
-                    if self.state.needs_animation() {
-                        self.state.need_redraw = true;
-                    }
-
-                    // Handle tick and trigger redraw if UI state was mutated
-                    if self.handle_tick() {
-                        self.state.need_redraw = true;
-                    }
-
                     self.state.metrics.event_time = event_start.elapsed();
                 }
+
+                // Sleep until next tick time
+                _ = tokio::time::sleep(wait) => {}
 
                 // App events from channel
                 Some(event) = self.event_rx.recv() => {
