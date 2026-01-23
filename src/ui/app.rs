@@ -1075,10 +1075,15 @@ impl App {
                                 }
                             }
                         }
-                        Ok(_) => {
-                            // Other events (resize, focus, paste) - just request redraw
+                        Ok(event) => {
+                            // Other input events (resize, focus, paste, etc.)
                             self.state.need_redraw = true;
-                            self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
+                            self.flush_scroll_deltas(
+                                &mut pending_scroll_up,
+                                &mut pending_scroll_down,
+                            );
+                            self.dispatch_event(AppEvent::Input(event), terminal, guard)
+                                .await?;
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "Error reading terminal event");

@@ -28,7 +28,11 @@ impl App {
                 self.handle_paste_input(text);
                 Ok(Vec::new())
             }
-            _ => Ok(Vec::new()),
+            Event::Resize(_, _) => {
+                terminal.autoresize()?;
+                Ok(Vec::new())
+            }
+            Event::FocusGained | Event::FocusLost => Ok(Vec::new()),
         }
     }
 
