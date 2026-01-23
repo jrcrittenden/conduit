@@ -153,6 +153,8 @@ impl PerformanceMetrics {
 /// UI state snapshot for the application.
 pub struct AppState {
     pub should_quit: bool,
+    /// Whether the UI needs to be redrawn on the next frame
+    pub need_redraw: bool,
     pub tab_manager: TabManager,
     pub input_mode: InputMode,
     pub view_mode: ViewMode,
@@ -273,6 +275,7 @@ impl AppState {
     pub fn new(max_tabs: usize) -> Self {
         Self {
             should_quit: false,
+            need_redraw: true,
             tab_manager: TabManager::new(max_tabs),
             input_mode: InputMode::Normal,
             view_mode: ViewMode::Chat,
@@ -393,6 +396,30 @@ impl AppState {
                 self.footer_message_expires_at = None;
             }
         }
+    }
+
+    /// Check if any animations are active that require continuous redraw
+    pub fn needs_animation(&self) -> bool {
+        // Footer spinner is animating
+        if self.footer_spinner.is_some() {
+            return true;
+        }
+        // Logo shine on splash screen
+        if self.tab_manager.is_empty() {
+            return true;
+        }
+        // Any session is processing (has thinking indicator animation)
+        for session in self.tab_manager.sessions() {
+            if session.is_processing {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mark that a redraw is needed
+    pub fn request_redraw(&mut self) {
+        self.need_redraw = true;
     }
 
     /// Tick footer spinner if active

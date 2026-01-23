@@ -951,19 +951,28 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         guard: &mut TerminalGuard,
     ) -> anyhow::Result<()> {
+        const FRAME_INTERVAL_ACTIVE: Duration = Duration::from_millis(16); // ~60 FPS for animations
+        const FRAME_INTERVAL_IDLE: Duration = Duration::from_millis(250); // ~4 FPS when idle
+
         loop {
             let frame_start = Instant::now();
 
-            // Draw UI with timing
-            let draw_start = Instant::now();
-            terminal.draw(|f| self.draw(f))?;
-            let draw_end = Instant::now();
-            self.state.metrics.draw_time = draw_end.duration_since(draw_start);
-            self.state.metrics.on_draw_end(draw_end);
+            // Only draw if needed to save CPU when idle
+            if self.state.need_redraw {
+                let draw_start = Instant::now();
+                terminal.draw(|f| self.draw(f))?;
+                let draw_end = Instant::now();
+                self.state.metrics.draw_time = draw_end.duration_since(draw_start);
+                self.state.metrics.on_draw_end(draw_end);
+                self.state.need_redraw = false;
+            }
 
-            // Calculate remaining sleep time to hit ~60 FPS target
-            // Account for draw time already spent this frame
-            let target_frame = Duration::from_millis(16);
+            // Use shorter interval when animations are active, longer when idle
+            let target_frame = if self.state.needs_animation() {
+                FRAME_INTERVAL_ACTIVE
+            } else {
+                FRAME_INTERVAL_IDLE
+            };
             let elapsed = frame_start.elapsed();
             let sleep_duration = target_frame.saturating_sub(elapsed);
 
@@ -1032,15 +1041,30 @@ impl App {
                         }
                     }
 
+                    // Request redraw if any scroll events were processed
+                    if pending_scroll_up > 0 || pending_scroll_down > 0 {
+                        self.state.need_redraw = true;
+                    }
+
                     self.flush_scroll_deltas(&mut pending_scroll_up, &mut pending_scroll_down);
 
-                    self.handle_tick();
+                    // Trigger redraw when animations are active
+                    if self.state.needs_animation() {
+                        self.state.need_redraw = true;
+                    }
+
+                    // Handle tick and trigger redraw if UI state was mutated
+                    if self.handle_tick() {
+                        self.state.need_redraw = true;
+                    }
 
                     self.state.metrics.event_time = event_start.elapsed();
                 }
 
                 // App events from channel
                 Some(event) = self.event_rx.recv() => {
+                    // All app events trigger a redraw
+                    self.state.need_redraw = true;
                     let event_start = Instant::now();
                     self.dispatch_event(event, terminal, guard).await?;
                     self.state.metrics.event_time = event_start.elapsed();
@@ -1069,9 +1093,15 @@ impl App {
         guard: &mut TerminalGuard,
     ) -> anyhow::Result<()> {
         let effects = match event {
-            AppEvent::Input(input) => self.handle_input_event(input, terminal, guard).await?,
+            AppEvent::Input(input) => {
+                // All input events trigger a redraw
+                self.state.need_redraw = true;
+                self.handle_input_event(input, terminal, guard).await?
+            }
             AppEvent::Tick => {
-                self.handle_tick();
+                if self.handle_tick() {
+                    self.state.need_redraw = true;
+                }
                 Vec::new()
             }
             _ => self.handle_app_event(event).await?,
@@ -1080,7 +1110,10 @@ impl App {
         self.run_effects(effects).await
     }
 
-    fn handle_tick(&mut self) {
+    /// Handle periodic tick updates. Returns true if visible UI state was mutated
+    /// and a redraw is needed.
+    fn handle_tick(&mut self) -> bool {
+        let mut state_changed = false;
         self.state.tick_count += 1;
 
         // Tick footer Knight Rider spinner every 2 frames (~40ms at 50 FPS, matches opencode)
@@ -1116,6 +1149,7 @@ impl App {
                         | Some("Press Ctrl+C again to quit")
                 ) {
                     self.state.footer_message = None;
+                    state_changed = true;
                 }
             }
         }
@@ -1128,13 +1162,18 @@ impl App {
                     Some("Press Esc again to interrupt") | Some("Press Esc again to clear")
                 ) {
                     self.state.footer_message = None;
+                    state_changed = true;
                 }
             }
         }
 
         // Clear expired timed footer messages
+        let had_timed_message = self.state.footer_message_expires_at.is_some();
         self.state.clear_expired_footer_message();
         self.sync_busy_footer_message();
+        if had_timed_message && self.state.footer_message_expires_at.is_none() {
+            state_changed = true;
+        }
 
         self.state.theme_picker_state.tick();
         let can_show_picker_error = self.state.theme_picker_state.is_visible()
@@ -1144,12 +1183,13 @@ impl App {
             if let Some(error) = self.state.theme_picker_state.take_error() {
                 self.state
                     .set_timed_footer_message(error, Duration::from_secs(5));
+                state_changed = true;
             }
         }
 
         // Tick other animations every 6 frames (~100ms)
         if !self.state.tick_count.is_multiple_of(6) {
-            return;
+            return state_changed;
         }
 
         // Advance spinner frame for PR processing indicator
@@ -1164,6 +1204,8 @@ impl App {
         if let Some(session) = self.state.tab_manager.active_session_mut() {
             session.tick();
         }
+
+        state_changed
     }
 
     /// Interrupt the current agent processing
