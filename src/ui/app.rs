@@ -9335,10 +9335,30 @@ mod tests {
     use crate::util::ToolAvailability;
     use chrono::Utc;
     use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
+    fn init_test_data_dir() -> PathBuf {
+        static TEST_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+        TEST_DATA_DIR
+            .get_or_init(|| {
+                let dir = tempfile::Builder::new()
+                    .prefix("conduit-test-data-")
+                    .tempdir()
+                    .expect("Failed to create test data dir");
+                let path = dir.path().to_path_buf();
+                // Keep temp dir alive for test process lifetime.
+                std::mem::forget(dir);
+                crate::util::init_data_dir(Some(path.clone()));
+                path
+            })
+            .clone()
+    }
+
     fn build_test_app_with_sessions(session_ids: &[Uuid]) -> App {
+        init_test_data_dir();
         let config = Config::default();
         let tools = ToolAvailability::default();
         let core = crate::core::ConduitCore::new(config, tools);

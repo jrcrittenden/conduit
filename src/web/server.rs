@@ -160,9 +160,29 @@ mod tests {
     use axum::body::Body;
     use axum::http::{header, Method, Request, StatusCode};
     use http_body_util::BodyExt;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
     use tower::ServiceExt;
 
+    fn init_test_data_dir() -> PathBuf {
+        static TEST_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+        TEST_DATA_DIR
+            .get_or_init(|| {
+                let dir = tempfile::Builder::new()
+                    .prefix("conduit-test-data-")
+                    .tempdir()
+                    .expect("Failed to create test data dir");
+                let path = dir.path().to_path_buf();
+                // Keep temp dir alive for test process lifetime.
+                std::mem::forget(dir);
+                crate::util::init_data_dir(Some(path.clone()));
+                path
+            })
+            .clone()
+    }
+
     fn test_state() -> WebAppState {
+        init_test_data_dir();
         let config = Config::default();
         let tools = ToolAvailability::default();
         let core = ConduitCore::new(config, tools);
