@@ -64,6 +64,7 @@ arboard = "3.4"
 image = "0.25"
 tempfile = "3.14"
 regex = "1"
+zip = "0.6"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }

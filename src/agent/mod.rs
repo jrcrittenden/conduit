@@ -8,6 +8,8 @@ pub mod history;
 pub mod mock;
 pub mod models;
 pub mod opencode;
+pub mod recording;
+pub mod replay;
 pub mod runner;
 pub mod session;
 pub mod stream;
@@ -26,5 +28,7 @@ pub use history::{
 pub use mock::{MockAgentRunner, MockConfig, MockEventBuilder, MockStartError};
 pub use models::{ModelInfo, ModelRegistry};
 pub use opencode::OpencodeRunner;
+pub use recording::RecordingAgentRunner;
+pub use replay::ReplayAgentRunner;
 pub use runner::{AgentHandle, AgentInput, AgentMode, AgentRunner, AgentStartConfig, AgentType};
 pub use session::{SessionId, SessionMetadata, SessionStatus};

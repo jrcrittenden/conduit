@@ -3,6 +3,7 @@ pub mod config;
 pub mod core;
 pub mod data;
 pub mod git;
+pub mod repro;
 pub mod session;
 pub mod ui;
 pub mod util;

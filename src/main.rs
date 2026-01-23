@@ -1,7 +1,9 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use conduit::{
     config::save_tool_path,
+    repro::bundle::{ReproBundle, ReproBundleMeta, ReproExportMode},
+    repro::tape::ReproTape,
     ui::terminal_guard,
     util::{self, Tool, ToolAvailability},
     App, Config,
@@ -51,14 +53,94 @@ enum Commands {
         #[arg(short, long, default_value_t = 3000)]
         port: u16,
     },
+
+    /// Create or inspect repro bundles (deterministic snapshots)
+    Repro {
+        #[command(subcommand)]
+        command: ReproCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReproCommands {
+    /// Export a repro bundle containing the SQLite DB snapshot and an (optionally empty) tape.
+    Export {
+        /// Output path (.zip recommended)
+        #[arg(long, value_name = "PATH")]
+        out: PathBuf,
+
+        /// Export mode (shareable performs aggressive scrubbing)
+        #[arg(long, value_enum, default_value_t = ReproExportModeArg::Local)]
+        mode: ReproExportModeArg,
+    },
+
+    /// Inspect a repro bundle (prints metadata)
+    Inspect {
+        /// Bundle path
+        #[arg(value_name = "PATH")]
+        bundle: PathBuf,
+    },
+
+    /// Extract a repro bundle into a Conduit data directory layout on disk.
+    Extract {
+        /// Bundle path
+        #[arg(value_name = "PATH")]
+        bundle: PathBuf,
+
+        /// Output directory (will contain conduit.db + repro/)
+        #[arg(long, value_name = "DIR")]
+        out_dir: PathBuf,
+
+        /// Overwrite existing files in the output directory
+        #[arg(long)]
+        overwrite: bool,
+    },
+
+    /// Run the app using a repro bundle's DB snapshot (and repro/ artifacts) as the data dir.
+    Run {
+        /// Bundle path
+        #[arg(value_name = "PATH")]
+        bundle: PathBuf,
+
+        /// UI to run (tui or web)
+        #[arg(long, value_enum, default_value_t = ReproRunUiArg::Tui)]
+        ui: ReproRunUiArg,
+
+        /// Host address to bind to (web only)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to listen on (web only)
+        #[arg(short, long, default_value_t = 3000)]
+        port: u16,
+
+        /// Require tool availability (git + at least one agent) and prompt for paths in the TUI.
+        ///
+        /// By default, repro runs skip tool checks to avoid blocking reproduction.
+        #[arg(long)]
+        require_tools: bool,
+
+        /// After replaying, switch back to live mode so you can continue the session with a real agent.
+        #[arg(long)]
+        continue_live: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReproExportModeArg {
+    Local,
+    Shareable,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReproRunUiArg {
+    Tui,
+    Web,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    // Initialize data directory FIRST before any other setup
-    util::init_data_dir(cli.data_dir);
 
     match cli.command {
         Some(Commands::DebugKeys) => {
@@ -69,21 +151,125 @@ async fn main() -> Result<()> {
             output,
             palette,
         }) => {
+            util::init_data_dir(cli.data_dir);
             run_migrate_theme(&input, output.as_deref(), palette)?;
         }
         Some(Commands::Serve { host, port }) => {
+            util::init_data_dir(cli.data_dir);
+            conduit::repro::runtime::init_from_env();
             run_web_server(host, port).await?;
         }
+        Some(Commands::Repro { command }) => {
+            run_repro(command, cli.data_dir).await?;
+        }
         None => {
-            run_app().await?;
+            util::init_data_dir(cli.data_dir);
+            conduit::repro::runtime::init_from_env();
+            let require_tools = !conduit::repro::runtime::is_replay()
+                || conduit::repro::runtime::continue_live_after_replay();
+            run_app(require_tools).await?;
         }
     }
 
     Ok(())
 }
 
+async fn run_repro(command: ReproCommands, data_dir: Option<PathBuf>) -> Result<()> {
+    match command {
+        ReproCommands::Export { out, mode } => {
+            util::init_data_dir(data_dir);
+            let db_src = util::database_path();
+            if !db_src.exists() {
+                anyhow::bail!("database not found at {}", db_src.display());
+            }
+
+            let temp = tempfile::tempdir()?;
+            let db_snapshot = temp.path().join("db.sqlite");
+
+            // For now, use a plain file copy (CLI is expected to run when the app isn't holding an open connection).
+            // In-app export should use SQLite `VACUUM INTO` for a consistent online snapshot.
+            std::fs::copy(&db_src, &db_snapshot)?;
+
+            let meta = ReproBundleMeta {
+                schema_version: 0, // set by create()
+                export_mode: match mode {
+                    ReproExportModeArg::Local => ReproExportMode::Local,
+                    ReproExportModeArg::Shareable => ReproExportMode::Shareable,
+                },
+                created_at_ms: now_ms(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                os: std::env::consts::OS.to_string(),
+                git_commit: None,
+            };
+
+            let tape = {
+                let tape_path = conduit::repro::runtime::tape_path();
+                if tape_path.exists() {
+                    ReproTape::read_jsonl_from_path(&tape_path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to read repro tape at {}: {}",
+                            tape_path.display(),
+                            e
+                        )
+                    })?
+                } else {
+                    ReproTape::new()
+                }
+            };
+            ReproBundle::create(&out, meta, tape, &db_snapshot, None)?;
+            println!("{}", out.display());
+        }
+        ReproCommands::Inspect { bundle } => {
+            let opened = ReproBundle::open(&bundle)?;
+            println!("{}", serde_json::to_string_pretty(&opened.meta)?);
+        }
+        ReproCommands::Extract {
+            bundle,
+            out_dir,
+            overwrite,
+        } => {
+            ReproBundle::extract_to_data_dir(&bundle, &out_dir, overwrite)?;
+            println!("{}", out_dir.display());
+        }
+        ReproCommands::Run {
+            bundle,
+            ui,
+            host,
+            port,
+            require_tools,
+            continue_live,
+        } => {
+            let prepared = ReproBundle::prepare_data_dir(&bundle)?;
+            util::init_data_dir(Some(prepared.data_dir.clone()));
+            conduit::repro::runtime::set_mode(conduit::repro::runtime::ReproMode::Replay {
+                continue_live,
+            });
+
+            match ui {
+                ReproRunUiArg::Tui => {
+                    let _keep_temp_dir_alive = prepared;
+                    run_app(require_tools).await?;
+                }
+                ReproRunUiArg::Web => {
+                    let _keep_temp_dir_alive = prepared;
+                    run_web_server(host, port).await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Run the main application
-async fn run_app() -> Result<()> {
+async fn run_app(require_tools: bool) -> Result<()> {
     // Install panic hook to restore terminal state before printing panic message
     terminal_guard::install_panic_hook();
 
@@ -114,52 +300,63 @@ async fn run_app() -> Result<()> {
     // Detect tool availability
     let mut tools = ToolAvailability::detect(&config.tool_paths);
 
-    // Check MANDATORY requirement: git
-    // Conduit exists for git worktree management, cannot function without git
-    if !tools.is_available(Tool::Git) {
-        match run_blocking_tool_dialog(Tool::Git, &tools)? {
-            Some(path) => {
-                tools.update_tool(Tool::Git, path.clone());
-                if let Err(e) = save_tool_path(Tool::Git, &path) {
-                    eprintln!("Warning: Failed to save git path to config: {}", e);
+    if require_tools {
+        // Check MANDATORY requirement: git
+        // Conduit exists for git worktree management, cannot function without git
+        if !tools.is_available(Tool::Git) {
+            match run_blocking_tool_dialog(Tool::Git, &tools)? {
+                Some(path) => {
+                    tools.update_tool(Tool::Git, path.clone());
+                    if let Err(e) = save_tool_path(Tool::Git, &path) {
+                        eprintln!("Warning: Failed to save git path to config: {}", e);
+                    }
                 }
-            }
-            None => {
-                // User chose to quit
-                return Ok(());
+                None => {
+                    // User chose to quit
+                    return Ok(());
+                }
             }
         }
-    }
 
-    // Check critical requirement: at least one agent
-    if !tools.has_any_agent() {
-        // Prefer Claude, but accept any available agent
-        let preferred_agent = Tool::Claude;
-        match run_blocking_tool_dialog(preferred_agent, &tools)? {
-            Some(path) => {
-                // Determine which agent based on path name
-                let file_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_ascii_lowercase())
-                    .unwrap_or_default();
-                let tool = if file_name.contains("codex") {
-                    Tool::Codex
-                } else if file_name.contains("gemini") {
-                    Tool::Gemini
-                } else if file_name.contains("opencode") {
-                    Tool::Opencode
-                } else {
-                    Tool::Claude
-                };
-                tools.update_tool(tool, path.clone());
-                if let Err(e) = save_tool_path(tool, &path) {
-                    eprintln!("Warning: Failed to save agent path to config: {}", e);
+        // Check critical requirement: at least one agent
+        if !tools.has_any_agent() {
+            // Prefer Claude, but accept any available agent
+            let preferred_agent = Tool::Claude;
+            match run_blocking_tool_dialog(preferred_agent, &tools)? {
+                Some(path) => {
+                    // Determine which agent based on path name
+                    let file_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let tool = if file_name.contains("codex") {
+                        Tool::Codex
+                    } else if file_name.contains("gemini") {
+                        Tool::Gemini
+                    } else if file_name.contains("opencode") {
+                        Tool::Opencode
+                    } else {
+                        Tool::Claude
+                    };
+                    tools.update_tool(tool, path.clone());
+                    if let Err(e) = save_tool_path(tool, &path) {
+                        eprintln!("Warning: Failed to save agent path to config: {}", e);
+                    }
+                }
+                None => {
+                    // User chose to quit
+                    return Ok(());
                 }
             }
-            None => {
-                // User chose to quit
-                return Ok(());
-            }
+        }
+    } else {
+        if !tools.is_available(Tool::Git) {
+            tracing::info!("repro run: git not available; continuing without tool checks");
+        }
+        if !tools.has_any_agent() {
+            tracing::info!(
+                "repro run: no agent binaries available; continuing without tool checks"
+            );
         }
     }
 

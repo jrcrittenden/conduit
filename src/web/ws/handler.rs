@@ -161,11 +161,47 @@ impl SessionManager {
 
         // Get the appropriate runner
         let core = self.core.read().await;
-        let runner: Arc<dyn AgentRunner> = match agent_type {
+        let base_runner: Arc<dyn AgentRunner> = match agent_type {
             AgentType::Claude => core.claude_runner().clone(),
             AgentType::Codex => core.codex_runner().clone(),
             AgentType::Gemini => core.gemini_runner().clone(),
             AgentType::Opencode => core.opencode_runner().clone(),
+        };
+
+        let runner: Arc<dyn AgentRunner> = match crate::repro::runtime::mode() {
+            crate::repro::runtime::ReproMode::Replay { .. } => {
+                match crate::repro::runtime::replay_tape() {
+                    Ok(Some(tape)) => Arc::new(crate::agent::ReplayAgentRunner::new(
+                        session_id, agent_type, tape,
+                    )),
+                    Ok(None) => base_runner,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to load repro tape; falling back to live runner"
+                        );
+                        base_runner
+                    }
+                }
+            }
+            crate::repro::runtime::ReproMode::Record => {
+                match crate::repro::runtime::recording_writer() {
+                    Ok(Some(writer)) => Arc::new(crate::agent::RecordingAgentRunner::new(
+                        session_id,
+                        base_runner,
+                        writer,
+                    )),
+                    Ok(None) => base_runner,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to create repro tape writer; running without recording"
+                        );
+                        base_runner
+                    }
+                }
+            }
+            crate::repro::runtime::ReproMode::Off => base_runner,
         };
 
         if !runner.is_available() {
@@ -420,6 +456,10 @@ impl SessionManager {
         images: Vec<PathBuf>,
         model: Option<String>,
     ) -> Result<(), String> {
+        if crate::repro::runtime::is_replay() {
+            return Err("repro replay is read-only".to_string());
+        }
+
         let (input_tx, agent_type) = {
             let sessions = self.sessions.read().await;
             let session = sessions
@@ -457,6 +497,10 @@ impl SessionManager {
         request_id: String,
         response: serde_json::Value,
     ) -> Result<(), String> {
+        if crate::repro::runtime::is_replay() {
+            return Err("repro replay is read-only".to_string());
+        }
+
         let input_tx = {
             let sessions = self.sessions.read().await;
             let session = sessions

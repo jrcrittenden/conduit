@@ -420,7 +420,7 @@ impl App {
         // Restore each tab
         for tab in saved_tabs {
             let required_tool = Self::required_tool(tab.agent_type);
-            if !self.tools().is_available(required_tool) {
+            if !crate::repro::runtime::is_replay() && !self.tools().is_available(required_tool) {
                 self.show_missing_tool(
                     required_tool,
                     format!(
@@ -936,6 +936,15 @@ impl App {
         // Clear screen
         terminal.clear()?;
 
+        if crate::repro::runtime::is_replay() {
+            if let Err(error) = self.start_repro_replay_sessions().await {
+                tracing::warn!(error = %error, "Failed to start repro replay sessions");
+            }
+            if crate::repro::runtime::continue_live_after_replay() {
+                crate::repro::runtime::set_mode(crate::repro::runtime::ReproMode::Off);
+            }
+        }
+
         // Main event loop
         let result = self.event_loop(&mut terminal, &mut guard).await;
 
@@ -988,6 +997,71 @@ impl App {
             self.session_tab_dao_clone(),
             self.app_state_dao_clone(),
         );
+    }
+
+    async fn start_repro_replay_sessions(&mut self) -> anyhow::Result<()> {
+        let Some(tape) = crate::repro::runtime::replay_tape()? else {
+            return Ok(());
+        };
+
+        use std::collections::HashSet;
+        let mut session_ids: HashSet<Uuid> = HashSet::new();
+        for entry in &tape.entries {
+            match entry {
+                crate::repro::tape::ReproTapeEntry::AgentEvent { session_id, .. }
+                | crate::repro::tape::ReproTapeEntry::AgentInput { session_id, .. } => {
+                    if let Ok(id) = uuid::Uuid::parse_str(session_id) {
+                        session_ids.insert(id);
+                    }
+                }
+                crate::repro::tape::ReproTapeEntry::Note { .. } => {}
+            }
+        }
+
+        if session_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut effects = Vec::new();
+        for session in self.state.tab_manager.sessions() {
+            if !session_ids.contains(&session.id) {
+                continue;
+            }
+            if !session.chat_view.messages().is_empty() {
+                continue;
+            }
+
+            let working_dir = session
+                .working_dir
+                .clone()
+                .unwrap_or_else(|| self.config().working_dir.clone());
+
+            let mut config = AgentStartConfig::new(String::new(), working_dir)
+                .with_agent_mode(session.agent_mode);
+            if let Some(model) = session.model.clone() {
+                config = config.with_model(model);
+            }
+            if let Some(resume) = session
+                .agent_session_id
+                .clone()
+                .or_else(|| session.resume_session_id.clone())
+            {
+                config = config.with_resume(resume);
+            }
+
+            effects.push(Effect::StartAgent {
+                session_id: session.id,
+                agent_type: session.agent_type,
+                config,
+            });
+        }
+
+        if effects.is_empty() {
+            return Ok(());
+        }
+
+        self.run_effects(effects).await?;
+        Ok(())
     }
 
     async fn event_loop(
@@ -1978,11 +2052,49 @@ impl App {
                     agent_type,
                     config,
                 } => {
-                    let runner: Arc<dyn AgentRunner> = match agent_type {
+                    let base_runner: Arc<dyn AgentRunner> = match agent_type {
                         AgentType::Claude => self.claude_runner().clone(),
                         AgentType::Codex => self.codex_runner().clone(),
                         AgentType::Gemini => self.gemini_runner().clone(),
                         AgentType::Opencode => self.opencode_runner().clone(),
+                    };
+
+                    let runner: Arc<dyn AgentRunner> = match crate::repro::runtime::mode() {
+                        crate::repro::runtime::ReproMode::Replay { .. } => {
+                            match crate::repro::runtime::replay_tape() {
+                                Ok(Some(tape)) => Arc::new(crate::agent::ReplayAgentRunner::new(
+                                    session_id, agent_type, tape,
+                                )),
+                                Ok(None) => base_runner,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "Failed to load repro tape; falling back to live runner"
+                                    );
+                                    base_runner
+                                }
+                            }
+                        }
+                        crate::repro::runtime::ReproMode::Record => {
+                            match crate::repro::runtime::recording_writer() {
+                                Ok(Some(writer)) => {
+                                    Arc::new(crate::agent::RecordingAgentRunner::new(
+                                        session_id,
+                                        base_runner,
+                                        writer,
+                                    ))
+                                }
+                                Ok(None) => base_runner,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "Failed to create repro tape writer; running without recording"
+                                    );
+                                    base_runner
+                                }
+                            }
+                        }
+                        crate::repro::runtime::ReproMode::Off => base_runner,
                     };
 
                     let event_tx = self.event_tx.clone();
@@ -5899,44 +6011,79 @@ impl App {
                 AgentEvent::ToolStarted(tool) => {
                     // Check for special interactive tools that use inline prompts
                     let is_inline_prompt_tool = if tool.tool_name == "AskUserQuestion" {
-                        // Parse the questions from the tool arguments
-                        match serde_json::from_value::<AskUserQuestionWrapper>(
-                            tool.arguments.clone(),
-                        ) {
-                            Ok(wrapper) => {
-                                session.inline_prompt = Some(InlinePromptState::new_ask_user(
-                                    tool.tool_id.clone(),
-                                    wrapper.questions,
-                                ));
-                                // Scroll to bottom so prompt is visible
-                                session.chat_view.scroll_to_bottom();
-                                // Don't push to chat - the inline prompt will be rendered as extra lines
-                                session.tools_in_flight = session.tools_in_flight.saturating_add(1);
-                                // Stop footer spinner since we're now awaiting user response
-                                should_stop_footer_spinner = true;
-                                true
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    tool_id = %tool.tool_id,
-                                    tool_name = %tool.tool_name,
-                                    arguments = %serde_json::to_string(&tool.arguments).unwrap_or_default(),
-                                    error = %e,
-                                    "Failed to deserialize AskUserQuestion arguments"
-                                );
-                                // Surface error to user so they know why prompt didn't appear
-                                let display = MessageDisplay::Error {
-                                    content: format!("Failed to parse AskUserQuestion: {}", e),
-                                };
-                                session.chat_view.push(display.to_chat_message());
-                                false
+                        if crate::repro::runtime::is_replay() {
+                            let args_str = if tool.arguments.is_null() {
+                                String::new()
+                            } else {
+                                serde_json::to_string(&tool.arguments).unwrap_or_default()
+                            };
+                            let display = MessageDisplay::Tool {
+                                name: MessageDisplay::tool_display_name_owned(&tool.tool_name),
+                                args: args_str,
+                                output: "repro replay: auto-applied recorded response".to_string(),
+                                exit_code: None,
+                                file_size: None,
+                            };
+                            session.chat_view.push(display.to_chat_message());
+                            true
+                        } else {
+                            // Parse the questions from the tool arguments
+                            match serde_json::from_value::<AskUserQuestionWrapper>(
+                                tool.arguments.clone(),
+                            ) {
+                                Ok(wrapper) => {
+                                    session.inline_prompt = Some(InlinePromptState::new_ask_user(
+                                        tool.tool_id.clone(),
+                                        wrapper.questions,
+                                    ));
+                                    // Scroll to bottom so prompt is visible
+                                    session.chat_view.scroll_to_bottom();
+                                    // Don't push to chat - the inline prompt will be rendered as extra lines
+                                    session.tools_in_flight =
+                                        session.tools_in_flight.saturating_add(1);
+                                    // Stop footer spinner since we're now awaiting user response
+                                    should_stop_footer_spinner = true;
+                                    true
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        tool_id = %tool.tool_id,
+                                        tool_name = %tool.tool_name,
+                                        arguments = %serde_json::to_string(&tool.arguments).unwrap_or_default(),
+                                        error = %e,
+                                        "Failed to deserialize AskUserQuestion arguments"
+                                    );
+                                    // Surface error to user so they know why prompt didn't appear
+                                    let display = MessageDisplay::Error {
+                                        content: format!("Failed to parse AskUserQuestion: {}", e),
+                                    };
+                                    session.chat_view.push(display.to_chat_message());
+                                    false
+                                }
                             }
                         }
                     } else if tool.tool_name == "ExitPlanMode" {
-                        // Use plan content from tool arguments when available
-                        let (plan_content, plan_path) =
-                            match serde_json::from_value::<ExitPlanModeWrapper>(
-                                tool.arguments.clone(),
+                        if crate::repro::runtime::is_replay() {
+                            let args_str = if tool.arguments.is_null() {
+                                String::new()
+                            } else {
+                                serde_json::to_string(&tool.arguments).unwrap_or_default()
+                            };
+                            let display = MessageDisplay::Tool {
+                                name: MessageDisplay::tool_display_name_owned(&tool.tool_name),
+                                args: args_str,
+                                output: "repro replay: auto-applied recorded response".to_string(),
+                                exit_code: None,
+                                file_size: None,
+                            };
+                            session.chat_view.push(display.to_chat_message());
+                            true
+                        } else {
+                            // Use plan content from tool arguments when available
+                            let (plan_content, plan_path) = match serde_json::from_value::<
+                                ExitPlanModeWrapper,
+                            >(
+                                tool.arguments.clone()
                             ) {
                                 Ok(wrapper) => {
                                     let plan_path = Self::read_plan_file_path_for_session(session)
@@ -5954,18 +6101,19 @@ impl App {
                                 }
                             };
 
-                        session.inline_prompt = Some(InlinePromptState::new_exit_plan(
-                            tool.tool_id.clone(),
-                            plan_content,
-                            plan_path,
-                        ));
-                        // Scroll to bottom so prompt is visible
-                        session.chat_view.scroll_to_bottom();
-                        // Don't push to chat - the inline prompt will be rendered as extra lines
-                        session.tools_in_flight = session.tools_in_flight.saturating_add(1);
-                        // Stop footer spinner since we're now awaiting user response
-                        should_stop_footer_spinner = true;
-                        true
+                            session.inline_prompt = Some(InlinePromptState::new_exit_plan(
+                                tool.tool_id.clone(),
+                                plan_content,
+                                plan_path,
+                            ));
+                            // Scroll to bottom so prompt is visible
+                            session.chat_view.scroll_to_bottom();
+                            // Don't push to chat - the inline prompt will be rendered as extra lines
+                            session.tools_in_flight = session.tools_in_flight.saturating_add(1);
+                            // Stop footer spinner since we're now awaiting user response
+                            should_stop_footer_spinner = true;
+                            true
+                        }
                     } else {
                         false
                     };
@@ -5996,7 +6144,12 @@ impl App {
                     }
                 }
                 AgentEvent::ControlRequest(request) => {
-                    if let Some(tool_use_id) = request.tool_use_id.clone() {
+                    if crate::repro::runtime::is_replay() {
+                        tracing::debug!(
+                            tool_name = request.tool_name,
+                            "repro replay: ignoring control request"
+                        );
+                    } else if let Some(tool_use_id) = request.tool_use_id.clone() {
                         session
                             .pending_tool_permissions
                             .insert(tool_use_id.clone(), request.request_id.clone());
@@ -6778,6 +6931,22 @@ impl App {
         stdin_payload: Option<String>,
     ) -> anyhow::Result<Vec<Effect>> {
         let mut effects = Vec::new();
+
+        if crate::repro::runtime::is_replay() {
+            if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
+                session.chat_view.push(
+                    MessageDisplay::System {
+                        content: "repro replay: read-only (start with --continue-live to enable live prompts after replay)".to_string(),
+                    }
+                    .to_chat_message(),
+                );
+                session.stop_processing();
+            }
+            if self.state.tab_manager.active_index() == tab_index {
+                self.state.stop_footer_spinner();
+            }
+            return Ok(effects);
+        }
 
         if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
             Self::flush_pending_agent_output(session);
