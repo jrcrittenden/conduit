@@ -91,3 +91,31 @@ test('stop button clears processing state without TurnCompleted', async ({ page 
   await expect(stopButton).toHaveCount(0);
 });
 
+test('TurnCompleted waits for final assistant message', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForResponse('**/api/bootstrap');
+  await expect(page.getByPlaceholder('Type a message...')).toBeVisible();
+
+  const stopButton = page.getByRole('button', { name: 'Stop session' });
+
+  await page.evaluate((id) => {
+    const ws = (window as unknown as { __mockWebSocket?: { sendMessage: (msg: unknown) => void } })
+      .__mockWebSocket;
+    ws?.sendMessage({ type: 'agent_event', session_id: id, event: { type: 'TurnStarted' } });
+    ws?.sendMessage({ type: 'agent_event', session_id: id, event: { type: 'TurnCompleted' } });
+  }, sessionId);
+
+  await expect(stopButton).toHaveCount(1);
+
+  await page.evaluate((id) => {
+    const ws = (window as unknown as { __mockWebSocket?: { sendMessage: (msg: unknown) => void } })
+      .__mockWebSocket;
+    ws?.sendMessage({
+      type: 'agent_event',
+      session_id: id,
+      event: { type: 'AssistantMessage', text: 'done', is_final: true },
+    });
+  }, sessionId);
+
+  await expect(stopButton).toHaveCount(0);
+});

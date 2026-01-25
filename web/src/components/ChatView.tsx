@@ -22,6 +22,8 @@ import {
   useDeleteQueueMessage,
   useSessionHistory,
   useWorkspaceActions,
+  useReproState,
+  useReproControl,
 } from '../hooks';
 import { getFileContent, getSessionEventsPage } from '../lib/api';
 import { supportsPlanMode } from '../lib/agentCapabilities';
@@ -199,6 +201,10 @@ export function ChatView({
   const scrollSessionId = useRef<string | null>(null);
   const { sendPrompt, respondToControl, stopSession } = useWebSocket();
   const wsEvents = useSessionEvents(session?.id ?? null);
+  const { data: reproState } = useReproState();
+  const reproControl = useReproControl();
+  const [reproSeekInput, setReproSeekInput] = useState('');
+  const isReplayMode = reproState?.mode === 'replay';
   const updateSessionMutation = useUpdateSession();
   const setDefaultModelMutation = useSetDefaultModel();
   const [historyEvents, setHistoryEvents] = useState<SessionEvent[]>([]);
@@ -226,6 +232,7 @@ export function ChatView({
   const wasProcessingRef = useRef(false);
   const prevSessionIdRef = useRef<string | null>(session?.id ?? null);
   const [isAwaitingResponse, setIsAwaitingResponse] = useState(false);
+  const completionTimeoutRef = useRef<number | null>(null);
   const [hasInitiallyScrolled, setHasInitiallyScrolled] = useState(false);
   const [inlinePrompt, setInlinePrompt] = useState<InlinePromptData | null>(null);
   const [pendingControlResponse, setPendingControlResponse] = useState<unknown | null>(null);
@@ -387,7 +394,6 @@ export function ChatView({
     return () => container.removeEventListener('scroll', updatePinnedState);
   }, [session?.id]);
 
-
   useEffect(() => {
     const container = scrollContainerRef.current;
     const content = messagesContainerRef.current;
@@ -404,24 +410,45 @@ export function ChatView({
     return () => observer.disconnect();
   }, [hasInitiallyScrolled]);
 
+  const clearCompletionTimeout = useCallback(() => {
+    if (completionTimeoutRef.current !== null) {
+      window.clearTimeout(completionTimeoutRef.current);
+      completionTimeoutRef.current = null;
+    }
+  }, []);
+
   // Track processing state based on websocket events
   useEffect(() => {
     if (wsEvents.length === 0) return;
 
     const lastEvent = wsEvents[wsEvents.length - 1];
     if (lastEvent.type === 'TurnStarted') {
+      clearCompletionTimeout();
       setIsProcessing(true);
       setIsAwaitingResponse(false);
-    } else if (
-      lastEvent.type === 'TurnCompleted' ||
+      return;
+    }
+
+    if (
       lastEvent.type === 'TurnFailed' ||
       lastEvent.type === 'Error' ||
       (lastEvent.type === 'AssistantMessage' && lastEvent.is_final)
     ) {
+      clearCompletionTimeout();
       setIsProcessing(false);
       setIsAwaitingResponse(false);
+      return;
     }
-  }, [wsEvents]);
+
+    if (lastEvent.type === 'TurnCompleted') {
+      clearCompletionTimeout();
+      completionTimeoutRef.current = window.setTimeout(() => {
+        setIsProcessing(false);
+        setIsAwaitingResponse(false);
+        completionTimeoutRef.current = null;
+      }, 4000);
+    }
+  }, [clearCompletionTimeout, wsEvents]);
 
   useEffect(() => {
     if (wsEvents.length > 0) return;
@@ -439,13 +466,14 @@ export function ChatView({
       window.clearTimeout(escTimeoutRef.current);
       escTimeoutRef.current = null;
     }
-  }, [session?.id]);
-
+    clearCompletionTimeout();
+  }, [clearCompletionTimeout, session?.id]);
   const clearEscHint = useCallback(() => {
     if (escTimeoutRef.current !== null) {
       window.clearTimeout(escTimeoutRef.current);
       escTimeoutRef.current = null;
     }
+    clearCompletionTimeout();
     lastEscPressRef.current = null;
     setEscHint(null);
   }, []);
@@ -458,10 +486,14 @@ export function ChatView({
     setProcessingElapsed(0);
     wasProcessingRef.current = false;
     clearEscHint();
+    clearCompletionTimeout();
   }, [session?.id, stopSession, clearEscHint]);
 
 
-  useEffect(() => () => clearEscHint(), [clearEscHint]);
+  useEffect(() => () => {
+    clearEscHint();
+    clearCompletionTimeout();
+  }, [clearEscHint, clearCompletionTimeout]);
 
 
   useEffect(() => {
@@ -532,6 +564,7 @@ export function ChatView({
         }
         escTimeoutRef.current = window.setTimeout(() => {
           clearEscHint();
+    clearCompletionTimeout();
         }, ESC_DOUBLE_PRESS_TIMEOUT_MS);
       }
     };
@@ -1222,6 +1255,26 @@ export function ChatView({
     stopSessionAndReset();
   }, [stopSessionAndReset]);
 
+  const handleReplayPause = useCallback(() => {
+    reproControl.mutate({ action: 'pause' });
+  }, [reproControl]);
+
+  const handleReplayResume = useCallback(() => {
+    reproControl.mutate({ action: 'resume' });
+  }, [reproControl]);
+
+  const handleReplayStep = useCallback(() => {
+    reproControl.mutate({ action: 'step' });
+  }, [reproControl]);
+
+  const handleReplaySeek = useCallback(() => {
+    const seq = Number(reproSeekInput);
+    if (!Number.isFinite(seq)) return;
+    reproControl.mutate({ action: 'seek', seq });
+  }, [reproControl, reproSeekInput]);
+
+  const replayControlsBusy = reproControl.isPending;
+
   // Keyboard shortcut for toggling plan mode (Ctrl+Shift+P)
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1244,6 +1297,7 @@ export function ChatView({
   useEffect(() => {
     if (!canStop) {
       clearEscHint();
+    clearCompletionTimeout();
     }
   }, [canStop, clearEscHint]);
 
@@ -1368,6 +1422,71 @@ export function ChatView({
           </button>
         </div>
       </div>
+
+      {isReplayMode && reproState && (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface px-4 py-2 text-xs text-text-muted">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-text">Replay mode</span>
+            <span>{reproState.paused ? 'Paused' : 'Playing'}</span>
+            <span>·</span>
+            <span>
+              {reproState.current_seq}/{reproState.total_events || '—'}
+            </span>
+            {reproState.max_seq !== null && (
+              <>
+                <span>·</span>
+                <span>limit {reproState.max_seq}</span>
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={reproState.paused ? handleReplayResume : handleReplayPause}
+              disabled={replayControlsBusy}
+              className={cn(
+                'rounded-md border border-border px-2 py-1 text-xs text-text',
+                'hover:bg-surface-elevated',
+                replayControlsBusy && 'cursor-not-allowed opacity-60'
+              )}
+            >
+              {reproState.paused ? 'Resume' : 'Pause'}
+            </button>
+            <button
+              onClick={handleReplayStep}
+              disabled={replayControlsBusy}
+              className={cn(
+                'rounded-md border border-border px-2 py-1 text-xs text-text',
+                'hover:bg-surface-elevated',
+                replayControlsBusy && 'cursor-not-allowed opacity-60'
+              )}
+            >
+              Step
+            </button>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                inputMode="numeric"
+                value={reproSeekInput}
+                onChange={(event) => setReproSeekInput(event.target.value)}
+                placeholder="Seq"
+                className="h-7 w-20 rounded-md border border-border bg-surface px-2 text-xs text-text"
+              />
+              <button
+                onClick={handleReplaySeek}
+                disabled={replayControlsBusy || reproSeekInput.trim() === ''}
+                className={cn(
+                  'rounded-md border border-border px-2 py-1 text-xs text-text',
+                  'hover:bg-surface-elevated',
+                  (replayControlsBusy || reproSeekInput.trim() === '') &&
+                    'cursor-not-allowed opacity-60'
+                )}
+              >
+                Go
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Messages area */}
       <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">

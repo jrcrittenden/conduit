@@ -20,6 +20,7 @@ import type {
 // Query keys
 export const queryKeys = {
   health: ['health'] as const,
+  reproState: ['repro', 'state'] as const,
   agents: ['agents'] as const,
   models: ['models'] as const,
   repositories: ['repositories'] as const,
@@ -54,6 +55,28 @@ export function useHealth() {
     queryKey: queryKeys.health,
     queryFn: api.getHealth,
     staleTime: 30000,
+  });
+}
+
+// Repro
+export function useReproState(options?: { enabled?: boolean; refetchInterval?: number }) {
+  return useQuery({
+    queryKey: queryKeys.reproState,
+    queryFn: api.getReproState,
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 500,
+    staleTime: 0,
+  });
+}
+
+export function useReproControl() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, seq }: { action: string; seq?: number }) =>
+      api.postReproControl(action, seq),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.reproState });
+    },
   });
 }
 

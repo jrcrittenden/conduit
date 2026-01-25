@@ -174,6 +174,14 @@ export interface BootstrapResponse {
   active_workspace: Workspace | null;
 }
 
+export interface ReproState {
+  mode: 'off' | 'record' | 'replay';
+  paused: boolean;
+  current_seq: number;
+  max_seq: number | null;
+  total_events: number;
+}
+
 export interface ExternalSession {
   id: string;
   agent_type: 'claude' | 'codex' | 'gemini' | 'opencode';

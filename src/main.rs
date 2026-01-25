@@ -1,9 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use conduit::{
+    agent::events::AgentEvent,
     config::save_tool_path,
     repro::bundle::{ReproBundle, ReproBundleMeta, ReproExportMode},
-    repro::tape::ReproTape,
+    repro::tape::{ReproTape, ReproTapeEntry},
     ui::terminal_guard,
     util::{self, Tool, ToolAvailability},
     App, Config,
@@ -123,6 +124,14 @@ enum ReproCommands {
         /// After replaying, switch back to live mode so you can continue the session with a real agent.
         #[arg(long)]
         continue_live: bool,
+
+        /// Pause replay after emitting the given tape sequence number.
+        #[arg(long)]
+        pause_at: Option<u64>,
+
+        /// Pause replay before the first occurrence of the given event type.
+        #[arg(long, value_enum)]
+        pause_before: Option<ReproPauseBeforeArg>,
     },
 }
 
@@ -136,6 +145,12 @@ enum ReproExportModeArg {
 enum ReproRunUiArg {
     Tui,
     Web,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReproPauseBeforeArg {
+    TurnCompleted,
+    AssistantFinal,
 }
 
 #[tokio::main]
@@ -238,12 +253,23 @@ async fn run_repro(command: ReproCommands, data_dir: Option<PathBuf>) -> Result<
             port,
             require_tools,
             continue_live,
+            pause_at,
+            pause_before,
         } => {
             let prepared = ReproBundle::prepare_data_dir(&bundle)?;
             util::init_data_dir(Some(prepared.data_dir.clone()));
+            let tape = ReproTape::read_jsonl_from_path(&conduit::repro::runtime::tape_path()).ok();
+            let total_events = tape.as_ref().map(repro_tape_max_seq).unwrap_or_default();
+            let mut pause_at_seq = pause_at;
+            if pause_at_seq.is_none() {
+                if let (Some(kind), Some(tape)) = (pause_before, tape.as_ref()) {
+                    pause_at_seq = resolve_pause_before(tape, kind);
+                }
+            }
             conduit::repro::runtime::set_mode(conduit::repro::runtime::ReproMode::Replay {
                 continue_live,
             });
+            conduit::repro::runtime::init_replay_controller(pause_at_seq, total_events);
 
             match ui {
                 ReproRunUiArg::Tui => {
@@ -266,6 +292,37 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn repro_tape_entry_seq(entry: &ReproTapeEntry) -> u64 {
+    match entry {
+        ReproTapeEntry::AgentEvent { seq, .. }
+        | ReproTapeEntry::AgentInput { seq, .. }
+        | ReproTapeEntry::Note { seq, .. } => *seq,
+    }
+}
+
+fn repro_tape_max_seq(tape: &ReproTape) -> u64 {
+    tape.entries
+        .iter()
+        .map(repro_tape_entry_seq)
+        .max()
+        .unwrap_or_default()
+}
+
+fn resolve_pause_before(tape: &ReproTape, kind: ReproPauseBeforeArg) -> Option<u64> {
+    tape.entries.iter().find_map(|entry| match entry {
+        ReproTapeEntry::AgentEvent { seq, event, .. } => match kind {
+            ReproPauseBeforeArg::TurnCompleted => {
+                matches!(event, AgentEvent::TurnCompleted(_)).then_some(seq.saturating_sub(1))
+            }
+            ReproPauseBeforeArg::AssistantFinal => match event {
+                AgentEvent::AssistantMessage(msg) if msg.is_final => Some(seq.saturating_sub(1)),
+                _ => None,
+            },
+        },
+        _ => None,
+    })
 }
 
 /// Run the main application

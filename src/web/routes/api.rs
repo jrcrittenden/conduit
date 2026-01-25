@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::web::handlers::{
-    bootstrap, external_sessions, models, onboarding, queue, repositories, sessions, themes,
+    bootstrap, external_sessions, models, onboarding, queue, repositories, repro, sessions, themes,
     ui_state, workspaces,
 };
 use crate::web::state::WebAppState;
@@ -113,6 +113,9 @@ pub fn api_routes() -> Router<WebAppState> {
         // Model routes
         .route("/models", get(models::list_models))
         .route("/models/default", patch(models::set_default_model))
+        // Repro routes
+        .route("/repro/state", get(repro::get_repro_state))
+        .route("/repro/control", post(repro::post_repro_control))
         // Theme routes
         .route("/themes", get(themes::list_available_themes))
         .route("/themes/current", get(themes::get_current_theme))

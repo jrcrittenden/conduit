@@ -43,6 +43,7 @@ import type {
   AddOnboardingProjectRequest,
   AddOnboardingProjectResponse,
   FileContentResponse,
+  ReproState,
 } from '../types';
 import type { Theme, ThemeListResponse } from './themes';
 
@@ -99,6 +100,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // Health
 export async function getHealth(): Promise<HealthResponse> {
   return request('/health');
+}
+
+// Repro
+export async function getReproState(): Promise<ReproState> {
+  return request('/repro/state');
+}
+
+export async function postReproControl(action: string, seq?: number): Promise<ReproState> {
+  return request('/repro/control', {
+    method: 'POST',
+    body: JSON.stringify({ action, seq }),
+  });
 }
 
 // Bootstrap

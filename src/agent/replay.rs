@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::agent::error::AgentError;
 use crate::agent::events::AgentEvent;
 use crate::agent::runner::{AgentHandle, AgentInput, AgentRunner, AgentStartConfig, AgentType};
+use crate::repro::runtime;
 use crate::repro::tape::{ReproTape, ReproTapeEntry};
 
 pub struct ReplayAgentRunner {
@@ -25,14 +26,17 @@ impl ReplayAgentRunner {
         }
     }
 
-    fn events_for_session(&self) -> Vec<AgentEvent> {
+    fn events_for_session(&self) -> Vec<(u64, AgentEvent)> {
         self.tape
             .entries
             .iter()
             .filter_map(|entry| match entry {
                 ReproTapeEntry::AgentEvent {
-                    session_id, event, ..
-                } if session_id == &self.session_id => Some(event.clone()),
+                    seq,
+                    session_id,
+                    event,
+                    ..
+                } if session_id == &self.session_id => Some((*seq, event.clone())),
                 _ => None,
             })
             .collect()
@@ -48,9 +52,14 @@ impl AgentRunner for ReplayAgentRunner {
     async fn start(&self, _config: AgentStartConfig) -> Result<AgentHandle, AgentError> {
         let (tx, rx) = mpsc::channel::<AgentEvent>(256);
         let events = self.events_for_session();
+        let controller = runtime::replay_controller();
 
         tokio::spawn(async move {
-            for ev in events {
+            for (seq, ev) in events {
+                if let Some(ctrl) = controller.as_ref() {
+                    ctrl.wait_for(seq).await;
+                    ctrl.mark_emitted(seq);
+                }
                 if tx.send(ev).await.is_err() {
                     break;
                 }

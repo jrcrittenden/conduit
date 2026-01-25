@@ -135,7 +135,7 @@ fn to_recorded_input(input: &AgentInput) -> RecordedInput {
         AgentInput::ClaudeJsonl(jsonl) => RecordedInput::ClaudeJsonl {
             jsonl: jsonl.clone(),
         },
-        AgentInput::CodexPrompt { text, images } => RecordedInput::CodexPrompt {
+        AgentInput::CodexPrompt { text, images, .. } => RecordedInput::CodexPrompt {
             text: text.clone(),
             images: images.iter().map(|p| p.display().to_string()).collect(),
         },
@@ -280,6 +280,7 @@ mod tests {
             .send(AgentInput::CodexPrompt {
                 text: "hello".to_string(),
                 images: Vec::new(),
+                model: None,
             })
             .await
             .unwrap();

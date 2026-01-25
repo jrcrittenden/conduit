@@ -6,6 +6,7 @@ pub mod models;
 pub mod onboarding;
 pub mod queue;
 pub mod repositories;
+pub mod repro;
 pub mod sessions;
 pub mod themes;
 pub mod ui_state;
