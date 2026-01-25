@@ -116,6 +116,7 @@ pub fn api_routes() -> Router<WebAppState> {
         // Repro routes
         .route("/repro/state", get(repro::get_repro_state))
         .route("/repro/control", post(repro::post_repro_control))
+        .route("/repro/events", get(repro::get_repro_events))
         // Theme routes
         .route("/themes", get(themes::list_available_themes))
         .route("/themes/current", get(themes::get_current_theme))

@@ -182,6 +182,18 @@ export interface ReproState {
   total_events: number;
 }
 
+export interface ReproEventSummary {
+  seq: number;
+  ts_ms: number;
+  kind: string;
+  session_id: string | null;
+  detail: string | null;
+}
+
+export interface ReproEventsResponse {
+  events: ReproEventSummary[];
+}
+
 export interface ExternalSession {
   id: string;
   agent_type: 'claude' | 'codex' | 'gemini' | 'opencode';

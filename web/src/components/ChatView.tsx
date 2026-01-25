@@ -24,6 +24,7 @@ import {
   useWorkspaceActions,
   useReproState,
   useReproControl,
+  useReproEvents,
 } from '../hooks';
 import { getFileContent, getSessionEventsPage } from '../lib/api';
 import { supportsPlanMode } from '../lib/agentCapabilities';
@@ -204,7 +205,13 @@ export function ChatView({
   const { data: reproState } = useReproState();
   const reproControl = useReproControl();
   const [reproSeekInput, setReproSeekInput] = useState('');
+  const [showReplayEvents, setShowReplayEvents] = useState(false);
   const isReplayMode = reproState?.mode === 'replay';
+  const { data: reproEvents } = useReproEvents(session?.id, {
+    enabled: isReplayMode && showReplayEvents,
+    refetchInterval: 1000,
+    limit: 200,
+  });
   const updateSessionMutation = useUpdateSession();
   const setDefaultModelMutation = useSetDefaultModel();
   const [historyEvents, setHistoryEvents] = useState<SessionEvent[]>([]);
@@ -1273,6 +1280,16 @@ export function ChatView({
     reproControl.mutate({ action: 'seek', seq });
   }, [reproControl, reproSeekInput]);
 
+  const handleReplayEventSeek = useCallback(
+    (seq: number) => {
+      setReproSeekInput(String(seq));
+      if (reproState && seq >= reproState.current_seq) {
+        reproControl.mutate({ action: 'seek', seq });
+      }
+    },
+    [reproControl, reproState]
+  );
+
   const replayControlsBusy = reproControl.isPending;
 
   // Keyboard shortcut for toggling plan mode (Ctrl+Shift+P)
@@ -1452,6 +1469,15 @@ export function ChatView({
               {reproState.paused ? 'Resume' : 'Pause'}
             </button>
             <button
+              onClick={() => setShowReplayEvents((prev) => !prev)}
+              className={cn(
+                'rounded-md border border-border px-2 py-1 text-xs text-text',
+                'hover:bg-surface-elevated'
+              )}
+            >
+              {showReplayEvents ? 'Hide events' : 'Show events'}
+            </button>
+            <button
               onClick={handleReplayStep}
               disabled={replayControlsBusy}
               className={cn(
@@ -1485,6 +1511,42 @@ export function ChatView({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {isReplayMode && showReplayEvents && (
+        <div className="flex max-h-48 flex-col gap-2 overflow-y-auto border-b border-border bg-surface px-4 py-3 text-xs text-text-muted">
+          {!reproEvents && <span>Loading replay events…</span>}
+          {reproEvents?.events.length === 0 && <span>No events available.</span>}
+          {reproEvents?.events.map((event) => {
+            const canSeek = reproState ? event.seq >= reproState.current_seq : true;
+            return (
+              <div key={event.seq} className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="font-mono text-[11px] text-text">
+                    #{event.seq} · {event.kind}
+                  </span>
+                  {event.detail && <span className="truncate">{event.detail}</span>}
+                </div>
+                <button
+                  onClick={() => handleReplayEventSeek(event.seq)}
+                  disabled={!canSeek || replayControlsBusy}
+                  className={cn(
+                    'rounded-md border border-border px-2 py-1 text-xs text-text',
+                    'hover:bg-surface-elevated',
+                    (!canSeek || replayControlsBusy) && 'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  {canSeek ? 'Go' : 'Past'}
+                </button>
+              </div>
+            );
+          })}
+          {reproState && (
+            <span className="text-[10px] text-text-muted">
+              Replay seek only moves forward. Restart replay to rewind.
+            </span>
+          )}
         </div>
       )}
 

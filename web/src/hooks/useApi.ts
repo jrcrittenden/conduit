@@ -21,6 +21,8 @@ import type {
 export const queryKeys = {
   health: ['health'] as const,
   reproState: ['repro', 'state'] as const,
+  reproEvents: (sessionId?: string | null) =>
+    ['repro', 'events', sessionId ?? 'all'] as const,
   agents: ['agents'] as const,
   models: ['models'] as const,
   repositories: ['repositories'] as const,
@@ -77,6 +79,19 @@ export function useReproControl() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.reproState });
     },
+  });
+}
+
+export function useReproEvents(
+  sessionId?: string | null,
+  options?: { enabled?: boolean; refetchInterval?: number; limit?: number }
+) {
+  return useQuery({
+    queryKey: queryKeys.reproEvents(sessionId),
+    queryFn: () => api.getReproEvents(sessionId, options?.limit ?? 200),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? 1000,
+    staleTime: 0,
   });
 }
 

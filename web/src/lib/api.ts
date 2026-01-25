@@ -43,6 +43,7 @@ import type {
   AddOnboardingProjectRequest,
   AddOnboardingProjectResponse,
   FileContentResponse,
+  ReproEventsResponse,
   ReproState,
 } from '../types';
 import type { Theme, ThemeListResponse } from './themes';
@@ -112,6 +113,18 @@ export async function postReproControl(action: string, seq?: number): Promise<Re
     method: 'POST',
     body: JSON.stringify({ action, seq }),
   });
+}
+
+export async function getReproEvents(
+  sessionId?: string | null,
+  limit: number = 200
+): Promise<ReproEventsResponse> {
+  const params = new URLSearchParams();
+  if (sessionId) {
+    params.set('session_id', sessionId);
+  }
+  params.set('limit', String(limit));
+  return request(`/repro/events?${params.toString()}`);
 }
 
 // Bootstrap
