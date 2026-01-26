@@ -27,6 +27,7 @@ Project-specific instructions for agents working in this repo.
 - Use `agent-browser` (not Playwright directly) for UI automation:
   - `agent-browser open http://0.0.0.0:3000/`
   - `agent-browser snapshot -i` to get refs, then `agent-browser click @eX`, `fill`, `press Enter`.
+- Use playwright only if the user specifically asks for a headful session.
 - Suggested flow for OpenCode sessions:
   - Create a new workspace, open model picker, choose `opencode/glm-4.7`, send prompts.
   - Check message ordering and tool rendering live.
