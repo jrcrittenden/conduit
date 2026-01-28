@@ -220,19 +220,12 @@ fn get_applied_versions(conn: &Connection) -> rusqlite::Result<std::collections:
     let mut stmt = conn.prepare("SELECT version FROM schema_migrations")?;
     let versions = stmt
         .query_map([], |row| row.get::<_, i64>(0))?
-        .filter_map(|r| match r {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read migration version from schema_migrations");
-                None
-            }
-        })
-        .collect();
+        .collect::<rusqlite::Result<std::collections::HashSet<i64>>>()?;
     Ok(versions)
 }
 
 /// Check if a column exists in a table.
-fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='{}'",
@@ -241,17 +234,24 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         [],
         |row| row.get::<_, i64>(0).map(|c| c > 0),
     )
-    .unwrap_or(false)
 }
 
 /// Check if a table exists.
-fn table_exists(conn: &Connection, table: &str) -> bool {
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
         [table],
         |row| row.get::<_, i64>(0).map(|c| c > 0),
     )
-    .unwrap_or(false)
+}
+
+/// Check if an index exists.
+fn index_exists(conn: &Connection, index: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+        [index],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )
 }
 
 /// Bootstrap existing databases that predate the migration system.
@@ -262,50 +262,58 @@ fn bootstrap_existing_database(conn: &Connection) -> rusqlite::Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
 
     // If repositories table exists, this is an existing database
-    if !table_exists(conn, "repositories") {
+    if !table_exists(conn, "repositories")? {
         return Ok(()); // Fresh database, nothing to bootstrap
     }
 
     tracing::info!("Bootstrapping existing database into migration system");
 
-    // Check each migration and mark as applied if its changes already exist
+    // Collect migrations to mark as applied
+    let mut to_mark: Vec<&Migration> = Vec::new();
+
+    // Check each migration and collect if its changes already exist
     for migration in MIGRATIONS {
         let already_applied = match migration.version {
-            1 => table_exists(conn, "repositories"),
-            2 => table_exists(conn, "workspaces"),
-            3 => table_exists(conn, "app_state"),
-            4 => table_exists(conn, "session_tabs"),
-            5 => column_exists(conn, "workspaces", "archived_at"),
-            6 => column_exists(conn, "session_tabs", "pr_number"),
-            7 => column_exists(conn, "session_tabs", "pending_user_message"),
-            8 => column_exists(conn, "session_tabs", "agent_mode"),
-            9 => column_exists(conn, "workspaces", "archived_commit_sha"),
-            10 => column_exists(conn, "session_tabs", "queued_messages"),
-            11 => column_exists(conn, "session_tabs", "fork_seed_id"),
-            12 => table_exists(conn, "fork_seeds"),
-            13 => column_exists(conn, "session_tabs", "title"),
-            14 => column_exists(conn, "session_tabs", "input_history"),
-            15 => column_exists(conn, "session_tabs", "is_open"),
-            16 => column_exists(conn, "session_tabs", "title_generated"),
-            17 => column_exists(conn, "repositories", "workspace_mode"),
-            18 => {
-                // Check if the unique index exists
-                conn.query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_session_tabs_open_workspace'",
-                    [],
-                    |row| row.get::<_, i64>(0).map(|c| c > 0),
-                ).unwrap_or(false)
-            }
-            19 => column_exists(conn, "session_tabs", "model_invalid"),
+            1 => table_exists(conn, "repositories")?,
+            2 => table_exists(conn, "workspaces")?,
+            3 => table_exists(conn, "app_state")?,
+            4 => table_exists(conn, "session_tabs")?,
+            5 => column_exists(conn, "workspaces", "archived_at")?,
+            6 => column_exists(conn, "session_tabs", "pr_number")?,
+            7 => column_exists(conn, "session_tabs", "pending_user_message")?,
+            8 => column_exists(conn, "session_tabs", "agent_mode")?,
+            9 => column_exists(conn, "workspaces", "archived_commit_sha")?,
+            10 => column_exists(conn, "session_tabs", "queued_messages")?,
+            11 => column_exists(conn, "session_tabs", "fork_seed_id")?,
+            12 => table_exists(conn, "fork_seeds")?,
+            13 => column_exists(conn, "session_tabs", "title")?,
+            14 => column_exists(conn, "session_tabs", "input_history")?,
+            15 => column_exists(conn, "session_tabs", "is_open")?,
+            16 => column_exists(conn, "session_tabs", "title_generated")?,
+            17 => column_exists(conn, "repositories", "workspace_mode")?,
+            18 => index_exists(conn, "idx_session_tabs_open_workspace")?,
+            19 => column_exists(conn, "session_tabs", "model_invalid")?,
             _ => false,
         };
 
         if already_applied {
-            conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                params![migration.version, migration.name, now],
-            )?;
+            to_mark.push(migration);
         }
+    }
+
+    // Insert all bootstrap records in a single transaction
+    if !to_mark.is_empty() {
+        let inserts: Vec<String> = to_mark
+            .iter()
+            .map(|m| {
+                format!(
+                    "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES ({}, '{}', '{}');",
+                    m.version, m.name, now
+                )
+            })
+            .collect();
+        let sql = format!("BEGIN;\n{}\nCOMMIT;", inserts.join("\n"));
+        conn.execute_batch(&sql)?;
     }
 
     Ok(())
@@ -314,7 +322,7 @@ fn bootstrap_existing_database(conn: &Connection) -> rusqlite::Result<()> {
 /// Run all pending migrations.
 ///
 /// This is the main entry point for the migration system.
-pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
+pub fn run_migrations(conn: &mut Connection) -> rusqlite::Result<()> {
     // Ensure the migrations table exists
     ensure_migrations_table(conn)?;
 
@@ -338,21 +346,35 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
         // Execute the migration SQL and record it within a single transaction for atomicity
         let now = chrono::Utc::now().to_rfc3339();
-        let sql_with_tx = format!(
-            "BEGIN;\n{}\nINSERT INTO schema_migrations (version, name, applied_at) VALUES ({}, '{}', '{}');\nCOMMIT;",
-            migration.sql,
-            migration.version,
-            migration.name,
-            now
-        );
-        if let Err(e) = conn.execute_batch(&sql_with_tx) {
+        let tx = conn.transaction()?;
+        if let Err(e) = tx.execute_batch(migration.sql) {
             tracing::error!(
                 version = migration.version,
                 name = migration.name,
                 error = %e,
                 "Migration failed"
             );
-            // Transaction is automatically rolled back on error
+            return Err(e);
+        }
+        if let Err(e) = tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![migration.version, migration.name, now],
+        ) {
+            tracing::error!(
+                version = migration.version,
+                name = migration.name,
+                error = %e,
+                "Migration failed"
+            );
+            return Err(e);
+        }
+        if let Err(e) = tx.commit() {
+            tracing::error!(
+                version = migration.version,
+                name = migration.name,
+                error = %e,
+                "Migration failed"
+            );
             return Err(e);
         }
 
@@ -400,28 +422,28 @@ mod tests {
 
     #[test]
     fn test_fresh_database_migrations() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&mut conn).unwrap();
 
         // Verify all migrations were recorded
         let applied = get_applied_versions(&conn).unwrap();
         assert_eq!(applied.len(), MIGRATIONS.len());
 
         // Verify tables exist
-        assert!(table_exists(&conn, "repositories"));
-        assert!(table_exists(&conn, "workspaces"));
-        assert!(table_exists(&conn, "session_tabs"));
-        assert!(table_exists(&conn, "fork_seeds"));
-        assert!(table_exists(&conn, "schema_migrations"));
+        assert!(table_exists(&conn, "repositories").unwrap());
+        assert!(table_exists(&conn, "workspaces").unwrap());
+        assert!(table_exists(&conn, "session_tabs").unwrap());
+        assert!(table_exists(&conn, "fork_seeds").unwrap());
+        assert!(table_exists(&conn, "schema_migrations").unwrap());
     }
 
     #[test]
     fn test_idempotent_migrations() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
 
         // Run migrations twice
-        run_migrations(&conn).unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&mut conn).unwrap();
+        run_migrations(&mut conn).unwrap();
 
         // Should still have same number of recorded migrations
         let applied = get_applied_versions(&conn).unwrap();

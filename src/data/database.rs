@@ -35,11 +35,11 @@ impl Database {
             std::fs::create_dir_all(parent).map_err(DatabaseError::CreateDir)?;
         }
 
-        let conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         // Run migrations
-        migrations::run_migrations(&conn)?;
+        migrations::run_migrations(&mut conn)?;
 
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
