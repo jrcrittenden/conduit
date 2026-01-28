@@ -165,3 +165,24 @@ code {
 .shiki-wrapper .diff.remove {
   background-color: var(--color-diff-remove-bg);
 }
+
+/* Conic gradient spinner animation */
+@keyframes spinner-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spinner {
+  animation: spinner-rotate 1s linear infinite;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spinner {
+    animation-duration: 3s;
+  }
+}

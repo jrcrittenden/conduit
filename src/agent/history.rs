@@ -8,9 +8,10 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::display::MessageDisplay;
@@ -324,6 +325,7 @@ pub struct HistoryDebugEntry {
 #[derive(Debug)]
 pub enum HistoryError {
     HomeNotFound,
+    StorageNotFound,
     SessionNotFound(String),
     IoError(std::io::Error),
     ParseError(String),
@@ -339,6 +341,7 @@ impl std::fmt::Display for HistoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HistoryError::HomeNotFound => write!(f, "Home directory not found"),
+            HistoryError::StorageNotFound => write!(f, "OpenCode storage directory not found"),
             HistoryError::SessionNotFound(id) => write!(f, "Session not found: {}", id),
             HistoryError::IoError(e) => write!(f, "IO error: {}", e),
             HistoryError::ParseError(e) => write!(f, "Parse error: {}", e),
@@ -347,6 +350,410 @@ impl std::fmt::Display for HistoryError {
 }
 
 impl std::error::Error for HistoryError {}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeMessageInfo {
+    id: String,
+    role: String,
+    #[serde(default)]
+    time: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionInfo {
+    id: String,
+    #[serde(rename = "directory")]
+    directory: Option<String>,
+    #[serde(default)]
+    time: Option<OpencodeSessionTime>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionTime {
+    #[serde(default)]
+    created: Option<i64>,
+    #[serde(default)]
+    updated: Option<i64>,
+}
+
+impl OpencodeSessionTime {
+    fn latest_timestamp(&self) -> i64 {
+        self.updated.or(self.created).unwrap_or(0)
+    }
+}
+
+fn opencode_storage_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        candidates.push(dir.join("opencode").join("storage"));
+    }
+    if let Some(dir) = dirs::data_dir() {
+        candidates.push(dir.join("opencode").join("storage"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local/share/opencode/storage"));
+    }
+    candidates
+}
+
+fn io_error_with_context(error: std::io::Error, context: String) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{context}: {error}"))
+}
+
+fn find_opencode_session_file(
+    storage_dir: &Path,
+    session_id: &str,
+) -> Result<Option<PathBuf>, HistoryError> {
+    let sessions_dir = storage_dir.join("session");
+    let entries = fs::read_dir(&sessions_dir).map_err(|error| {
+        HistoryError::IoError(io_error_with_context(
+            error,
+            format!(
+                "Failed to read OpenCode sessions directory {}",
+                sessions_dir.display()
+            ),
+        ))
+    })?;
+    for project_entry in entries {
+        let project_entry = project_entry.map_err(|error| {
+            HistoryError::IoError(io_error_with_context(
+                error,
+                format!(
+                    "Failed to read OpenCode project entry in {}",
+                    sessions_dir.display()
+                ),
+            ))
+        })?;
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+        let candidate = project_path.join(format!("{session_id}.json"));
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn find_opencode_storage_for_session(session_id: &str) -> Result<(PathBuf, PathBuf), HistoryError> {
+    let mut has_storage = false;
+    for storage_dir in opencode_storage_dir_candidates() {
+        if !storage_dir.exists() {
+            continue;
+        }
+        has_storage = true;
+        if let Some(session_file) = find_opencode_session_file(&storage_dir, session_id)? {
+            return Ok((storage_dir, session_file));
+        }
+    }
+    if !has_storage {
+        Err(HistoryError::StorageNotFound)
+    } else {
+        Err(HistoryError::SessionNotFound(session_id.to_string()))
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %error,
+                "Failed to canonicalize OpenCode history path"
+            );
+            path.to_path_buf()
+        }
+    }
+}
+
+fn opencode_paths_match(session_dir: &str, working_dir: &Path) -> bool {
+    let session_path = PathBuf::from(session_dir);
+    let session_norm = normalize_path(&session_path);
+    let working_norm = normalize_path(working_dir);
+    session_norm == working_norm
+}
+
+fn find_opencode_session_for_dir(
+    storage_dir: &Path,
+    working_dir: &Path,
+) -> Result<Option<(String, PathBuf, i64)>, HistoryError> {
+    let sessions_dir = storage_dir.join("session");
+    let entries = fs::read_dir(&sessions_dir).map_err(|error| {
+        HistoryError::IoError(io_error_with_context(
+            error,
+            format!(
+                "Failed to read OpenCode sessions directory {}",
+                sessions_dir.display()
+            ),
+        ))
+    })?;
+    let mut best: Option<(String, PathBuf, i64)> = None;
+
+    for project_entry in entries {
+        let project_entry = project_entry.map_err(|error| {
+            HistoryError::IoError(io_error_with_context(
+                error,
+                format!(
+                    "Failed to read OpenCode project entry in {}",
+                    sessions_dir.display()
+                ),
+            ))
+        })?;
+        let project_path = project_entry.path();
+        if !project_path.is_dir() {
+            continue;
+        }
+        for session_path in list_sorted_json(&project_path)? {
+            let raw = fs::read_to_string(&session_path).map_err(|error| {
+                HistoryError::IoError(io_error_with_context(
+                    error,
+                    format!(
+                        "Failed to read OpenCode session file {}",
+                        session_path.display()
+                    ),
+                ))
+            })?;
+            let info: OpencodeSessionInfo = serde_json::from_str(&raw).map_err(|error| {
+                HistoryError::ParseError(format!(
+                    "Failed to parse OpenCode session file {}: {}",
+                    session_path.display(),
+                    error
+                ))
+            })?;
+            let directory = match info.directory.as_deref() {
+                Some(directory) => directory,
+                None => continue,
+            };
+            if !opencode_paths_match(directory, working_dir) {
+                continue;
+            }
+            let updated = info
+                .time
+                .as_ref()
+                .map(OpencodeSessionTime::latest_timestamp)
+                .unwrap_or(0);
+            let candidate = (info.id, session_path, updated);
+            let should_replace = match best.as_ref() {
+                Some((_, _, best_updated)) => updated > *best_updated,
+                None => true,
+            };
+            if should_replace {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    Ok(best)
+}
+
+fn list_sorted_json(dir: &Path) -> Result<Vec<PathBuf>, HistoryError> {
+    let mut files = Vec::new();
+    let entries = fs::read_dir(dir).map_err(|error| {
+        HistoryError::IoError(io_error_with_context(
+            error,
+            format!("Failed to read directory {}", dir.display()),
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            HistoryError::IoError(io_error_with_context(
+                error,
+                format!("Failed to read directory entry in {}", dir.display()),
+            ))
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            files.push(path);
+        }
+    }
+    files.sort_by(|a, b| {
+        let a_name = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let b_name = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        a_name.cmp(b_name)
+    });
+    Ok(files)
+}
+
+fn opencode_parts_for_message(
+    storage_dir: &Path,
+    message_id: &str,
+) -> Result<Vec<Value>, HistoryError> {
+    let parts_dir = storage_dir.join("part").join(message_id);
+    if !parts_dir.exists() || !parts_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut parts = Vec::new();
+    for path in list_sorted_json(&parts_dir)? {
+        let raw = fs::read_to_string(&path).map_err(|error| {
+            HistoryError::IoError(io_error_with_context(
+                error,
+                format!("Failed to read OpenCode part file {}", path.display()),
+            ))
+        })?;
+        let value: Value = serde_json::from_str(&raw).map_err(|error| {
+            HistoryError::ParseError(format!(
+                "Failed to parse OpenCode part file {}: {}",
+                path.display(),
+                error
+            ))
+        })?;
+        parts.push(value);
+    }
+    Ok(parts)
+}
+
+fn opencode_text_from_parts(parts: &[Value], include_reasoning: bool) -> (String, String) {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+
+    for part in parts {
+        let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if part_type == "reasoning" && !include_reasoning {
+            continue;
+        }
+        if part_type != "text" && part_type != "reasoning" {
+            continue;
+        }
+        if part.get("ignored").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        if part.get("synthetic").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        let chunk = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        if chunk.is_empty() {
+            continue;
+        }
+        if part_type == "reasoning" {
+            reasoning.push_str(chunk);
+            reasoning.push('\n');
+        } else {
+            text.push_str(chunk);
+            text.push('\n');
+        }
+    }
+
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    if reasoning.ends_with('\n') {
+        reasoning.pop();
+    }
+
+    (text, reasoning)
+}
+
+fn opencode_tool_output_from_state(state: &Value) -> Option<String> {
+    let output = state.get("output").and_then(|v| v.as_str());
+    if let Some(output) = output {
+        if !output.trim().is_empty() {
+            return Some(output.to_string());
+        }
+    }
+    let meta_output = state
+        .get("metadata")
+        .and_then(|v| v.get("output"))
+        .and_then(|v| v.as_str());
+    if let Some(output) = meta_output {
+        if !output.trim().is_empty() {
+            return Some(output.to_string());
+        }
+    }
+    let preview = state
+        .get("metadata")
+        .and_then(|v| v.get("preview"))
+        .and_then(|v| v.as_str());
+    if let Some(preview) = preview {
+        if !preview.trim().is_empty() {
+            return Some(preview.to_string());
+        }
+    }
+    None
+}
+
+fn opencode_tool_args_from_state(state: &Value) -> String {
+    let input = match state.get("input") {
+        Some(input) => input,
+        None => return String::new(),
+    };
+
+    if input.is_null() {
+        return String::new();
+    }
+    if input.as_object().map(|obj| obj.is_empty()).unwrap_or(false) {
+        return String::new();
+    }
+
+    if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
+        return command.to_string();
+    }
+    if let Some(file_path) = input.get("filePath").and_then(|v| v.as_str()) {
+        let mut args = file_path.to_string();
+        let offset = input.get("offset").and_then(|v| v.as_i64());
+        let limit = input.get("limit").and_then(|v| v.as_i64());
+        if offset.is_some() || limit.is_some() {
+            let offset = offset.unwrap_or(0);
+            if let Some(limit) = limit {
+                args.push_str(&format!(" (offset {}, limit {})", offset, limit));
+            } else {
+                args.push_str(&format!(" (offset {})", offset));
+            }
+        }
+        return args;
+    }
+
+    serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())
+}
+
+fn opencode_tool_message_from_part(part: &Value) -> Option<ChatMessage> {
+    let tool = part.get("tool").and_then(|v| v.as_str())?;
+    let state = part.get("state").unwrap_or(&Value::Null);
+    let status = state.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let mut output = opencode_tool_output_from_state(state).unwrap_or_default();
+    if output.trim().is_empty() {
+        if let Some(error) = state.get("error").and_then(|v| v.as_str()) {
+            output = error.to_string();
+        }
+    }
+    if output.trim().is_empty() && !status.is_empty() {
+        output = format!("status: {}", status);
+    }
+
+    let args = opencode_tool_args_from_state(state);
+    let exit_code = state
+        .get("metadata")
+        .and_then(|v| v.get("exit"))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
+        .or_else(|| if status == "error" { Some(1) } else { None });
+
+    Some(
+        MessageDisplay::Tool {
+            name: MessageDisplay::tool_display_name_owned(tool),
+            args,
+            output,
+            exit_code,
+            file_size: None,
+        }
+        .to_chat_message(),
+    )
+}
+
+fn opencode_push_assistant_message(messages: &mut Vec<ChatMessage>, text: &str) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    messages.push(
+        MessageDisplay::Assistant {
+            content: text.to_string(),
+            is_streaming: false,
+        }
+        .to_chat_message(),
+    );
+    true
+}
 
 /// Load Claude Code history for a session
 ///
@@ -1298,6 +1705,266 @@ pub fn load_codex_history_with_debug(
     Ok((messages, debug_entries, session_file))
 }
 
+/// Load OpenCode history with debug information from storage.
+pub fn load_opencode_history_with_debug(
+    session_id: &str,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+    let (storage_dir, _session_file) = find_opencode_storage_for_session(session_id)?;
+
+    load_opencode_history_from_storage(&storage_dir, session_id)
+}
+
+fn load_opencode_history_from_storage(
+    storage_dir: &Path,
+    session_id: &str,
+) -> Result<(Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+    let session_file = find_opencode_session_file(storage_dir, session_id)?
+        .ok_or_else(|| HistoryError::SessionNotFound(session_id.to_string()))?;
+
+    let message_dir = storage_dir.join("message").join(session_id);
+    if !message_dir.exists() {
+        return Err(HistoryError::SessionNotFound(session_id.to_string()));
+    }
+
+    let mut records = Vec::new();
+    for message_path in list_sorted_json(&message_dir)? {
+        let raw = fs::read_to_string(&message_path).map_err(|error| {
+            HistoryError::IoError(io_error_with_context(
+                error,
+                format!(
+                    "Failed to read OpenCode message file {}",
+                    message_path.display()
+                ),
+            ))
+        })?;
+        let raw_value: Value = serde_json::from_str(&raw).map_err(|error| {
+            HistoryError::ParseError(format!(
+                "Failed to parse OpenCode message file {}: {}",
+                message_path.display(),
+                error
+            ))
+        })?;
+        let info: OpencodeMessageInfo = serde_json::from_value(raw_value.clone())
+            .map_err(|e| HistoryError::ParseError(e.to_string()))?;
+        let parts = opencode_parts_for_message(storage_dir, &info.id)?;
+        let created = info
+            .time
+            .as_ref()
+            .and_then(|t| t.get("created"))
+            .and_then(|v| v.as_i64());
+        records.push((created, info, parts, raw_value));
+    }
+
+    records.sort_by(|a, b| {
+        let a_time = a.0.unwrap_or(0);
+        let b_time = b.0.unwrap_or(0);
+        if a_time == b_time {
+            a.1.id.cmp(&b.1.id)
+        } else {
+            a_time.cmp(&b_time)
+        }
+    });
+
+    let mut messages = Vec::new();
+    let mut debug_entries = Vec::new();
+
+    for (idx, (_created, info, parts, raw_info)) in records.into_iter().enumerate() {
+        let mut status = "INCLUDE".to_string();
+        let mut reason = format!("role={}", info.role);
+        let raw_json = serde_json::json!({ "info": raw_info, "parts": parts });
+
+        match raw_json
+            .get("info")
+            .and_then(|v| v.get("role"))
+            .and_then(|v| v.as_str())
+        {
+            Some("user") => {
+                let parts_val = raw_json
+                    .get("parts")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let (text, _) = opencode_text_from_parts(&parts_val, false);
+                if text.trim().is_empty() {
+                    status = "SKIP".to_string();
+                    reason = "user message empty".to_string();
+                } else {
+                    messages.push(MessageDisplay::User { content: text }.to_chat_message());
+                }
+            }
+            Some("assistant") => {
+                let info_val = raw_json.get("info");
+                let summary = info_val
+                    .and_then(|v| v.get("summary"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if summary {
+                    status = "SKIP".to_string();
+                    reason = "assistant summary".to_string();
+                } else {
+                    let parts_val = raw_json
+                        .get("parts")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut pending_text = String::new();
+                    let mut pending_reasoning = String::new();
+                    let mut has_tool = false;
+                    let mut has_text = false;
+
+                    for part in &parts_val {
+                        let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        match part_type {
+                            "reasoning" => {
+                                if part.get("ignored").and_then(|v| v.as_bool()) == Some(true) {
+                                    continue;
+                                }
+                                if part.get("synthetic").and_then(|v| v.as_bool()) == Some(true) {
+                                    continue;
+                                }
+                                let chunk = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                                append_output(&mut pending_reasoning, chunk);
+                            }
+                            "text" => {
+                                if !pending_reasoning.trim().is_empty() {
+                                    messages.push(
+                                        MessageDisplay::Reasoning {
+                                            content: pending_reasoning.clone(),
+                                        }
+                                        .to_chat_message(),
+                                    );
+                                    has_text = true;
+                                    pending_reasoning.clear();
+                                }
+                                if part.get("ignored").and_then(|v| v.as_bool()) == Some(true) {
+                                    continue;
+                                }
+                                if part.get("synthetic").and_then(|v| v.as_bool()) == Some(true) {
+                                    continue;
+                                }
+                                let chunk = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                                append_output(&mut pending_text, chunk);
+                            }
+                            "tool" => {
+                                if !pending_reasoning.trim().is_empty() {
+                                    messages.push(
+                                        MessageDisplay::Reasoning {
+                                            content: pending_reasoning.clone(),
+                                        }
+                                        .to_chat_message(),
+                                    );
+                                    has_text = true;
+                                    pending_reasoning.clear();
+                                }
+                                if opencode_push_assistant_message(&mut messages, &pending_text) {
+                                    has_text = true;
+                                }
+                                pending_text.clear();
+                                if let Some(tool_message) = opencode_tool_message_from_part(part) {
+                                    messages.push(tool_message);
+                                    has_tool = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if !pending_reasoning.trim().is_empty() {
+                        messages.push(
+                            MessageDisplay::Reasoning {
+                                content: pending_reasoning.clone(),
+                            }
+                            .to_chat_message(),
+                        );
+                        has_text = true;
+                        pending_reasoning.clear();
+                    }
+
+                    if opencode_push_assistant_message(&mut messages, &pending_text) {
+                        has_text = true;
+                    }
+                    if !has_text && !has_tool {
+                        let error_message = info_val
+                            .and_then(|v| v.get("error"))
+                            .and_then(|v| v.get("message"))
+                            .and_then(|v| v.as_str());
+                        if let Some(error_message) = error_message {
+                            messages.push(
+                                MessageDisplay::Error {
+                                    content: error_message.to_string(),
+                                }
+                                .to_chat_message(),
+                            );
+                            reason = "assistant error".to_string();
+                        } else {
+                            status = "SKIP".to_string();
+                            reason = "assistant message empty".to_string();
+                        }
+                    }
+                }
+            }
+            _ => {
+                status = "SKIP".to_string();
+                reason = "unsupported role".to_string();
+            }
+        }
+
+        debug_entries.push(HistoryDebugEntry {
+            line_number: idx,
+            entry_type: "opencode_message".to_string(),
+            status,
+            reason,
+            raw_json,
+        });
+    }
+
+    Ok((messages, debug_entries, session_file))
+}
+
+/// Load OpenCode history for the latest session in the given working directory.
+pub fn load_opencode_history_for_dir_with_debug(
+    working_dir: &Path,
+) -> Result<(String, Vec<ChatMessage>, Vec<HistoryDebugEntry>, PathBuf), HistoryError> {
+    let mut has_storage = false;
+    let mut best: Option<(PathBuf, String, PathBuf, i64)> = None;
+
+    for storage_dir in opencode_storage_dir_candidates() {
+        if !storage_dir.exists() {
+            continue;
+        }
+        has_storage = true;
+        if let Some((session_id, session_file, updated)) =
+            find_opencode_session_for_dir(&storage_dir, working_dir)?
+        {
+            let should_replace = match best.as_ref() {
+                Some((_, _, _, best_updated)) => updated > *best_updated,
+                None => true,
+            };
+            if should_replace {
+                best = Some((storage_dir, session_id, session_file, updated));
+            }
+        }
+    }
+
+    if !has_storage {
+        return Err(HistoryError::StorageNotFound);
+    }
+
+    let (storage_dir, session_id, _session_file, _) = best
+        .ok_or_else(|| HistoryError::SessionNotFound(format!("dir:{}", working_dir.display())))?;
+
+    let (messages, debug_entries, session_file) =
+        load_opencode_history_from_storage(&storage_dir, &session_id)?;
+
+    Ok((session_id, messages, debug_entries, session_file))
+}
+
 /// Create a truncated preview of text for debug output
 fn truncate_preview(text: &str, max_len: usize) -> String {
     let preview: String = text.chars().take(max_len).collect();
@@ -1480,6 +2147,8 @@ fn convert_codex_entry_with_debug(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_convert_claude_user_entry() {
@@ -1931,5 +2600,112 @@ mod tests {
             has_ls_tool,
             "Tool message should have 'ls' command from function_call lookup"
         );
+    }
+
+    #[test]
+    fn test_opencode_history_includes_reasoning_parts() {
+        let temp = TempDir::new().unwrap();
+        let storage_dir = temp.path();
+        let session_id = "ses_reasoning";
+
+        let session_dir = storage_dir.join("session").join("project");
+        fs::create_dir_all(&session_dir).unwrap();
+        let session_file = session_dir.join(format!("{session_id}.json"));
+        fs::write(
+            &session_file,
+            serde_json::json!({
+                "id": session_id,
+                "directory": "/tmp/project",
+                "time": {"created": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let message_dir = storage_dir.join("message").join(session_id);
+        fs::create_dir_all(&message_dir).unwrap();
+        let message_file = message_dir.join("0001.json");
+        fs::write(
+            &message_file,
+            serde_json::json!({
+                "id": "msg_1",
+                "role": "assistant",
+                "time": {"created": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let parts_dir = storage_dir.join("part").join("msg_1");
+        fs::create_dir_all(&parts_dir).unwrap();
+        let part_file = parts_dir.join("0001.json");
+        fs::write(
+            &part_file,
+            serde_json::json!({
+                "id": "prt_1",
+                "sessionID": session_id,
+                "messageID": "msg_1",
+                "type": "reasoning",
+                "text": "Thinking about tests..."
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (messages, _debug_entries, _session_path) =
+            load_opencode_history_from_storage(storage_dir, session_id).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::Reasoning);
+        assert!(messages[0].content.contains("Thinking about tests"));
+    }
+
+    #[test]
+    fn test_opencode_tool_args_empty_input() {
+        let state = serde_json::json!({"input": {}});
+        assert!(opencode_tool_args_from_state(&state).is_empty());
+    }
+
+    #[test]
+    fn test_opencode_history_missing_parts_dir() {
+        let temp = TempDir::new().unwrap();
+        let storage_dir = temp.path();
+        let session_id = "ses_test";
+
+        let session_dir = storage_dir.join("session").join("project");
+        fs::create_dir_all(&session_dir).unwrap();
+        let session_file = session_dir.join(format!("{session_id}.json"));
+        fs::write(
+            &session_file,
+            serde_json::json!({
+                "id": session_id,
+                "directory": "/tmp/project",
+                "time": {"created": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let message_dir = storage_dir.join("message").join(session_id);
+        fs::create_dir_all(&message_dir).unwrap();
+        let message_file = message_dir.join("0001.json");
+        fs::write(
+            &message_file,
+            serde_json::json!({
+                "id": "msg_1",
+                "role": "assistant",
+                "time": {"created": 1},
+                "error": {"message": "Model missing"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (messages, _debug_entries, _session_path) =
+            load_opencode_history_from_storage(storage_dir, session_id).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::Error);
+        assert!(messages[0].content.contains("Model missing"));
     }
 }

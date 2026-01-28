@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, type KeyboardEvent } from 'react';
-import { Send, Loader2, GitBranch, ListPlus, ImagePlus, X } from 'lucide-react';
+import { Send, Loader2, GitBranch, ListPlus, ImagePlus, X, Square } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { ModeToggle } from './ModeToggle';
 
@@ -21,7 +21,7 @@ interface ChatInputProps {
   notice?: string | null;
   // Session/workspace info for status line
   modelDisplayName?: string | null;
-  agentType?: 'claude' | 'codex' | 'gemini' | null;
+  agentType?: 'claude' | 'codex' | 'gemini' | 'opencode' | null;
   agentMode?: string | null;
   gitStats?: { additions: number; deletions: number } | null;
   branch?: string | null;
@@ -31,6 +31,9 @@ interface ChatInputProps {
   // Mode toggle
   onModeToggle?: () => void;
   canChangeMode?: boolean;
+  // Stop control
+  canStop?: boolean;
+  onStop?: () => void;
 }
 
 export function ChatInput({
@@ -58,6 +61,8 @@ export function ChatInput({
   canChangeModel = false,
   onModeToggle,
   canChangeMode = false,
+  canStop = false,
+  onStop,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -69,6 +74,7 @@ export function ChatInput({
   const effectiveSendDisabled = sendDisabled ?? disabled;
   const effectiveQueueDisabled = queueDisabled ?? disabled;
   const hasAttachments = attachments.length > 0;
+  const effectiveCanStop = canStop && !!onStop;
 
   // Responsive check for status bar - switch to compact mode when space is tight
   useEffect(() => {
@@ -271,24 +277,66 @@ export function ChatInput({
             <ListPlus className="h-5 w-5" />
           </button>
         )}
-        <button
-          onClick={handleSubmit}
-          disabled={effectiveSendDisabled || (!value.trim() && !hasAttachments)}
-          aria-label={effectiveSendDisabled ? 'Sending...' : 'Send message'}
-          className={cn(
-            'flex size-11 shrink-0 items-center justify-center rounded-lg transition-colors',
-            'disabled:cursor-not-allowed disabled:opacity-50',
-            (value.trim() || hasAttachments) && !effectiveSendDisabled
-              ? 'bg-accent text-white hover:bg-accent-hover'
-              : 'bg-surface-elevated text-text-muted'
-          )}
-        >
-          {effectiveSendDisabled ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            <Send className="h-5 w-5" />
-          )}
-        </button>
+        {effectiveCanStop ? (
+          <button
+            onClick={onStop}
+            disabled={!effectiveCanStop}
+            aria-label="Stop session"
+            title="Stop (Esc)"
+            className={cn(
+              'relative flex size-11 shrink-0 items-center justify-center rounded-full transition-colors',
+              'disabled:cursor-not-allowed disabled:opacity-50',
+              'bg-accent/10 text-accent hover:bg-accent/20',
+              'focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background',
+              'active:scale-95 active:transition-transform'
+            )}
+          >
+            {/* Spinner track (static background ring) */}
+            <span
+              className="pointer-events-none absolute inset-1 rounded-full border-2 border-accent/20"
+              aria-hidden="true"
+            />
+
+            {/* Spinner arc (rotating conic gradient) */}
+            <span
+              className="pointer-events-none absolute inset-1 rounded-full animate-spinner"
+              style={{
+                background: 'conic-gradient(from 0deg, transparent 0deg, transparent 270deg, var(--color-accent) 360deg)',
+                mask: 'radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))',
+                WebkitMask: 'radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))',
+              }}
+              aria-hidden="true"
+            />
+
+            {/* Icon background (solid circle) */}
+            <span
+              className="pointer-events-none absolute inset-2.5 rounded-full bg-surface-elevated"
+              aria-hidden="true"
+            />
+
+            {/* Stop icon */}
+            <Square className="relative h-4 w-4" />
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={effectiveSendDisabled || (!value.trim() && !hasAttachments)}
+            aria-label={effectiveSendDisabled ? 'Sending...' : 'Send message'}
+            className={cn(
+              'flex size-11 shrink-0 items-center justify-center rounded-lg transition-colors',
+              'disabled:cursor-not-allowed disabled:opacity-50',
+              (value.trim() || hasAttachments) && !effectiveSendDisabled
+                ? 'bg-accent text-white hover:bg-accent-hover'
+                : 'bg-surface-elevated text-text-muted'
+            )}
+          >
+            {effectiveSendDisabled ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <Send className="h-5 w-5" />
+            )}
+          </button>
+        )}
       </div>
       {attachments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -359,7 +407,9 @@ export function ChatInput({
                 ? 'Claude Code'
                 : agentType === 'codex'
                   ? 'Codex CLI'
-                  : 'Gemini CLI'}
+                  : agentType === 'opencode'
+                    ? 'OpenCode'
+                    : 'Gemini CLI'}
             </span>
           )}
           {!modelDisplayName && !agentType && !canChangeModel && (

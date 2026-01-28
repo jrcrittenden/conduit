@@ -29,9 +29,11 @@ use uuid::Uuid;
 
 use crate::agent::events::UserQuestion;
 use crate::agent::{
-    load_claude_history_with_debug, load_codex_history_with_debug, AgentEvent, AgentInput,
-    AgentMode, AgentRunner, AgentStartConfig, AgentType, ClaudeCodeRunner, CodexCliRunner,
-    GeminiCliRunner, HistoryDebugEntry, MessageDisplay, ModelRegistry, SessionId,
+    load_claude_history_with_debug, load_codex_history_with_debug,
+    load_opencode_history_for_dir_with_debug, load_opencode_history_with_debug, AgentEvent,
+    AgentInput, AgentMode, AgentRunner, AgentStartConfig, AgentType, ClaudeCodeRunner,
+    CodexCliRunner, GeminiCliRunner, HistoryDebugEntry, MessageDisplay, ModelRegistry,
+    OpencodeRunner, SessionId,
 };
 use crate::config::{parse_action, parse_key_notation, Config, KeyContext, COMMAND_NAMES};
 use crate::core::resolve_repo_workspace_settings;
@@ -258,6 +260,12 @@ impl App {
         self.core.gemini_runner()
     }
 
+    /// Get the OpenCode runner.
+    #[inline]
+    fn opencode_runner(&self) -> &Arc<OpencodeRunner> {
+        self.core.opencode_runner()
+    }
+
     /// Get the worktree manager.
     #[inline]
     fn worktree_manager(&self) -> &WorkspaceRepoManager {
@@ -427,6 +435,7 @@ impl App {
             session.id = tab.id;
             session.workspace_id = tab.workspace_id;
             session.model = tab.model;
+            session.model_invalid = tab.model_invalid;
             session.pr_number = tab.pr_number.map(|n| n as u32);
             session.fork_seed_id = tab.fork_seed_id;
             // Restore AI-generated session title
@@ -501,6 +510,39 @@ impl App {
                             }
                             .to_chat_message(),
                         );
+                    }
+                    AgentType::Opencode => {
+                        if let Ok((msgs, debug_entries, file_path)) =
+                            load_opencode_history_with_debug(session_id_str)
+                        {
+                            Self::populate_debug_from_history(
+                                &mut session.raw_events_view,
+                                &debug_entries,
+                                &file_path,
+                            );
+                            for msg in msgs {
+                                session.chat_view.push(msg);
+                            }
+                        }
+                    }
+                }
+            } else if tab.agent_type == AgentType::Opencode {
+                if let Some(working_dir) = session.working_dir.as_ref() {
+                    if let Ok((session_id_str, msgs, debug_entries, file_path)) =
+                        load_opencode_history_for_dir_with_debug(working_dir)
+                    {
+                        let session_id = SessionId::from_string(session_id_str.clone());
+                        session.resume_session_id = Some(session_id.clone());
+                        session.agent_session_id = Some(session_id);
+
+                        Self::populate_debug_from_history(
+                            &mut session.raw_events_view,
+                            &debug_entries,
+                            &file_path,
+                        );
+                        for msg in msgs {
+                            session.chat_view.push(msg);
+                        }
                     }
                 }
             }
@@ -783,6 +825,7 @@ impl App {
                     session.pr_number.map(|n| n as i32),
                 );
                 tab.id = session.id;
+                tab.model_invalid = session.model_invalid;
                 // Preserve agent mode for session restoration
                 tab.agent_mode = Some(session.agent_mode.as_str().to_string());
                 // Preserve pending user message for interrupted sessions
@@ -1939,6 +1982,7 @@ impl App {
                         AgentType::Claude => self.claude_runner().clone(),
                         AgentType::Codex => self.codex_runner().clone(),
                         AgentType::Gemini => self.gemini_runner().clone(),
+                        AgentType::Opencode => self.opencode_runner().clone(),
                     };
 
                     let event_tx = self.event_tx.clone();
@@ -3231,7 +3275,8 @@ impl App {
         let has_saved_session = saved_tab.is_some();
         let no_agents_available = !self.tools().is_available(crate::util::Tool::Claude)
             && !self.tools().is_available(crate::util::Tool::Codex)
-            && !self.tools().is_available(crate::util::Tool::Gemini);
+            && !self.tools().is_available(crate::util::Tool::Gemini)
+            && !self.tools().is_available(crate::util::Tool::Opencode);
         let tab_agent_type = saved_tab
             .as_ref()
             .map(|saved| saved.agent_type)
@@ -3246,6 +3291,8 @@ impl App {
                     AgentType::Codex
                 } else if self.tools().is_available(crate::util::Tool::Gemini) {
                     AgentType::Gemini
+                } else if self.tools().is_available(crate::util::Tool::Opencode) {
+                    AgentType::Opencode
                 } else {
                     AgentType::Claude
                 }
@@ -3270,7 +3317,7 @@ impl App {
                         required_tool.display_name()
                     )
                 } else if no_agents_available {
-                    "An agent tool (Claude Code, Codex CLI, or Gemini CLI) is required to open this workspace."
+                    "An agent tool (Claude Code, Codex CLI, Gemini CLI, or OpenCode) is required to open this workspace."
                         .to_string()
                 } else {
                     format!(
@@ -3373,6 +3420,39 @@ impl App {
                                 .to_chat_message(),
                             );
                         }
+                        AgentType::Opencode => {
+                            if let Ok((msgs, debug_entries, file_path)) =
+                                load_opencode_history_with_debug(session_id_str)
+                            {
+                                Self::populate_debug_from_history(
+                                    &mut session.raw_events_view,
+                                    &debug_entries,
+                                    &file_path,
+                                );
+                                for msg in msgs {
+                                    session.chat_view.push(msg);
+                                }
+                            }
+                        }
+                    }
+                } else if saved.agent_type == AgentType::Opencode {
+                    if let Some(working_dir) = session.working_dir.as_ref() {
+                        if let Ok((session_id_str, msgs, debug_entries, file_path)) =
+                            load_opencode_history_for_dir_with_debug(working_dir)
+                        {
+                            let session_id = SessionId::from_string(session_id_str.clone());
+                            session.resume_session_id = Some(session_id.clone());
+                            session.agent_session_id = Some(session_id);
+
+                            Self::populate_debug_from_history(
+                                &mut session.raw_events_view,
+                                &debug_entries,
+                                &file_path,
+                            );
+                            for msg in msgs {
+                                session.chat_view.push(msg);
+                            }
+                        }
                     }
                 }
 
@@ -3407,6 +3487,7 @@ impl App {
                 }
             } else {
                 session.model = Some(default_model.clone());
+                session.model_invalid = false;
                 session.init_context_for_model();
             }
 
@@ -3445,6 +3526,7 @@ impl App {
             AgentType::Claude => crate::util::Tool::Claude,
             AgentType::Codex => crate::util::Tool::Codex,
             AgentType::Gemini => crate::util::Tool::Gemini,
+            AgentType::Opencode => crate::util::Tool::Opencode,
         }
     }
 
@@ -4137,6 +4219,7 @@ impl App {
         let model_id = self.config().default_model_for(agent_type);
         if let Some(session) = self.state.tab_manager.active_session_mut() {
             session.model = Some(model_id);
+            session.model_invalid = false;
             session.init_context_for_model();
             session.update_status();
         }
@@ -4199,6 +4282,7 @@ impl App {
         new_session.workspace_name = workspace_name;
         new_session.pr_number = pr_number;
         new_session.model = Some(self.config().default_model_for(agent_type));
+        new_session.model_invalid = false;
         new_session.init_context_for_model();
         new_session.update_status();
 
@@ -4270,6 +4354,20 @@ impl App {
                     }
                     .to_chat_message(),
                 );
+            }
+            AgentType::Opencode => {
+                if let Ok((msgs, debug_entries, file_path)) =
+                    load_opencode_history_with_debug(&session_id_str)
+                {
+                    Self::populate_debug_from_history(
+                        &mut session.raw_events_view,
+                        &debug_entries,
+                        &file_path,
+                    );
+                    for msg in msgs {
+                        session.chat_view.push(msg);
+                    }
+                }
             }
         }
 
@@ -4718,11 +4816,28 @@ impl App {
                     }
                 }
             } else if relative_x >= model_start && relative_x < model_end && !shell_mode {
-                // Click on model/agent area - open model selector
-                self.state.close_overlays();
-                let defaults = self.model_selector_defaults();
-                self.state.model_selector_state.show(model, defaults);
-                self.state.input_mode = InputMode::SelectingModel;
+                let should_block_model_switch = self
+                    .state
+                    .tab_manager
+                    .active_session()
+                    .is_some_and(|session| {
+                        session.is_processing
+                            || session.tools_in_flight > 0
+                            || session.pending_user_message.is_some()
+                            || session.inline_prompt.is_some()
+                    });
+                if should_block_model_switch {
+                    self.state.set_timed_footer_message(
+                        "Finish the current response before switching models".to_string(),
+                        Duration::from_secs(3),
+                    );
+                } else {
+                    // Click on model/agent area - open model selector
+                    self.state.close_overlays();
+                    let defaults = self.model_selector_defaults();
+                    self.state.model_selector_state.show(model, defaults);
+                    self.state.input_mode = InputMode::SelectingModel;
+                }
             }
         } else {
             // No mode area, just model/agent
@@ -4730,10 +4845,27 @@ impl App {
             let model_end = leading + model_width + 1 + agent_width + 1; // 1 char after agent
 
             if relative_x >= model_start && relative_x < model_end && !shell_mode {
-                self.state.close_overlays();
-                let defaults = self.model_selector_defaults();
-                self.state.model_selector_state.show(model, defaults);
-                self.state.input_mode = InputMode::SelectingModel;
+                let should_block_model_switch = self
+                    .state
+                    .tab_manager
+                    .active_session()
+                    .is_some_and(|session| {
+                        session.is_processing
+                            || session.tools_in_flight > 0
+                            || session.pending_user_message.is_some()
+                            || session.inline_prompt.is_some()
+                    });
+                if should_block_model_switch {
+                    self.state.set_timed_footer_message(
+                        "Finish the current response before switching models".to_string(),
+                        Duration::from_secs(3),
+                    );
+                } else {
+                    self.state.close_overlays();
+                    let defaults = self.model_selector_defaults();
+                    self.state.model_selector_state.show(model, defaults);
+                    self.state.input_mode = InputMode::SelectingModel;
+                }
             }
         }
 
@@ -5370,6 +5502,48 @@ impl App {
                     );
                 }
             }
+            AppEvent::OpencodeQuestionResponseCompleted { session_id, result } => {
+                let is_active_tab = self
+                    .state
+                    .tab_manager
+                    .active_session()
+                    .map(|active| active.id == session_id)
+                    .unwrap_or(false);
+                let Some(session) = self.state.tab_manager.session_by_id_mut(session_id) else {
+                    tracing::debug!(
+                        %session_id,
+                        "OpencodeQuestionResponseCompleted for unknown session; ignoring"
+                    );
+                    return Ok(effects);
+                };
+
+                let mut should_stop_footer_spinner = false;
+                session.tools_in_flight = match session.tools_in_flight.checked_sub(1) {
+                    Some(value) => value,
+                    None => {
+                        tracing::warn!("tools_in_flight underflow on OpencodeQuestionResponse");
+                        0
+                    }
+                };
+                session.set_processing_state(ProcessingState::Thinking);
+
+                if session.tools_in_flight == 0 {
+                    session.stop_processing();
+                    should_stop_footer_spinner = is_active_tab;
+                }
+
+                if let Err(err) = result {
+                    session.chat_view.push(
+                        MessageDisplay::Error {
+                            content: format!("OpenCode question response failed: {}", err),
+                        }
+                        .to_chat_message(),
+                    );
+                }
+                if should_stop_footer_spinner {
+                    self.state.stop_footer_spinner();
+                }
+            }
             AppEvent::TitleGenerated { session_id, result } => {
                 // Single lookup - session must exist to proceed
                 let Some(session) = self.state.tab_manager.session_by_id_mut(session_id) else {
@@ -5574,6 +5748,7 @@ impl App {
         let is_content_event = matches!(
             &event,
             AgentEvent::AssistantMessage(_)
+                | AgentEvent::AssistantReasoning(_)
                 | AgentEvent::ToolStarted(_)
                 | AgentEvent::ToolCompleted(_)
                 | AgentEvent::CommandOutput(_)
@@ -5585,6 +5760,8 @@ impl App {
         let mut should_stop_footer_spinner = false;
         let mut should_start_footer_spinner = false;
         let mut pending_sidebar_pr_update: Option<(Uuid, PrStatus)> = None;
+        let mut pending_model_invalidation = false;
+        let mut should_drain_queue = false;
 
         {
             let Some(session) = self.state.tab_manager.session_mut(tab_index) else {
@@ -5645,6 +5822,9 @@ impl App {
                     if session.inline_prompt.is_none() {
                         session.agent_input_tx = None;
                     }
+                    if session.inline_prompt.is_none() && !session.queued_messages.is_empty() {
+                        should_drain_queue = true;
+                    }
                     // Safety net: avoid suppressing a future real assistant message
                     // (in case the final assistant message event never arrived)
                     session.suppress_next_assistant_reply = false;
@@ -5683,6 +5863,13 @@ impl App {
                         content: failed.error,
                     };
                     session.chat_view.push(display.to_chat_message());
+                }
+                AgentEvent::AssistantReasoning(reasoning) => {
+                    let token_estimate = (reasoning.text.len() / 4).max(1);
+                    session.add_streaming_tokens(token_estimate);
+                    session
+                        .chat_view
+                        .stream_append_role(MessageRole::Reasoning, &reasoning.text);
                 }
                 AgentEvent::AssistantMessage(msg) => {
                     if session.suppress_next_assistant_reply {
@@ -5929,6 +6116,12 @@ impl App {
                         content: err.message,
                     };
                     session.chat_view.push(display.to_chat_message());
+                    if err.code.as_deref() == Some("model_not_found") {
+                        session.model = None;
+                        session.model_invalid = true;
+                        session.update_status();
+                        pending_model_invalidation = true;
+                    }
                     if err.is_fatal {
                         session.stop_processing();
                         session.chat_view.finalize_streaming();
@@ -5989,6 +6182,38 @@ impl App {
             self.state
                 .sidebar_data
                 .update_workspace_pr_status(workspace_id, Some(status));
+        }
+        if pending_model_invalidation {
+            if let Some(session_tab_dao) = self.session_tab_dao_clone() {
+                if let Ok(Some(mut tab)) = session_tab_dao.get_by_id(session_id) {
+                    tab.model = None;
+                    tab.model_invalid = true;
+                    if let Err(err) = session_tab_dao.update(&tab) {
+                        tracing::warn!(
+                            error = %err,
+                            session_id = %session_id,
+                            "Failed to persist model invalidation"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "Failed to load session for model invalidation"
+                    );
+                }
+            }
+        }
+
+        if should_drain_queue {
+            match self.drain_queue_for_tab(tab_index) {
+                Ok(effects) if !effects.is_empty() => {
+                    self.run_effects(effects).await?;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "Failed to drain queued messages");
+                }
+            }
         }
 
         // Stop footer spinner after session borrow is released
@@ -6088,6 +6313,88 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    fn send_opencode_question_response(
+        &mut self,
+        request_id: &str,
+        answers: Option<Vec<Vec<String>>>,
+    ) -> Vec<Effect> {
+        let (input_tx, session_id, should_start_footer_spinner, should_stop_footer_spinner, abort) = {
+            let Some(session) = self.state.tab_manager.active_session_mut() else {
+                return Vec::new();
+            };
+            if session.agent_type != AgentType::Opencode {
+                return Vec::new();
+            }
+            let pending_tools = session.tools_in_flight;
+            session.start_processing();
+            session.tools_in_flight = pending_tools.saturating_add(1);
+            session.set_processing_state(ProcessingState::Thinking);
+            let mut should_start_footer_spinner = true;
+            let mut should_stop_footer_spinner = false;
+            let mut abort = false;
+
+            if session.agent_input_tx.is_none() {
+                session.chat_view.push(
+                    MessageDisplay::Error {
+                        content: "OpenCode question response failed: session not ready."
+                            .to_string(),
+                    }
+                    .to_chat_message(),
+                );
+                session.tools_in_flight = session.tools_in_flight.saturating_sub(1);
+                session.stop_processing();
+                session.set_processing_state(ProcessingState::Thinking);
+                should_start_footer_spinner = false;
+                should_stop_footer_spinner = true;
+                abort = true;
+            }
+
+            (
+                session.agent_input_tx.clone(),
+                Some(session.id),
+                should_start_footer_spinner,
+                should_stop_footer_spinner,
+                abort,
+            )
+        };
+
+        if should_start_footer_spinner {
+            self.state.start_footer_spinner(None);
+        }
+        if should_stop_footer_spinner {
+            self.state.stop_footer_spinner();
+        }
+        if abort {
+            return Vec::new();
+        }
+
+        let Some(input_tx) = input_tx else {
+            return Vec::new();
+        };
+        let session_id = match session_id {
+            Some(session_id) => session_id,
+            None => return Vec::new(),
+        };
+
+        let request_id = request_id.to_string();
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            let result = input_tx
+                .send(AgentInput::OpencodeQuestion {
+                    request_id,
+                    answers,
+                })
+                .await
+                .map_err(|err| err.to_string());
+            let _ = send_app_event(
+                &event_tx,
+                AppEvent::OpencodeQuestionResponseCompleted { session_id, result },
+                "opencode_question_response",
+            );
+        });
+        Vec::new()
     }
 
     fn send_control_response(
@@ -6397,6 +6704,29 @@ impl App {
         (content, tool_use_result)
     }
 
+    fn build_opencode_question_answers(
+        prompt: &InlinePromptState,
+        answers: &std::collections::HashMap<String, PromptAnswer>,
+    ) -> Vec<Vec<String>> {
+        let questions = match &prompt.prompt_type {
+            InlinePromptType::AskUserQuestion { questions } => questions,
+            _ => return Vec::new(),
+        };
+
+        questions
+            .iter()
+            .map(|question| {
+                answers
+                    .get(&question.question)
+                    .map(|answer| match answer {
+                        PromptAnswer::Single(text) => vec![text.clone()],
+                        PromptAnswer::Multiple(items) => items.clone(),
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     fn build_exit_plan_tool_result(
         prompt: &InlinePromptState,
         approved: bool,
@@ -6464,6 +6794,7 @@ impl App {
             agent_type,
             agent_mode,
             model,
+            model_invalid,
             session_id_to_use,
             working_dir,
             is_new_session_for_title,
@@ -6485,6 +6816,7 @@ impl App {
             let agent_type = session.agent_type;
             let agent_mode = session.agent_mode;
             let model = session.model.clone();
+            let model_invalid = session.model_invalid;
             // Use agent_session_id if available (set by agent after first prompt)
             // Fall back to resume_session_id (clone, don't take - we consume it later)
             let session_id_to_use = session
@@ -6499,6 +6831,7 @@ impl App {
                 agent_type,
                 agent_mode,
                 model,
+                model_invalid,
                 session_id_to_use,
                 working_dir,
                 !has_visible_user_message,
@@ -6519,6 +6852,17 @@ impl App {
                         "Working directory does not exist: {}",
                         working_dir.display()
                     ),
+                };
+                session.chat_view.push(display.to_chat_message());
+            }
+            return Ok(effects);
+        }
+
+        if model_invalid || model.is_none() {
+            if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
+                session.model_invalid = true;
+                let display = MessageDisplay::Error {
+                    content: "Select a model to continue.".to_string(),
                 };
                 session.chat_view.push(display.to_chat_message());
             }
@@ -6548,13 +6892,22 @@ impl App {
         }
 
         // Start agent
-        if agent_type == AgentType::Gemini && !images.is_empty() {
+        if matches!(agent_type, AgentType::Gemini | AgentType::Opencode) && !images.is_empty() {
             if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                 session.stop_processing();
                 session.pending_user_message = None;
                 let display = MessageDisplay::Error {
-                    content: "Image attachments aren't supported for Gemini in Conduit yet."
-                        .to_string(),
+                    content: match agent_type {
+                        AgentType::Gemini => {
+                            "Image attachments aren't supported for Gemini in Conduit yet."
+                                .to_string()
+                        }
+                        AgentType::Opencode => {
+                            "Image attachments aren't supported for OpenCode in Conduit yet."
+                                .to_string()
+                        }
+                        _ => "Image attachments aren't supported for this agent.".to_string(),
+                    },
                 };
                 session.chat_view.push(display.to_chat_message());
             }
@@ -6567,7 +6920,7 @@ impl App {
         // Strip placeholders for agents that send images out-of-band.
         if matches!(
             agent_type,
-            AgentType::Codex | AgentType::Claude | AgentType::Gemini
+            AgentType::Codex | AgentType::Claude | AgentType::Gemini | AgentType::Opencode
         ) {
             agent_prompt = Self::strip_image_placeholders(agent_prompt, &image_placeholders);
         }
@@ -6662,7 +7015,7 @@ impl App {
             }
         }
 
-        if agent_type == AgentType::Codex {
+        if matches!(agent_type, AgentType::Codex | AgentType::Opencode) {
             let is_active_tab = self.state.tab_manager.active_index() == tab_index;
             if let Some(session) = self.state.tab_manager.session_mut(tab_index) {
                 if let Some(ref input_tx) = session.agent_input_tx {
@@ -6673,9 +7026,10 @@ impl App {
                         let input = AgentInput::CodexPrompt {
                             text: prompt_to_send,
                             images: images_to_send,
+                            model: model.clone(),
                         };
                         if let Err(err) = input_tx.send(input).await {
-                            tracing::warn!("Failed to send codex prompt: {}", err);
+                            tracing::warn!("Failed to send prompt: {}", err);
                         }
                     });
 
@@ -7394,6 +7748,7 @@ impl App {
         session.project_name = project_name;
         session.workspace_name = Some(workspace.name.clone());
         session.model = pending.model.clone();
+        session.model_invalid = false;
         session.agent_mode = pending.agent_mode;
         session.fork_seed_id = Some(fork_seed_id);
         session.suppress_next_assistant_reply = true;
@@ -9179,6 +9534,7 @@ impl App {
                 "chat_messages": messages,
                 "chat_message_count": session.chat_view.len(),
                 "streaming_buffer": session.chat_view.streaming_buffer(),
+                "streaming_reasoning": session.chat_view.streaming_message_for(MessageRole::Reasoning),
                 "raw_events": raw_events,
                 "raw_event_count": session.raw_events_view.len(),
                 "input_box_content": session.input_box.input(),
@@ -9402,7 +9758,7 @@ async fn generate_title_and_branch_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::events::AssistantMessageEvent;
+    use crate::agent::events::{AssistantMessageEvent, ReasoningEvent};
     use crate::agent::AgentType;
     use crate::config::Config;
     use crate::data::{QueuedMessage, QueuedMessageMode};
@@ -9835,6 +10191,58 @@ mod tests {
                 .expect("session C missing");
             assert!(session.chat_view.streaming_buffer().is_none());
             assert!(session.chat_view.messages().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_event_routes_reasoning_by_session_id_after_tab_close() {
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let session_c = Uuid::new_v4();
+
+        let mut app = build_test_app_with_sessions(&[session_a, session_b, session_c]);
+
+        // Close the first tab so indices shift: B -> 0, C -> 1
+        assert!(app.state.tab_manager.close_tab(0));
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_b),
+            Some(0)
+        );
+        assert_eq!(
+            app.state.tab_manager.session_index_by_id(session_c),
+            Some(1)
+        );
+
+        let event = AgentEvent::AssistantReasoning(ReasoningEvent {
+            text: "thinking...".to_string(),
+        });
+
+        app.handle_agent_event(session_b, event).await.unwrap();
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_b)
+                .expect("session B missing");
+            assert_eq!(
+                session
+                    .chat_view
+                    .streaming_message_for(MessageRole::Reasoning),
+                Some("thinking...")
+            );
+        }
+
+        {
+            let session = app
+                .state
+                .tab_manager
+                .session_by_id_mut(session_c)
+                .expect("session C missing");
+            assert!(session
+                .chat_view
+                .streaming_message_for(MessageRole::Reasoning)
+                .is_none());
         }
     }
 

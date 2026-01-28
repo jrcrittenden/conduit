@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } fr
 import { HistoryMessage } from './HistoryMessage';
 import { ChatMessage } from './ChatMessage';
 import { ToolRunMessage } from './ToolRunMessage';
+import { SessionStatusIndicator } from './SessionStatusIndicator';
 import { ChatInput } from './ChatInput';
 import { QueuePanel } from './QueuePanel';
 import { InlinePrompt, type InlinePromptData, type InlinePromptResponse } from './InlinePrompt';
@@ -33,7 +34,7 @@ import type {
   QueuedMessage,
   ImageAttachment,
 } from '../types';
-import { MessageSquarePlus, Loader2, Bug, GitBranch, GitPullRequest, Square } from 'lucide-react';
+import { MessageSquarePlus, Loader2, Bug, GitBranch, GitPullRequest } from 'lucide-react';
 import { cn } from '../lib/cn';
 
 interface ChatViewProps {
@@ -45,6 +46,9 @@ interface ChatViewProps {
 }
 
 const INLINE_PROMPT_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const PROCESSING_WORDS = ['Thinking', 'Working', 'Whirring', 'Computing', 'Processing', 'Pondering', 'Mulling', 'Synthesizing', 'Calculating', 'Planning', 'Crafting', 'Noodling', 'Ruminating', 'Scheming', 'Tinkering', 'Brewing', 'Cooking', 'Conjuring', 'Hustling', 'Wandering'];
+const pickProcessingWord = () =>
+  PROCESSING_WORDS[Math.floor(Math.random() * PROCESSING_WORDS.length)];
 const ESC_DOUBLE_PRESS_TIMEOUT_MS = 500;
 const ESC_INTERRUPT_MESSAGE = 'Press Esc again to interrupt';
 
@@ -185,10 +189,12 @@ export function ChatView({
   onNotify,
 }: ChatViewProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const pendingScrollAdjustment = useRef<{ previousHeight: number; previousTop: number } | null>(null);
   const isPrependingHistory = useRef(false);
   const isPinnedToBottom = useRef(true);
+  const forceScrollToBottom = useRef(false);
   const scrollStateBySession = useRef<Record<string, { top: number; pinned: boolean }>>({});
   const scrollSessionId = useRef<string | null>(null);
   const { sendPrompt, respondToControl, stopSession } = useWebSocket();
@@ -208,10 +214,17 @@ export function ChatView({
   });
   const { data: inputHistory } = useSessionHistory(session?.id ?? null);
   const { data: queueData } = useSessionQueue(session?.id ?? null);
+  const queuedMessages = queueData?.messages ?? [];
+  const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const addQueueMutation = useAddQueueMessage();
   const updateQueueMutation = useUpdateQueueMessage();
   const deleteQueueMutation = useDeleteQueueMessage();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingWord, setProcessingWord] = useState(() => pickProcessingWord());
+  const [processingStart, setProcessingStart] = useState<number | null>(null);
+  const [processingElapsed, setProcessingElapsed] = useState(0);
+  const wasProcessingRef = useRef(false);
+  const prevSessionIdRef = useRef<string | null>(session?.id ?? null);
   const [isAwaitingResponse, setIsAwaitingResponse] = useState(false);
   const [hasInitiallyScrolled, setHasInitiallyScrolled] = useState(false);
   const [inlinePrompt, setInlinePrompt] = useState<InlinePromptData | null>(null);
@@ -224,6 +237,7 @@ export function ChatView({
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ImageDraft[]>>(
     {}
   );
+  const [wsEventCutoff, setWsEventCutoff] = useState(0);
   const lastHistoryUserCount = useRef<Record<string, number>>({});
   const lastHistoryEventCount = useRef<Record<string, number>>({});
   const [historyRawEvents, setHistoryRawEvents] = useState<AgentEvent[]>([]);
@@ -231,8 +245,37 @@ export function ChatView({
   const lastEscPressRef = useRef<number | null>(null);
   const escTimeoutRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    sessionIdRef.current = session?.id ?? null;
+  }, [session?.id]);
+
   const historyLimit = 200;
+  const historyLengthRef = useRef(historyEvents.length);
+  historyLengthRef.current = historyEvents.length;
   const hasMoreHistory = historyOffset > 0;
+  const refreshHistoryTail = useCallback(async () => {
+    const currentSessionId = session?.id ?? null;
+    if (!currentSessionId) return;
+    if (historyLengthRef.current > historyLimit && !isPinnedToBottom.current) return;
+    try {
+      const response = await getSessionEventsPage(currentSessionId, {
+        tail: true,
+        limit: historyLimit,
+      });
+      if (sessionIdRef.current !== currentSessionId) return;
+      setHistoryEvents(response.events);
+      setHistoryOffset(response.offset);
+      setHistoryRawEvents(
+        buildHistoryRawEvents(
+          response.debug_entries,
+          response.debug_file,
+          response.events.length
+        )
+      );
+    } catch {
+      console.debug('Failed to refresh history tail');
+    }
+  }, [session?.id, historyLimit]);
 
   useEffect(() => {
     let isActive = true;
@@ -279,7 +322,8 @@ export function ChatView({
   }, [session?.id, historyLimit]);
 
   const loadMoreHistory = useCallback(async () => {
-    if (!session?.id || isLoadingMore || historyOffset === 0) return;
+    const currentSessionId = session?.id ?? null;
+    if (!currentSessionId || isLoadingMore || historyOffset === 0) return;
 
     const nextOffset = Math.max(0, historyOffset - historyLimit);
     const container = scrollContainerRef.current;
@@ -293,10 +337,11 @@ export function ChatView({
     setIsLoadingMore(true);
 
     try {
-      const response = await getSessionEventsPage(session.id, {
+      const response = await getSessionEventsPage(currentSessionId, {
         offset: nextOffset,
         limit: historyLimit,
       });
+      if (sessionIdRef.current !== currentSessionId) return;
       setHistoryEvents((prev) => [...response.events, ...prev]);
       setHistoryOffset(response.offset);
     } catch (error) {
@@ -342,12 +387,26 @@ export function ChatView({
     return () => container.removeEventListener('scroll', updatePinnedState);
   }, [session?.id]);
 
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = messagesContainerRef.current;
+    if (!container || !content) return;
+
+    const observer = new ResizeObserver(() => {
+      if (!hasInitiallyScrolled) return;
+      if (isPrependingHistory.current) return;
+      if (!isPinnedToBottom.current) return;
+      container.scrollTop = container.scrollHeight;
+    });
+
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [hasInitiallyScrolled]);
+
   // Track processing state based on websocket events
   useEffect(() => {
-    if (wsEvents.length === 0) {
-      setIsProcessing(isAwaitingResponse);
-      return;
-    }
+    if (wsEvents.length === 0) return;
 
     const lastEvent = wsEvents[wsEvents.length - 1];
     if (lastEvent.type === 'TurnStarted') {
@@ -362,7 +421,12 @@ export function ChatView({
       setIsProcessing(false);
       setIsAwaitingResponse(false);
     }
-  }, [wsEvents, isAwaitingResponse]);
+  }, [wsEvents]);
+
+  useEffect(() => {
+    if (wsEvents.length > 0) return;
+    setIsProcessing(isAwaitingResponse);
+  }, [wsEvents.length, isAwaitingResponse]);
 
   useEffect(() => {
     setInlinePrompt(null);
@@ -385,9 +449,49 @@ export function ChatView({
     lastEscPressRef.current = null;
     setEscHint(null);
   }, []);
+  const stopSessionAndReset = useCallback(() => {
+    if (!session?.id) return;
+    stopSession(session.id);
+    setIsProcessing(false);
+    setIsAwaitingResponse(false);
+    setProcessingStart(null);
+    setProcessingElapsed(0);
+    wasProcessingRef.current = false;
+    clearEscHint();
+  }, [session?.id, stopSession, clearEscHint]);
+
 
   useEffect(() => () => clearEscHint(), [clearEscHint]);
 
+
+  useEffect(() => {
+    const sessionId = session?.id ?? null;
+    if (prevSessionIdRef.current !== sessionId) {
+      setProcessingStart(null);
+      setProcessingElapsed(0);
+      wasProcessingRef.current = false;
+      prevSessionIdRef.current = sessionId;
+    }
+
+    const nowProcessing = isProcessing || isAwaitingResponse;
+    if (nowProcessing && !wasProcessingRef.current) {
+      setProcessingWord(pickProcessingWord());
+      setProcessingStart(Date.now());
+      setProcessingElapsed(0);
+    } else if (!nowProcessing && wasProcessingRef.current) {
+      setProcessingStart(null);
+      setProcessingElapsed(0);
+    }
+    wasProcessingRef.current = nowProcessing;
+  }, [isProcessing, isAwaitingResponse, session?.id]);
+
+  useEffect(() => {
+    if (processingStart === null) return;
+    const interval = window.setInterval(() => {
+      setProcessingElapsed(Math.floor((Date.now() - processingStart) / 1000));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [processingStart]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -418,8 +522,7 @@ export function ChatView({
         const now = Date.now();
         const lastPress = lastEscPressRef.current;
         if (lastPress && now - lastPress < ESC_DOUBLE_PRESS_TIMEOUT_MS) {
-          stopSession(session.id);
-          clearEscHint();
+          stopSessionAndReset();
           return;
         }
         lastEscPressRef.current = now;
@@ -435,7 +538,7 @@ export function ChatView({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showRawEvents, session?.id, isProcessing, isAwaitingResponse, stopSession, clearEscHint]);
+  }, [showRawEvents, session?.id, isProcessing, isAwaitingResponse, stopSessionAndReset, clearEscHint]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -463,6 +566,7 @@ export function ChatView({
   useEffect(() => {
     setHasInitiallyScrolled(false);
     scrollSessionId.current = null;
+    setWsEventCutoff(0);
   }, [session?.id]);
 
   useEffect(() => {
@@ -509,6 +613,21 @@ export function ChatView({
     }
   }, [historyEvents, session, isProcessing, isAwaitingResponse]);
 
+  useEffect(() => {
+    if (!session || session.agent_type !== 'opencode') return;
+    if (wsEvents.length <= wsEventCutoff) return;
+    const lastEvent = wsEvents[wsEvents.length - 1];
+    if (lastEvent.type !== 'TurnCompleted') return;
+    let isActive = true;
+    refreshHistoryTail().then(() => {
+      if (!isActive) return;
+      setWsEventCutoff(wsEvents.length);
+    });
+    return () => {
+      isActive = false;
+    };
+  }, [refreshHistoryTail, session, wsEvents, wsEventCutoff]);
+
   const draftValue = session ? drafts[session.id] ?? '' : '';
   const optimisticUserMessages = session ? optimisticMessages[session.id] ?? [] : [];
 
@@ -538,11 +657,24 @@ export function ChatView({
       return;
     }
 
-    if (!hasInitiallyScrolled || !isPinnedToBottom.current) return;
+    if (!hasInitiallyScrolled) return;
 
-    const behavior = isProcessing ? 'auto' : 'smooth';
+    const distanceFromBottom = container.scrollHeight - (container.scrollTop + container.clientHeight);
+    const shouldStick = forceScrollToBottom.current || distanceFromBottom < 48 || isPinnedToBottom.current;
+    if (!shouldStick) return;
+
+    const behavior = (isProcessing || isAwaitingResponse) ? 'auto' : 'smooth';
     container.scrollTo({ top: container.scrollHeight, behavior });
-  }, [wsEvents, historyEvents, optimisticUserMessages.length, hasInitiallyScrolled, isProcessing]);
+    isPinnedToBottom.current = true;
+    forceScrollToBottom.current = false;
+  }, [
+    wsEvents,
+    historyEvents,
+    optimisticUserMessages.length,
+    hasInitiallyScrolled,
+    isProcessing,
+    isAwaitingResponse,
+  ]);
 
   useEffect(() => {
     if (!session || wsEvents.length === 0) return;
@@ -604,6 +736,11 @@ export function ChatView({
 
   const handleSend = (message: string) => {
     if (!session || !workspace) return;
+    if (session.model_invalid || !session.model) {
+      onNotify?.('Select a model to continue.', 'error');
+      setShowModelSelector(true);
+      return;
+    }
     void sendWithAttachments(message);
   };
 
@@ -690,6 +827,7 @@ export function ChatView({
       }));
     }
 
+    forceScrollToBottom.current = true;
     setIsAwaitingResponse(true);
     sendPrompt(session.id, message, workspace.path, session.model ?? undefined, false, images);
     setDrafts((prev) => ({ ...prev, [session.id]: '' }));
@@ -715,40 +853,87 @@ export function ChatView({
     );
   };
 
-  const handleSendQueued = async (queued: QueuedMessage) => {
-    if (!session || !workspace) return;
-    setOptimisticMessages((prev) => ({
-      ...prev,
-      [session.id]: [...(prev[session.id] ?? []), queued.text],
-    }));
-    setIsAwaitingResponse(true);
-    let queuedImagePayload: ImageAttachment[] = [];
-    if (queued.images.length > 0) {
-      try {
-        const payloads = await Promise.all(
-          queued.images.map(async (image) => {
-            const response = await getFileContent(workspace.id, image.path);
-            if (!response.exists) return null;
-            return { data: response.content, media_type: response.media_type };
-          })
-        );
-        queuedImagePayload = payloads.filter(
-          (payload): payload is ImageAttachment => Boolean(payload)
-        );
-      } catch (error) {
-        console.error('Failed to load queued images', error);
+  const handleSendQueued = useCallback(
+    async (queued: QueuedMessage) => {
+      if (!session || !workspace) return;
+      if (session.model_invalid || !session.model) {
+        onNotify?.('Select a model to continue.', 'error');
+        setShowModelSelector(true);
+        return;
       }
+      if (queued.text.trim().length > 0) {
+        setOptimisticMessages((prev) => ({
+          ...prev,
+          [session.id]: [...(prev[session.id] ?? []), queued.text],
+        }));
+      }
+      forceScrollToBottom.current = true;
+      setIsAwaitingResponse(true);
+      let queuedImagePayload: ImageAttachment[] = [];
+      if (queued.images.length > 0) {
+        try {
+          const payloads = await Promise.all(
+            queued.images.map(async (image) => {
+              const response = await getFileContent(workspace.id, image.path);
+              if (!response.exists) return null;
+              return { data: response.content, media_type: response.media_type };
+            })
+          );
+          queuedImagePayload = payloads.filter(
+            (payload): payload is ImageAttachment => Boolean(payload)
+          );
+        } catch (error) {
+          console.error('Failed to load queued images', error);
+        }
+      }
+      sendPrompt(
+        session.id,
+        queued.text,
+        workspace.path,
+        session.model ?? undefined,
+        undefined,
+        queuedImagePayload
+      );
+      deleteQueueMutation.mutate(
+        { id: session.id, messageId: queued.id },
+        {
+          onSettled: () => {
+            if (autoQueueInFlightRef.current === queued.id) {
+              autoQueueInFlightRef.current = null;
+            }
+          },
+        }
+      );
+    },
+    [session, workspace, onNotify, deleteQueueMutation, sendPrompt]
+  );
+
+  const autoQueueInFlightRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    autoQueueInFlightRef.current = null;
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (!session || !workspace) return;
+    if (isProcessing || isAwaitingResponse) return;
+    if (queuedMessages.length === 0) {
+      autoQueueInFlightRef.current = null;
+      return;
     }
-    sendPrompt(
-      session.id,
-      queued.text,
-      workspace.path,
-      session.model ?? undefined,
-      undefined,
-      queuedImagePayload
-    );
-    deleteQueueMutation.mutate({ id: session.id, messageId: queued.id });
-  };
+    if (session.model_invalid || !session.model) return;
+    const nextQueued = queuedMessages[0];
+    if (autoQueueInFlightRef.current === nextQueued.id) return;
+    autoQueueInFlightRef.current = nextQueued.id;
+    void handleSendQueued(nextQueued);
+  }, [
+    isProcessing,
+    isAwaitingResponse,
+    queuedMessages,
+    session,
+    workspace,
+    handleSendQueued,
+  ]);
 
   const handleRemoveQueued = (messageId: string) => {
     if (!session) return;
@@ -820,9 +1005,16 @@ export function ChatView({
 
   type RenderableEvent = typeof wsEvents[number] | ToolRunEvent;
 
+  const visibleWsEvents = useMemo(() => {
+    if (session?.agent_type !== 'opencode' || wsEventCutoff === 0) {
+      return wsEvents;
+    }
+    return wsEvents.filter((_, index) => index >= wsEventCutoff);
+  }, [session?.agent_type, wsEventCutoff, wsEvents]);
+
   const renderableWsEvents = useMemo(() => {
     const toolIdToName = new Map<string, string>();
-    wsEvents.forEach((event) => {
+    visibleWsEvents.forEach((event) => {
       if (event.type === 'ToolStarted') {
         toolIdToName.set(event.tool_id, event.tool_name);
       }
@@ -845,10 +1037,10 @@ export function ChatView({
         return true;
       }
       if (event.type === 'ToolStarted' && event.tool_name === 'Bash') {
-        return true;
+        return session?.agent_type !== 'opencode';
       }
       if (event.type === 'ToolCompleted' && toolIdToName.get(event.tool_id) === 'Bash') {
-        return true;
+        return session?.agent_type !== 'opencode';
       }
       if (inlinePrompt && event.type === 'ToolCompleted' && event.tool_id === inlinePrompt.toolUseId) {
         return true;
@@ -856,7 +1048,7 @@ export function ChatView({
       return false;
     };
 
-    for (const event of wsEvents) {
+    for (const event of visibleWsEvents) {
       if (shouldSkip(event)) {
         continue;
       }
@@ -904,11 +1096,33 @@ export function ChatView({
     }
 
     return merged;
-  }, [inlinePrompt, wsEvents]);
+  }, [inlinePrompt, visibleWsEvents, session?.agent_type]);
+
+  const activeToolName = useMemo(() => {
+    if (wsEvents.length === 0) return null;
+    const completed = new Set<string>();
+    for (let i = wsEvents.length - 1; i >= 0; i -= 1) {
+      const event = wsEvents[i];
+      if (event.type === 'ToolCompleted') {
+        completed.add(event.tool_id);
+        continue;
+      }
+      if (event.type === 'ToolStarted' && !INLINE_PROMPT_TOOLS.has(event.tool_name)) {
+        if (!completed.has(event.tool_id)) {
+          return event.tool_name;
+        }
+      }
+    }
+    return null;
+  }, [wsEvents]);
 
   // Check if we have content to display
   const hasHistory = historyEvents.length > 0;
   const hasWsEvents = renderableWsEvents.length > 0;
+  const showStatusIndicator = !inlinePrompt && (isProcessing || isAwaitingResponse);
+  const statusLabel = activeToolName
+    ? `Running ${activeToolName}…`
+    : `${processingWord}…`;
   const hasOptimisticMessages = optimisticUserMessages.length > 0;
   const hasContent = hasHistory || hasWsEvents || hasOptimisticMessages;
   const rawEventsForView = useMemo(() => {
@@ -927,9 +1141,35 @@ export function ChatView({
   }, [historyEvents, optimisticUserMessages, session, inputHistory]);
 
   // Can only change model if session hasn't started (no agent_session_id) and not processing
-  const canChangeModel = !session?.agent_session_id && !isProcessing;
+  const canChangeModel = !!session && !isProcessing &&
+    (session.agent_type === 'opencode'
+      ? true
+      : (!session.agent_session_id || session.model_invalid || !session.model));
   const canChangeMode =
     supportsPlanMode(session?.agent_type) && !session?.agent_session_id && !isProcessing;
+
+  useEffect(() => {
+    const handleOpenModelPicker = () => {
+      if (!session) {
+        onNotify?.('No active session.', 'error');
+        return;
+      }
+      if (!canChangeModel) {
+        onNotify?.('Wait for the current response to finish before changing the model.', 'error');
+        return;
+      }
+      setShowModelSelector(true);
+    };
+
+    window.addEventListener('conduit:open-model-picker', handleOpenModelPicker as EventListener);
+    return () => {
+      window.removeEventListener(
+        'conduit:open-model-picker',
+        handleOpenModelPicker as EventListener
+      );
+    };
+  }, [canChangeModel, onNotify, session]);
+
   const planToggleBlockReason = !session
     ? 'No active session.'
     : !supportsPlanMode(session.agent_type)
@@ -940,15 +1180,14 @@ export function ChatView({
           ? 'Wait for the current response to finish.'
           : null;
   const effectiveAgentMode = session?.agent_mode ?? 'build';
-  const queuedMessages = queueData?.messages ?? [];
   const canSendQueued = !!session && !!workspace && !isProcessing;
   const currentAttachments = session ? attachmentsBySession[session.id] ?? [] : [];
   const canStop = isProcessing || isAwaitingResponse;
 
-  const handleModelSelect = useCallback((modelId: string, newAgentType: 'claude' | 'codex' | 'gemini') => {
+  const handleModelSelect = useCallback((modelId: string, newAgentType: 'claude' | 'codex' | 'gemini' | 'opencode') => {
     if (!session) return;
     // Only include agent_type in the request if it's different from current
-    const data: { model: string; agent_type?: 'claude' | 'codex' | 'gemini' } = { model: modelId };
+    const data: { model: string; agent_type?: 'claude' | 'codex' | 'gemini' | 'opencode' } = { model: modelId };
     if (newAgentType !== session.agent_type) {
       data.agent_type = newAgentType;
     }
@@ -958,12 +1197,16 @@ export function ChatView({
         onSuccess: () => {
           setShowModelSelector(false);
         },
+        onError: (error) => {
+          const message = error instanceof Error ? error.message : 'Failed to update session model.';
+          onNotify?.(message, 'error');
+        },
       }
     );
-  }, [session, updateSessionMutation]);
+  }, [session, updateSessionMutation, onNotify]);
 
   const handleSetDefaultModel = useCallback(
-    (modelId: string, newAgentType: 'claude' | 'codex' | 'gemini') => {
+    (modelId: string, newAgentType: 'claude' | 'codex' | 'gemini' | 'opencode') => {
       setDefaultModelMutation.mutate({ agent_type: newAgentType, model_id: modelId });
     },
     [setDefaultModelMutation]
@@ -976,10 +1219,8 @@ export function ChatView({
   }, [effectiveAgentMode, session, updateSessionMutation]);
 
   const handleStopSession = useCallback(() => {
-    if (!session?.id) return;
-    stopSession(session.id);
-    clearEscHint();
-  }, [session?.id, stopSession, clearEscHint]);
+    stopSessionAndReset();
+  }, [stopSessionAndReset]);
 
   // Keyboard shortcut for toggling plan mode (Ctrl+Shift+P)
   useEffect(() => {
@@ -1052,6 +1293,8 @@ export function ChatView({
                 ? 'bg-orange-400'
                 : session.agent_type === 'codex'
                 ? 'bg-green-400'
+                : session.agent_type === 'opencode'
+                ? 'bg-teal-400'
                 : 'bg-blue-400'
             )}
           />
@@ -1067,8 +1310,10 @@ export function ChatView({
                   ? 'Claude Code'
                   : session.agent_type === 'codex'
                   ? 'Codex CLI'
+                  : session.agent_type === 'opencode'
+                  ? 'OpenCode'
                   : 'Gemini CLI'}
-              </span>
+            </span>
             </p>
           </div>
         </div>
@@ -1109,22 +1354,6 @@ export function ChatView({
             <GitPullRequest className="h-3.5 w-3.5" />
             PR
           </button>
-
-          <button
-            onClick={handleStopSession}
-            disabled={!canStop}
-            className={cn(
-              'flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors',
-              canStop
-                ? 'text-text-muted hover:bg-surface-elevated hover:text-text'
-                : 'cursor-not-allowed opacity-50 text-text-muted'
-            )}
-            aria-label="Stop session"
-          >
-            <Square className="h-3.5 w-3.5" />
-            Stop
-          </button>
-
           <button
             onClick={() => setShowRawEvents((prev) => !prev)}
             className={cn(
@@ -1147,7 +1376,7 @@ export function ChatView({
             <p>Send a message to start the conversation</p>
           </div>
         ) : (
-          <div className="min-w-0 space-y-4">
+          <div ref={messagesContainerRef} className="min-w-0 space-y-4">
             <div ref={topSentinelRef} />
             {(isLoadingHistory || isLoadingMore) && (
               <div className="flex items-center gap-2 text-xs text-text-muted">
@@ -1187,6 +1416,12 @@ export function ChatView({
                 isPending={!inlinePrompt.requestId}
               />
             )}
+            {showStatusIndicator && (
+              <SessionStatusIndicator
+                label={statusLabel}
+                elapsedSeconds={processingElapsed}
+              />
+            )}
           </div>
 
         )}
@@ -1220,6 +1455,8 @@ export function ChatView({
         focusKey={session?.id ?? null}
         history={userMessageHistory}
         notice={escHint}
+        canStop={canStop}
+        onStop={handleStopSession}
         modelDisplayName={session?.model_display_name}
         agentType={session?.agent_type}
         agentMode={supportsPlanMode(session?.agent_type) ? effectiveAgentMode : undefined}

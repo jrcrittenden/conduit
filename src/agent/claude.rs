@@ -140,6 +140,8 @@ impl ClaudeCodeRunner {
                         return vec![AgentEvent::Error(ErrorEvent {
                             message: "Authentication failed. Please run `claude /login` in your terminal to authenticate.".to_string(),
                             is_fatal: true,
+                            code: None,
+                            details: None,
                         })];
                     }
                     let detail = assistant
@@ -159,6 +161,8 @@ impl ClaudeCodeRunner {
                     return vec![AgentEvent::Error(ErrorEvent {
                         message,
                         is_fatal: true,
+                        code: None,
+                        details: None,
                     })];
                 }
 
@@ -231,6 +235,8 @@ impl ClaudeCodeRunner {
                         AgentEvent::Error(ErrorEvent {
                             message: format!("Claude error: {}", detail),
                             is_fatal: true,
+                            code: None,
+                            details: None,
                         }),
                         AgentEvent::TurnFailed(TurnFailedEvent { error: detail }),
                     ];
@@ -375,6 +381,11 @@ impl AgentRunner for ClaudeCodeRunner {
                             AgentInput::CodexPrompt { .. } => {
                                 tracing::warn!("Ignored Codex prompt sent to Claude input channel");
                             }
+                            AgentInput::OpencodeQuestion { .. } => {
+                                tracing::warn!(
+                                    "Ignored OpenCode question response sent to Claude input channel"
+                                );
+                            }
                         }
                     }
                     if let Err(err) = stdin.shutdown().await {
@@ -416,6 +427,8 @@ impl AgentRunner for ClaudeCodeRunner {
                         .send(AgentEvent::Error(ErrorEvent {
                             message: format!("Stream parsing error: {}", e),
                             is_fatal: true,
+                            code: None,
+                            details: None,
                         }))
                         .await
                     {
@@ -541,6 +554,8 @@ impl AgentRunner for ClaudeCodeRunner {
                         .send(AgentEvent::Error(ErrorEvent {
                             message: error_msg,
                             is_fatal: true,
+                            code: None,
+                            details: None,
                         }))
                         .await
                     {
@@ -555,6 +570,8 @@ impl AgentRunner for ClaudeCodeRunner {
                         .send(AgentEvent::Error(ErrorEvent {
                             message: format!("Failed to wait for Claude process: {}", e),
                             is_fatal: true,
+                            code: None,
+                            details: None,
                         }))
                         .await
                     {

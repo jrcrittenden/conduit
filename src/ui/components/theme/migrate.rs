@@ -210,6 +210,10 @@ fn generate_toml(
         color_value(theme.agent_claude)
     ));
     output.push_str(&format!("codex = \"{}\"\n", color_value(theme.agent_codex)));
+    output.push_str(&format!(
+        "opencode = \"{}\"\n",
+        color_value(theme.agent_opencode)
+    ));
     output.push('\n');
 
     // PR section
@@ -341,6 +345,7 @@ fn extract_palette(theme: &Theme) -> HashMap<String, String> {
         theme.accent_error,
         theme.agent_claude,
         theme.agent_codex,
+        theme.agent_opencode,
         theme.pr_open_bg,
         theme.pr_merged_bg,
         theme.pr_closed_bg,

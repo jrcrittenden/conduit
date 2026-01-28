@@ -86,7 +86,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
             next.add(message.session_id);
             return next;
           });
-        } else if (event.type === 'TurnCompleted' || event.type === 'TurnFailed') {
+        } else if (event.type === 'TurnCompleted' || event.type === 'TurnFailed' || event.type === 'Error') {
           setProcessingSessionIds((prev) => {
             const next = new Set(prev);
             next.delete(message.session_id);
@@ -99,6 +99,21 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
               next.add(message.session_id);
               return next;
             });
+          }
+          if (event.type === 'Error' && event.code === 'model_not_found') {
+            queryClient.setQueryData<Session>(queryKeys.session(message.session_id), (prev) =>
+              prev ? { ...prev, model: null, model_display_name: null, model_invalid: true } : prev
+            );
+            queryClient.setQueryData<Session[]>(queryKeys.sessions, (prev) =>
+              prev
+                ? prev.map((session) =>
+                    session.id === message.session_id
+                      ? { ...session, model: null, model_display_name: null, model_invalid: true }
+                      : session
+                  )
+                : prev
+            );
+            queryClient.invalidateQueries({ queryKey: queryKeys.models });
           }
         }
       }
@@ -225,6 +240,14 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const stopSession = useCallback(
     (sessionId: string) => {
       ws.stopSession(sessionId);
+      runningSessionsRef.current.delete(sessionId);
+      pendingPromptsRef.current.delete(sessionId);
+      setProcessingSessionIds((prev) => {
+        if (!prev.has(sessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
     },
     [ws]
   );
@@ -328,7 +351,10 @@ export function useSessionEvents(sessionId: string | null): AgentEvent[] {
         } else if (event.type === 'AssistantMessage') {
           const last = prev[prev.length - 1];
           if (last?.type === 'AssistantMessage' && !last.is_final) {
-            next = [...prev.slice(0, -1), { ...event, text: last.text + event.text }];
+            const mergedText = event.is_final && event.text.startsWith(last.text)
+              ? event.text
+              : last.text + event.text;
+            next = [...prev.slice(0, -1), { ...event, text: mergedText }];
           } else {
             next = [...prev, event];
           }

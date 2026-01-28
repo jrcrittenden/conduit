@@ -1,5 +1,10 @@
 //! Model configuration and registry
 
+use std::sync::{OnceLock, RwLock};
+
+use tracing::error;
+
+use crate::agent::opencode::load_opencode_models;
 use crate::agent::AgentType;
 
 /// Information about a model
@@ -60,6 +65,110 @@ impl ModelRegistry {
 
     /// Default context window for Gemini models (approximate)
     pub const GEMINI_CONTEXT_WINDOW: i64 = 1_000_000;
+
+    /// Default context window for OpenCode models (approximate)
+    pub const OPENCODE_CONTEXT_WINDOW: i64 = 200_000;
+
+    const OPENCODE_DEFAULT_MODEL_ID: &'static str = "default";
+
+    fn opencode_store() -> &'static RwLock<Vec<ModelInfo>> {
+        static OPENCODE_MODELS: OnceLock<RwLock<Vec<ModelInfo>>> = OnceLock::new();
+        OPENCODE_MODELS.get_or_init(|| RwLock::new(Vec::new()))
+    }
+
+    fn opencode_default_model() -> ModelInfo {
+        ModelInfo::new(
+            AgentType::Opencode,
+            Self::OPENCODE_DEFAULT_MODEL_ID,
+            "OpenCode Default",
+            Self::OPENCODE_DEFAULT_MODEL_ID,
+            "Use OpenCode's default model selection",
+            Self::OPENCODE_CONTEXT_WINDOW,
+        )
+        .as_default()
+    }
+
+    fn build_opencode_models(model_ids: Vec<String>) -> Vec<ModelInfo> {
+        let mut models = vec![Self::opencode_default_model()];
+        for id in model_ids {
+            if id == Self::OPENCODE_DEFAULT_MODEL_ID {
+                continue;
+            }
+            models.push(ModelInfo::new(
+                AgentType::Opencode,
+                &id,
+                &id,
+                &id,
+                "OpenCode model",
+                Self::OPENCODE_CONTEXT_WINDOW,
+            ));
+        }
+        models
+    }
+
+    pub fn set_opencode_models(model_ids: Vec<String>) {
+        let mut models = Self::build_opencode_models(model_ids);
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.dedup_by(|a, b| a.id == b.id);
+        if let Some(pos) = models
+            .iter()
+            .position(|model| model.id == Self::OPENCODE_DEFAULT_MODEL_ID)
+        {
+            let default = models.remove(pos);
+            models.insert(0, default);
+        }
+        let mut store = match Self::opencode_store().write() {
+            Ok(guard) => guard,
+            Err(err) => {
+                error!(error = %err, "opencode_store poisoned in set_opencode_models");
+                err.into_inner()
+            }
+        };
+        *store = models;
+    }
+
+    pub fn clear_opencode_models() {
+        let mut store = match Self::opencode_store().write() {
+            Ok(guard) => guard,
+            Err(err) => {
+                error!(error = %err, "opencode_store poisoned in clear_opencode_models");
+                err.into_inner()
+            }
+        };
+        store.clear();
+    }
+
+    pub fn drop_opencode_model(model_id: &str) {
+        if model_id == Self::OPENCODE_DEFAULT_MODEL_ID {
+            return;
+        }
+        let mut store = match Self::opencode_store().write() {
+            Ok(guard) => guard,
+            Err(err) => {
+                error!(error = %err, "opencode_store poisoned in drop_opencode_model");
+                err.into_inner()
+            }
+        };
+        store.retain(|model| model.id != model_id);
+    }
+
+    pub fn refresh_opencode_models() {
+        let models = load_opencode_models(None);
+        if models.is_empty() {
+            return;
+        }
+        Self::set_opencode_models(models);
+    }
+
+    pub fn opencode_models() -> Vec<ModelInfo> {
+        match Self::opencode_store().read() {
+            Ok(guard) => guard.clone(),
+            Err(err) => {
+                error!(error = %err, "opencode_store poisoned in opencode_models");
+                Vec::new()
+            }
+        }
+    }
 
     /// Get available models for Claude Code
     pub fn claude_models() -> Vec<ModelInfo> {
@@ -175,6 +284,7 @@ impl ModelRegistry {
         let mut models = Self::claude_models();
         models.extend(Self::codex_models());
         models.extend(Self::gemini_models());
+        models.extend(Self::opencode_models());
         models
     }
 
@@ -184,6 +294,7 @@ impl ModelRegistry {
             AgentType::Claude => Self::claude_models(),
             AgentType::Codex => Self::codex_models(),
             AgentType::Gemini => Self::gemini_models(),
+            AgentType::Opencode => Self::opencode_models(),
         }
     }
 
@@ -193,11 +304,33 @@ impl ModelRegistry {
             AgentType::Claude => "opus".to_string(),
             AgentType::Codex => "gpt-5.2-codex".to_string(),
             AgentType::Gemini => "gemini-2.5-pro".to_string(),
+            AgentType::Opencode => Self::OPENCODE_DEFAULT_MODEL_ID.to_string(),
         }
     }
 
     /// Find a model by ID or alias
     pub fn find_model(agent_type: AgentType, id_or_alias: &str) -> Option<ModelInfo> {
+        if agent_type == AgentType::Opencode {
+            let trimmed = id_or_alias.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Some(model) = Self::opencode_models()
+                .into_iter()
+                .find(|m| m.id == trimmed || m.alias == trimmed)
+            {
+                return Some(model);
+            }
+            return Some(ModelInfo::new(
+                AgentType::Opencode,
+                trimmed,
+                trimmed,
+                trimmed,
+                "OpenCode model",
+                Self::OPENCODE_CONTEXT_WINDOW,
+            ));
+        }
+
         Self::models_for(agent_type)
             .into_iter()
             .find(|m| m.id == id_or_alias || m.alias == id_or_alias)
@@ -209,6 +342,7 @@ impl ModelRegistry {
             AgentType::Claude => "✻",
             AgentType::Codex => "◎",
             AgentType::Gemini => "◆",
+            AgentType::Opencode => "◍",
         }
     }
 
@@ -218,6 +352,7 @@ impl ModelRegistry {
             AgentType::Claude => "Claude Code",
             AgentType::Codex => "Codex",
             AgentType::Gemini => "Gemini",
+            AgentType::Opencode => "OpenCode",
         }
     }
 
@@ -234,6 +369,7 @@ impl ModelRegistry {
             AgentType::Claude => Self::CLAUDE_CONTEXT_WINDOW,
             AgentType::Codex => Self::CODEX_CONTEXT_WINDOW,
             AgentType::Gemini => Self::GEMINI_CONTEXT_WINDOW,
+            AgentType::Opencode => Self::OPENCODE_CONTEXT_WINDOW,
         }
     }
 }

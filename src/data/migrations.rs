@@ -195,6 +195,11 @@ pub const MIGRATIONS: &[Migration] = &[
                 WHERE is_open = 1 AND workspace_id IS NOT NULL;
         "#,
     },
+    Migration {
+        version: 19,
+        name: "add_session_tabs_model_invalid",
+        sql: "ALTER TABLE session_tabs ADD COLUMN model_invalid INTEGER NOT NULL DEFAULT 0;",
+    },
 ];
 
 /// Create the schema_migrations table if it doesn't exist.
@@ -215,19 +220,15 @@ fn get_applied_versions(conn: &Connection) -> rusqlite::Result<std::collections:
     let mut stmt = conn.prepare("SELECT version FROM schema_migrations")?;
     let versions = stmt
         .query_map([], |row| row.get::<_, i64>(0))?
-        .filter_map(|r| r.ok())
+        .filter_map(|r| match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read migration version from schema_migrations");
+                None
+            }
+        })
         .collect();
     Ok(versions)
-}
-
-/// Record that a migration was applied.
-fn record_migration(conn: &Connection, migration: &Migration) -> rusqlite::Result<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-        params![migration.version, migration.name, now],
-    )?;
-    Ok(())
 }
 
 /// Check if a column exists in a table.
@@ -295,6 +296,7 @@ fn bootstrap_existing_database(conn: &Connection) -> rusqlite::Result<()> {
                     |row| row.get::<_, i64>(0).map(|c| c > 0),
                 ).unwrap_or(false)
             }
+            19 => column_exists(conn, "session_tabs", "model_invalid"),
             _ => false,
         };
 
@@ -334,19 +336,25 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             "Applying migration"
         );
 
-        // Execute the migration SQL
-        if let Err(e) = conn.execute_batch(migration.sql) {
+        // Execute the migration SQL and record it within a single transaction for atomicity
+        let now = chrono::Utc::now().to_rfc3339();
+        let sql_with_tx = format!(
+            "BEGIN;\n{}\nINSERT INTO schema_migrations (version, name, applied_at) VALUES ({}, '{}', '{}');\nCOMMIT;",
+            migration.sql,
+            migration.version,
+            migration.name,
+            now
+        );
+        if let Err(e) = conn.execute_batch(&sql_with_tx) {
             tracing::error!(
                 version = migration.version,
                 name = migration.name,
                 error = %e,
                 "Migration failed"
             );
+            // Transaction is automatically rolled back on error
             return Err(e);
         }
-
-        // Record that we applied it
-        record_migration(conn, migration)?;
 
         tracing::info!(
             version = migration.version,

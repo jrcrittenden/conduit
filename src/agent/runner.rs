@@ -13,6 +13,7 @@ pub enum AgentType {
     Claude,
     Codex,
     Gemini,
+    Opencode,
 }
 
 /// Agent mode (Build vs Plan)
@@ -81,6 +82,7 @@ impl AgentType {
             AgentType::Claude => "claude",
             AgentType::Codex => "codex",
             AgentType::Gemini => "gemini",
+            AgentType::Opencode => "opencode",
         }
     }
 
@@ -88,6 +90,7 @@ impl AgentType {
         match s.to_lowercase().as_str() {
             "codex" => AgentType::Codex,
             "gemini" => AgentType::Gemini,
+            "opencode" => AgentType::Opencode,
             _ => AgentType::Claude,
         }
     }
@@ -97,6 +100,7 @@ impl AgentType {
             AgentType::Claude => "Claude Code",
             AgentType::Codex => "Codex CLI",
             AgentType::Gemini => "Gemini CLI",
+            AgentType::Opencode => "OpenCode",
         }
     }
 }
@@ -191,8 +195,17 @@ impl AgentStartConfig {
 pub enum AgentInput {
     /// Raw JSONL payload for Claude streaming input.
     ClaudeJsonl(String),
-    /// Codex prompt with optional local images.
-    CodexPrompt { text: String, images: Vec<PathBuf> },
+    /// Codex prompt with optional local images and model override.
+    CodexPrompt {
+        text: String,
+        images: Vec<PathBuf>,
+        model: Option<String>,
+    },
+    /// OpenCode question response (None means reject).
+    OpencodeQuestion {
+        request_id: String,
+        answers: Option<Vec<Vec<String>>>,
+    },
 }
 
 /// Handle to a running agent process

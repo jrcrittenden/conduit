@@ -1,6 +1,6 @@
 //! Session discovery and import utilities
 //!
-//! Provides functions to discover sessions from Claude Code and Codex CLI,
+//! Provides functions to discover sessions from Claude Code, Codex CLI, and OpenCode,
 //! and parse them for display in the import picker. (Gemini CLI discovery
 //! is not supported yet.)
 
@@ -128,6 +128,7 @@ pub fn discover_all_sessions() -> Vec<ExternalSession> {
     let mut sessions = Vec::new();
     sessions.extend(discover_claude_sessions());
     sessions.extend(discover_codex_sessions());
+    sessions.extend(discover_opencode_sessions());
 
     // Sort by timestamp descending (most recent first)
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -222,7 +223,29 @@ fn scan_session_files() -> Vec<(PathBuf, u64)> {
         files.extend(scan_codex_session_files(&codex_sessions_dir));
     }
 
+    // Scan OpenCode sessions
+    if let Some(storage_dir) = opencode_storage_dir() {
+        let opencode_sessions_dir = storage_dir.join("session");
+        if opencode_sessions_dir.exists() {
+            files.extend(scan_opencode_session_files(&opencode_sessions_dir));
+        }
+    }
+
     files
+}
+
+fn opencode_storage_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        candidates.push(dir.join("opencode").join("storage"));
+    }
+    if let Some(dir) = dirs::data_dir() {
+        candidates.push(dir.join("opencode").join("storage"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local/share/opencode/storage"));
+    }
+    candidates.into_iter().find(|path| path.exists())
 }
 
 /// Scan Claude session files from projects directory
@@ -315,6 +338,31 @@ fn scan_codex_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
     files
 }
 
+/// Scan OpenCode session files from storage/session/<project>/<session>.json
+fn scan_opencode_session_files(sessions_dir: &PathBuf) -> Vec<(PathBuf, u64)> {
+    let mut files = Vec::new();
+    if let Ok(project_entries) = fs::read_dir(sessions_dir) {
+        for project_entry in project_entries.flatten() {
+            let project_path = project_entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            if let Ok(session_entries) = fs::read_dir(&project_path) {
+                for session_entry in session_entries.flatten() {
+                    let path = session_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Some(mtime) = get_file_mtime(&path) {
+                        files.push((path, mtime));
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
 /// Read a single session file and return ExternalSession
 fn read_single_session(path: &PathBuf) -> Option<ExternalSession> {
     let home = dirs::home_dir()?;
@@ -324,6 +372,12 @@ fn read_single_session(path: &PathBuf) -> Option<ExternalSession> {
         read_claude_session(path)
     } else if path.starts_with(home.join(".codex")) {
         parse_codex_session_file(path)
+    } else if let Some(storage_dir) = opencode_storage_dir() {
+        if path.starts_with(storage_dir.join("session")) {
+            parse_opencode_session_file(path, &storage_dir)
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -590,6 +644,56 @@ pub fn discover_codex_sessions() -> Vec<ExternalSession> {
     sessions
 }
 
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionTime {
+    created: i64,
+    updated: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionInfo {
+    id: String,
+    title: String,
+    directory: String,
+    #[serde(default)]
+    time: Option<OpencodeSessionTime>,
+}
+
+/// Discover OpenCode sessions from storage/session/<project>/<session>.json
+pub fn discover_opencode_sessions() -> Vec<ExternalSession> {
+    let storage_dir = match opencode_storage_dir() {
+        Some(dir) => dir,
+        None => return Vec::new(),
+    };
+    let sessions_dir = storage_dir.join("session");
+    if !sessions_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut sessions = Vec::new();
+    if let Ok(project_entries) = fs::read_dir(&sessions_dir) {
+        for project_entry in project_entries.flatten() {
+            let project_path = project_entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            if let Ok(session_entries) = fs::read_dir(&project_path) {
+                for session_entry in session_entries.flatten() {
+                    let path = session_entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Some(session) = parse_opencode_session_file(&path, &storage_dir) {
+                        sessions.push(session);
+                    }
+                }
+            }
+        }
+    }
+
+    sessions
+}
+
 /// Parse a Codex session file and extract metadata
 fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
     let file = File::open(path).ok()?;
@@ -711,6 +815,71 @@ fn parse_codex_session_file(path: &PathBuf) -> Option<ExternalSession> {
         timestamp,
         message_count,
         file_path: path.clone(),
+    })
+}
+
+/// Parse an OpenCode session file and extract metadata
+fn parse_opencode_session_file(path: &Path, storage_dir: &Path) -> Option<ExternalSession> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            warn!(path = %path.display(), error = %err, "Failed to read OpenCode session file");
+            return None;
+        }
+    };
+    let info: OpencodeSessionInfo = match serde_json::from_str(&raw) {
+        Ok(info) => info,
+        Err(err) => {
+            warn!(path = %path.display(), error = %err, "Failed to parse OpenCode session file");
+            return None;
+        }
+    };
+
+    let message_dir = storage_dir.join("message").join(&info.id);
+    let mut message_dir_read_failed = false;
+    let message_count = match fs::read_dir(&message_dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+            .count(),
+        Err(err) => {
+            warn!(dir = %message_dir.display(), error = %err, "Failed to read OpenCode message directory");
+            message_dir_read_failed = true;
+            0
+        }
+    };
+
+    if message_count == 0 && !message_dir_read_failed {
+        return None;
+    }
+
+    let timestamp = info
+        .time
+        .as_ref()
+        .and_then(|time| {
+            let millis = time.updated.max(time.created);
+            Utc.timestamp_millis_opt(millis).single()
+        })
+        .or_else(|| {
+            path.metadata()
+                .and_then(|m| m.modified())
+                .map(DateTime::<Utc>::from)
+                .ok()
+        })
+        .unwrap_or_else(Utc::now);
+
+    Some(ExternalSession {
+        id: info.id,
+        agent_type: AgentType::Opencode,
+        display: if info.title.trim().is_empty() {
+            "(No title)".to_string()
+        } else {
+            info.title
+        },
+        project: (!info.directory.trim().is_empty()).then_some(info.directory),
+        timestamp,
+        message_count,
+        file_path: path.to_path_buf(),
     })
 }
 

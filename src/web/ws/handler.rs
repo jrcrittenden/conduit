@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use crate::agent::events::AgentEvent;
 use crate::agent::runner::{AgentInput, AgentRunner, AgentStartConfig, AgentType};
-use crate::core::services::SessionService;
+use crate::agent::session::SessionId;
+use crate::core::services::{SessionService, UpdateSessionParams};
 use crate::core::ConduitCore;
 use crate::ui::app_prompt;
 use crate::util::{generate_title_and_branch, get_git_username, sanitize_branch_suffix};
@@ -95,6 +96,34 @@ async fn append_input_history(
     Ok(())
 }
 
+async fn persist_pending_user_message(
+    core: &Arc<RwLock<ConduitCore>>,
+    session_id: Uuid,
+    input: &str,
+) -> Result<(), String> {
+    let store = {
+        let core = core.read().await;
+        core.session_tab_store_clone()
+            .ok_or_else(|| "Database not available".to_string())?
+    };
+
+    let mut tab = store
+        .get_by_id(session_id)
+        .map_err(|e| format!("Failed to get session {}: {}", session_id, e))?
+        .ok_or_else(|| format!("Session {} not found in database", session_id))?;
+
+    if tab.pending_user_message.as_deref() == Some(input) {
+        return Ok(());
+    }
+
+    tab.pending_user_message = Some(input.to_string());
+    store
+        .update(&tab)
+        .map_err(|e| format!("Failed to update session {}: {}", session_id, e))?;
+
+    Ok(())
+}
+
 impl SessionManager {
     pub fn new(core: Arc<RwLock<ConduitCore>>) -> Self {
         Self {
@@ -136,6 +165,7 @@ impl SessionManager {
             AgentType::Claude => core.claude_runner().clone(),
             AgentType::Codex => core.codex_runner().clone(),
             AgentType::Gemini => core.gemini_runner().clone(),
+            AgentType::Opencode => core.opencode_runner().clone(),
         };
 
         if !runner.is_available() {
@@ -157,11 +187,41 @@ impl SessionManager {
             config = config.with_stdin_payload(payload);
         }
 
+        if agent_type == AgentType::Opencode {
+            match SessionService::get_session(&core, session_id) {
+                Ok(session_tab) => {
+                    if let Some(agent_session_id) = session_tab.agent_session_id {
+                        config = config.with_resume(SessionId::from_string(agent_session_id));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %session_id,
+                        error = %error,
+                        "Failed to load session for OpenCode resume"
+                    );
+                }
+            }
+        }
+
         // Start the agent
         let mut handle = runner
             .start(config)
             .await
             .map_err(|e| format!("Failed to start agent: {}", e))?;
+
+        if let Some(agent_session_id) = handle.session_id.clone() {
+            if let Err(error) =
+                persist_agent_session_id(&self.core, session_id, agent_session_id.as_str()).await
+            {
+                tracing::warn!(
+                    %session_id,
+                    agent_session_id = %agent_session_id,
+                    error = %error,
+                    "Failed to persist agent session id"
+                );
+            }
+        }
 
         let pid = handle.pid;
         let input_tx = handle.input_tx.take();
@@ -211,6 +271,20 @@ impl SessionManager {
                             error = %error,
                             "Failed to persist agent session id"
                         );
+                    }
+                }
+                if let AgentEvent::Error(err) = &event {
+                    if err.code.as_deref() == Some("model_not_found") {
+                        let core = core_ref.read().await;
+                        if let Err(error) =
+                            SessionService::invalidate_session_model(&core, session_id)
+                        {
+                            tracing::warn!(
+                                %session_id,
+                                error = %error,
+                                "Failed to invalidate session model"
+                            );
+                        }
                     }
                 }
 
@@ -344,6 +418,7 @@ impl SessionManager {
         session_id: Uuid,
         input: String,
         images: Vec<PathBuf>,
+        model: Option<String>,
     ) -> Result<(), String> {
         let (input_tx, agent_type) = {
             let sessions = self.sessions.read().await;
@@ -360,9 +435,10 @@ impl SessionManager {
         // Send as appropriate input type based on agent
         let agent_input = match agent_type {
             AgentType::Claude => AgentInput::ClaudeJsonl(input),
-            AgentType::Codex | AgentType::Gemini => AgentInput::CodexPrompt {
+            AgentType::Codex | AgentType::Gemini | AgentType::Opencode => AgentInput::CodexPrompt {
                 text: input,
                 images,
+                model,
             },
         };
 
@@ -914,6 +990,48 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                     }
                     continue;
                 };
+                if session_tab.model_invalid || session_tab.model.is_none() {
+                    if let Some(model_id) = model.clone() {
+                        if let Err(error) = SessionService::update_session(
+                            &core,
+                            session_id,
+                            UpdateSessionParams {
+                                model: Some(model_id),
+                                agent_type: None,
+                                agent_mode: None,
+                            },
+                        ) {
+                            if let Err(send_err) = tx
+                                .send(ServerMessage::session_error(session_id, format!("{error}")))
+                                .await
+                            {
+                                tracing::debug!(
+                                    %session_id,
+                                    error = ?send_err,
+                                    "Failed to send session error"
+                                );
+                                break 'ws_loop;
+                            }
+                            continue;
+                        }
+                    } else {
+                        if let Err(send_err) = tx
+                            .send(ServerMessage::session_error(
+                                session_id,
+                                "Select a model to continue.",
+                            ))
+                            .await
+                        {
+                            tracing::debug!(
+                                %session_id,
+                                error = ?send_err,
+                                "Failed to send session error"
+                            );
+                            break 'ws_loop;
+                        }
+                        continue;
+                    }
+                }
                 let agent_type = session_tab.agent_type;
                 let should_generate = should_generate_title(hidden, &session_tab);
                 drop(core);
@@ -976,6 +1094,23 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                                 .send(ServerMessage::session_error(
                                     session_id,
                                     "Image attachments are not supported for Gemini sessions",
+                                ))
+                                .await
+                            {
+                                tracing::debug!(
+                                    %session_id,
+                                    error = ?send_err,
+                                    "Failed to send session error"
+                                );
+                                break 'ws_loop;
+                            }
+                            continue;
+                        }
+                        AgentType::Opencode => {
+                            if let Err(send_err) = tx
+                                .send(ServerMessage::session_error(
+                                    session_id,
+                                    "Image attachments are not supported for OpenCode sessions",
                                 ))
                                 .await
                             {
@@ -1150,6 +1285,43 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                 images,
             } => {
                 let agent_type = session_manager.get_agent_type(session_id).await;
+                let core = session_manager.core.read().await;
+                let session_tab = match SessionService::get_session(&core, session_id) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        if let Err(send_err) = tx
+                            .send(ServerMessage::session_error(session_id, format!("{error}")))
+                            .await
+                        {
+                            tracing::debug!(
+                                %session_id,
+                                error = ?send_err,
+                                "Failed to send session error"
+                            );
+                            break 'ws_loop;
+                        }
+                        continue;
+                    }
+                };
+                if session_tab.model_invalid || session_tab.model.is_none() {
+                    if let Err(send_err) = tx
+                        .send(ServerMessage::session_error(
+                            session_id,
+                            "Select a model to continue.",
+                        ))
+                        .await
+                    {
+                        tracing::debug!(
+                            %session_id,
+                            error = ?send_err,
+                            "Failed to send session error"
+                        );
+                        break 'ws_loop;
+                    }
+                    continue;
+                }
+                let model = session_tab.model.clone();
+                drop(core);
                 let mut input_payload = input.clone();
                 let image_paths = if images.is_empty() {
                     Vec::new()
@@ -1211,6 +1383,23 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                             }
                             continue;
                         }
+                        Some(AgentType::Opencode) => {
+                            if let Err(send_err) = tx
+                                .send(ServerMessage::session_error(
+                                    session_id,
+                                    "Image attachments are not supported for OpenCode sessions",
+                                ))
+                                .await
+                            {
+                                tracing::debug!(
+                                    %session_id,
+                                    error = ?send_err,
+                                    "Failed to send session error"
+                                );
+                                break 'ws_loop;
+                            }
+                            continue;
+                        }
                         None => Vec::new(),
                     }
                 };
@@ -1238,7 +1427,7 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                 }
 
                 if let Err(e) = session_manager
-                    .send_input(session_id, input_payload, image_paths)
+                    .send_input(session_id, input_payload, image_paths, model)
                     .await
                 {
                     if let Err(send_err) =
@@ -1252,6 +1441,16 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                         break 'ws_loop;
                     }
                 } else if !hidden {
+                    if let Err(error) =
+                        persist_pending_user_message(&session_manager.core, session_id, &input)
+                            .await
+                    {
+                        tracing::warn!(
+                            %session_id,
+                            error = %error,
+                            "Failed to persist pending user message"
+                        );
+                    }
                     if let Err(error) =
                         append_input_history(&session_manager.core, session_id, &input).await
                     {
