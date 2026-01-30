@@ -130,6 +130,8 @@ pub struct AgentStartConfig {
     pub input_format: Option<String>,
     /// Optional stdin payload for structured input (e.g. JSONL)
     pub stdin_payload: Option<String>,
+    /// Proxy configuration for LLM API requests
+    pub proxy: crate::config::ProxyConfig,
 }
 
 impl AgentStartConfig {
@@ -146,6 +148,7 @@ impl AgentStartConfig {
             agent_mode: AgentMode::default(),
             input_format: None,
             stdin_payload: None,
+            proxy: crate::config::ProxyConfig::default(),
         }
     }
 
@@ -186,6 +189,11 @@ impl AgentStartConfig {
 
     pub fn with_stdin_payload(mut self, payload: impl Into<String>) -> Self {
         self.stdin_payload = Some(payload.into());
+        self
+    }
+
+    pub fn with_proxy(mut self, proxy: crate::config::ProxyConfig) -> Self {
+        self.proxy = proxy;
         self
     }
 }

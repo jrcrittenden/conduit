@@ -318,6 +318,15 @@ impl GeminiCliRunner {
         cmd.stderr(Stdio::piped());
         cmd.env("NODE_NO_WARNINGS", "1");
 
+        // Proxy configuration
+        if let Some(url) = &config.proxy.google_base_url {
+            cmd.env("GOOGLE_API_BASE", url);
+        }
+        if let Some(url) = &config.proxy.https_proxy {
+            cmd.env("HTTPS_PROXY", url);
+            cmd.env("https_proxy", url);
+        }
+
         cmd
     }
 

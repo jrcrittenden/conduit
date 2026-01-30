@@ -118,6 +118,33 @@
 # opencode = "/usr/local/bin/opencode"
 
 # ============================================================================
+# Proxy Configuration
+# ============================================================================
+# Route LLM API requests through a proxy. These environment variables are
+# injected into the agent subprocesses (claude, codex, gemini, opencode).
+#
+# SECURITY WARNING: Do not include credentials (user:password@) in proxy URLs
+# stored in this file. Credentials may be exposed in process listings, logs,
+# or error messages. Instead, set HTTPS_PROXY in your shell environment with
+# credentials, or use a proxy that handles authentication separately.
+#
+# URLs must start with http:// or https:// - other schemes are rejected.
+#
+# [proxy]
+# # HTTPS proxy for all agents (sets HTTPS_PROXY and https_proxy)
+# https_proxy = "http://localhost:8080"
+#
+# # Agent-specific base URL overrides:
+# # Claude (sets ANTHROPIC_BASE_URL)
+# anthropic_base_url = "http://localhost:8080/v1"
+#
+# # Codex and OpenCode (sets OPENAI_BASE_URL)
+# openai_base_url = "http://localhost:8080/v1"
+#
+# # Gemini (sets GOOGLE_API_BASE)
+# google_base_url = "http://localhost:8080/v1"
+
+# ============================================================================
 # Keybindings
 # ============================================================================
 # Key Notation:

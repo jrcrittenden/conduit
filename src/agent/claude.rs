@@ -95,6 +95,15 @@ impl ClaudeCodeRunner {
             cmd.arg("--").arg(&config.prompt);
         }
 
+        // Proxy configuration
+        if let Some(url) = &config.proxy.anthropic_base_url {
+            cmd.env("ANTHROPIC_BASE_URL", url);
+        }
+        if let Some(url) = &config.proxy.https_proxy {
+            cmd.env("HTTPS_PROXY", url);
+            cmd.env("https_proxy", url);
+        }
+
         // Stdio setup for JSONL capture / streaming input
         let needs_stdin = config
             .input_format

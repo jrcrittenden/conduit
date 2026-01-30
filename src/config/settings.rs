@@ -58,6 +58,8 @@ pub struct Config {
     pub web_status: WebStatusConfig,
     /// Workspace defaults
     pub workspaces: WorkspacesConfig,
+    /// Proxy configuration for LLM API requests
+    pub proxy: ProxyConfig,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -165,6 +167,63 @@ pub struct TomlWorkspacesConfig {
     pub archive_remote_prompt: Option<bool>,
 }
 
+/// Proxy configuration for LLM API requests
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProxyConfig {
+    /// Universal HTTPS proxy URL (sets HTTPS_PROXY for all agents)
+    pub https_proxy: Option<String>,
+    /// Anthropic API base URL (for Claude)
+    pub anthropic_base_url: Option<String>,
+    /// OpenAI API base URL (for Codex/OpenCode)
+    pub openai_base_url: Option<String>,
+    /// Google API base URL (for Gemini)
+    pub google_base_url: Option<String>,
+}
+
+impl ProxyConfig {
+    /// Validate and sanitize a proxy URL.
+    /// Returns Some(url) if valid http/https URL, None otherwise.
+    fn validate_proxy_url(url: Option<String>, field_name: &str) -> Option<String> {
+        let url = url?;
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            Some(trimmed.to_string())
+        } else {
+            tracing::warn!(
+                field = field_name,
+                url = trimmed,
+                "Invalid proxy URL: must start with http:// or https://"
+            );
+            None
+        }
+    }
+
+    /// Load and validate proxy configuration from TOML config.
+    pub fn from_toml(toml: TomlProxyConfig) -> Self {
+        Self {
+            https_proxy: Self::validate_proxy_url(toml.https_proxy, "https_proxy"),
+            anthropic_base_url: Self::validate_proxy_url(toml.anthropic_base_url, "anthropic_base_url"),
+            openai_base_url: Self::validate_proxy_url(toml.openai_base_url, "openai_base_url"),
+            google_base_url: Self::validate_proxy_url(toml.google_base_url, "google_base_url"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TomlProxyConfig {
+    /// Universal HTTPS proxy URL
+    pub https_proxy: Option<String>,
+    /// Anthropic API base URL
+    pub anthropic_base_url: Option<String>,
+    /// OpenAI API base URL
+    pub openai_base_url: Option<String>,
+    /// Google API base URL
+    pub google_base_url: Option<String>,
+}
+
 /// TOML representation of default model
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TomlDefaultModelConfig {
@@ -222,6 +281,7 @@ impl Default for Config {
                 archive_delete_branch: true,
                 archive_remote_prompt: true,
             },
+            proxy: ProxyConfig::default(),
         }
     }
 }
@@ -296,6 +356,8 @@ pub struct TomlConfig {
     pub web_status: Option<TomlWebStatusConfig>,
     /// Workspace defaults
     pub workspaces: Option<TomlWorkspacesConfig>,
+    /// Proxy configuration
+    pub proxy: Option<TomlProxyConfig>,
 }
 
 impl TomlKeybindings {
@@ -705,6 +767,11 @@ impl Config {
                             config.workspaces.archive_remote_prompt = remote_prompt;
                         }
                     }
+
+                    // Load proxy configuration with validation
+                    if let Some(proxy) = toml_config.proxy {
+                        config.proxy = ProxyConfig::from_toml(proxy);
+                    }
                 }
             }
         }
@@ -900,4 +967,147 @@ pub fn save_default_model(agent_type: AgentType, model_id: &str) -> std::io::Res
     fs::write(&config_file, doc.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proxy_config_default() {
+        let config = ProxyConfig::default();
+        assert_eq!(config.https_proxy, None);
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(config.openai_base_url, None);
+        assert_eq!(config.google_base_url, None);
+    }
+
+    #[test]
+    fn test_proxy_config_valid_http_urls() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("http://proxy.example.com:8080".to_string()),
+            anthropic_base_url: Some("http://localhost:8080/v1".to_string()),
+            openai_base_url: Some("https://api.example.com".to_string()),
+            google_base_url: Some("http://127.0.0.1:3000".to_string()),
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        assert_eq!(
+            config.https_proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+        assert_eq!(
+            config.anthropic_base_url,
+            Some("http://localhost:8080/v1".to_string())
+        );
+        assert_eq!(
+            config.openai_base_url,
+            Some("https://api.example.com".to_string())
+        );
+        assert_eq!(
+            config.google_base_url,
+            Some("http://127.0.0.1:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_proxy_config_rejects_invalid_schemes() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("file:///etc/passwd".to_string()),
+            anthropic_base_url: Some("ftp://example.com".to_string()),
+            openai_base_url: Some("javascript:alert(1)".to_string()),
+            google_base_url: Some("data:text/plain,malicious".to_string()),
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        // All invalid schemes should be rejected
+        assert_eq!(config.https_proxy, None);
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(config.openai_base_url, None);
+        assert_eq!(config.google_base_url, None);
+    }
+
+    #[test]
+    fn test_proxy_config_rejects_schemeless_urls() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("proxy.example.com:8080".to_string()),
+            anthropic_base_url: Some("localhost:8080".to_string()),
+            openai_base_url: Some("example.com".to_string()),
+            google_base_url: Some("//example.com".to_string()),
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        // URLs without http/https scheme should be rejected
+        assert_eq!(config.https_proxy, None);
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(config.openai_base_url, None);
+        assert_eq!(config.google_base_url, None);
+    }
+
+    #[test]
+    fn test_proxy_config_handles_empty_and_whitespace() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("".to_string()),
+            anthropic_base_url: Some("   ".to_string()),
+            openai_base_url: Some("\t\n".to_string()),
+            google_base_url: None,
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        // Empty and whitespace-only values should become None
+        assert_eq!(config.https_proxy, None);
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(config.openai_base_url, None);
+        assert_eq!(config.google_base_url, None);
+    }
+
+    #[test]
+    fn test_proxy_config_trims_whitespace() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("  http://proxy.example.com:8080  ".to_string()),
+            anthropic_base_url: Some("\thttps://api.example.com\n".to_string()),
+            openai_base_url: None,
+            google_base_url: None,
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        // Whitespace should be trimmed from valid URLs
+        assert_eq!(
+            config.https_proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+        assert_eq!(
+            config.anthropic_base_url,
+            Some("https://api.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_proxy_config_partial_configuration() {
+        let toml = TomlProxyConfig {
+            https_proxy: Some("http://proxy.example.com:8080".to_string()),
+            anthropic_base_url: None,
+            openai_base_url: Some("https://openai.proxy.com".to_string()),
+            google_base_url: None,
+        };
+
+        let config = ProxyConfig::from_toml(toml);
+
+        // Only specified fields should be set
+        assert_eq!(
+            config.https_proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+        assert_eq!(config.anthropic_base_url, None);
+        assert_eq!(
+            config.openai_base_url,
+            Some("https://openai.proxy.com".to_string())
+        );
+        assert_eq!(config.google_base_url, None);
+    }
 }

@@ -173,7 +173,8 @@ impl SessionManager {
         }
 
         // Build start config
-        let mut config = AgentStartConfig::new(prompt, working_dir);
+        let mut config =
+            AgentStartConfig::new(prompt, working_dir).with_proxy(core.config().proxy.clone());
         if let Some(m) = model {
             config = config.with_model(m);
         }

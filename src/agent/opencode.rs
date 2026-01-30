@@ -643,6 +643,15 @@ impl OpencodeRunner {
             cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
         }
 
+        // Proxy configuration
+        if let Some(url) = &config.proxy.openai_base_url {
+            cmd.env("OPENAI_BASE_URL", url);
+        }
+        if let Some(url) = &config.proxy.https_proxy {
+            cmd.env("HTTPS_PROXY", url);
+            cmd.env("https_proxy", url);
+        }
+
         Ok(cmd)
     }
 

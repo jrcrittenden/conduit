@@ -7060,7 +7060,8 @@ impl App {
         let mut config = AgentStartConfig::new(prompt_for_agent, working_dir)
             .with_tools(self.config().claude_allowed_tools.clone())
             .with_images(images)
-            .with_agent_mode(agent_mode);
+            .with_agent_mode(agent_mode)
+            .with_proxy(self.config().proxy.clone());
 
         // Add model if specified
         if let Some(model_id) = model {

@@ -186,28 +186,40 @@ impl CodexCliRunner {
         }
     }
 
-    fn build_codex_command(&self, cwd: &PathBuf) -> io::Result<Command> {
+    fn build_codex_command(&self, config: &AgentStartConfig) -> io::Result<Command> {
         let mut cmd = Command::new(&self.binary_path);
         cmd.arg("app-server");
-        cmd.current_dir(cwd);
+        cmd.current_dir(&config.working_dir);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.env("NODE_NO_WARNINGS", "1");
         cmd.env("NO_COLOR", "1");
+        Self::apply_proxy_env(&mut cmd, &config.proxy);
         Ok(cmd)
     }
 
-    fn build_npx_command(&self, cwd: &PathBuf) -> io::Result<Command> {
+    fn build_npx_command(&self, config: &AgentStartConfig) -> io::Result<Command> {
         let mut cmd = Command::new("npx");
         cmd.args(["-y", &Self::npx_package(), "app-server"]);
-        cmd.current_dir(cwd);
+        cmd.current_dir(&config.working_dir);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.env("NODE_NO_WARNINGS", "1");
         cmd.env("NO_COLOR", "1");
+        Self::apply_proxy_env(&mut cmd, &config.proxy);
         Ok(cmd)
+    }
+
+    fn apply_proxy_env(cmd: &mut Command, proxy: &crate::config::ProxyConfig) {
+        if let Some(url) = &proxy.openai_base_url {
+            cmd.env("OPENAI_BASE_URL", url);
+        }
+        if let Some(url) = &proxy.https_proxy {
+            cmd.env("HTTPS_PROXY", url);
+            cmd.env("https_proxy", url);
+        }
     }
 
     fn build_input_items(prompt: &str, images: &[PathBuf]) -> io::Result<Vec<InputItem>> {
@@ -601,9 +613,12 @@ impl CodexCliRunner {
         Ok(())
     }
 
-    async fn spawn_app_server(&self, cwd: &PathBuf) -> Result<tokio::process::Child, AgentError> {
+    async fn spawn_app_server(
+        &self,
+        config: &AgentStartConfig,
+    ) -> Result<tokio::process::Child, AgentError> {
         if self.binary_path.exists() {
-            let mut cmd = self.build_codex_command(cwd)?;
+            let mut cmd = self.build_codex_command(config)?;
             match cmd.spawn() {
                 Ok(child) => return Ok(child),
                 Err(err) => {
@@ -612,7 +627,7 @@ impl CodexCliRunner {
             }
         }
 
-        let mut cmd = self.build_npx_command(cwd)?;
+        let mut cmd = self.build_npx_command(config)?;
         let child = cmd.spawn()?;
         Ok(child)
     }
@@ -625,7 +640,7 @@ impl AgentRunner for CodexCliRunner {
     }
 
     async fn start(&self, config: AgentStartConfig) -> Result<AgentHandle, AgentError> {
-        let mut child = self.spawn_app_server(&config.working_dir).await?;
+        let mut child = self.spawn_app_server(&config).await?;
         let pid = child.id().ok_or(AgentError::ProcessSpawnFailed)?;
 
         let stdin = child
